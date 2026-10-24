@@ -167,6 +167,7 @@ def _shrink_bg(data: bytes):
         try:
             img.draft("RGB", (_PREVIEW_PIC_MAX_PX, _PREVIEW_PIC_MAX_PX))
         except Exception:
+            logger.debug("swallowed exception in _shrink_bg", exc_info=True)
             pass
         img = img.convert("RGB")
         img.thumbnail((_PREVIEW_PIC_MAX_PX, _PREVIEW_PIC_MAX_PX))
@@ -174,6 +175,7 @@ def _shrink_bg(data: bytes):
         img.save(out, format="JPEG", quality=_PREVIEW_PIC_QUALITY)
         return out.getvalue()
     except Exception:
+        logger.debug("swallowed exception in _shrink_bg", exc_info=True)
         return None
 
 
@@ -234,6 +236,7 @@ def _watermark(card_bytes: bytes) -> bytes:
         Image.alpha_composite(img, layer).convert("RGB").save(out, format="PNG")
         return out.getvalue()
     except Exception:
+        logger.debug("swallowed exception in _watermark", exc_info=True)
         return card_bytes
 
 
@@ -832,6 +835,7 @@ async def _render_tv(client, guild, guild_id: int, clone_id, user, full: bool = 
         if fb:
             note = f"{note} \u00b7 {fb}"
     except Exception:
+        logger.debug("swallowed exception in _render_tv", exc_info=True)
         pass
     return png, note
 
@@ -1838,6 +1842,7 @@ class CardPreviewAsModal(discord.ui.Modal, title="Preview as\u2026"):
                 try:
                     have = {int(r.get("slot") or 0) for r in await db.gallery_list(self.guild_id, self.clone_id)}
                 except Exception:
+                    logger.warning("swallowed exception in CardPreviewAsModal.on_submit", exc_info=True)
                     have = {slot}
                 if slot not in have:
                     await interaction.followup.send(
@@ -2172,6 +2177,7 @@ class CardPicturesAddModal(discord.ui.Modal, title="Add pictures"):
                 try:
                     incoming.append((f.filename, await f.read(), None))
                 except Exception:
+                    logger.warning("swallowed exception in CardPicturesAddModal.on_submit", exc_info=True)
                     incoming.append((f.filename, None, "could not be read"))
         if url:
             async with aiohttp.ClientSession() as session:
@@ -2248,6 +2254,7 @@ async def _add_pictures(bot, guild, guild_id: int, clone_id, incoming: list):
                     if ch is not None:
                         await ch.get_partial_message(int(hosted[1])).delete()
                 except Exception:
+                    logger.warning("swallowed exception in _add_pictures", exc_info=True)
                     pass
                 skipped.append((name, "gallery is full"))
                 continue
@@ -2543,6 +2550,7 @@ async def _replace_picture(bot, guild, guild_id: int, clone_id, slot: int, data:
                 if ch is not None:
                     await ch.get_partial_message(int(hosted[1])).delete()
             except Exception:
+                logger.warning("swallowed exception in _replace_picture", exc_info=True)
                 pass
             return False, f"there is no picture {slot} in the gallery"
         wg.note_upload(guild_id, clone_id)
@@ -2552,6 +2560,7 @@ async def _replace_picture(bot, guild, guild_id: int, clone_id, slot: int, data:
                 if ch is not None:
                     await ch.get_partial_message(int(old[1])).delete()
             except Exception:
+                logger.warning("swallowed exception in _replace_picture", exc_info=True)
                 pass   # already gone, or no permission: the owner reviews the hosting channel anyway
         return True, ""
     except Exception:
@@ -2600,6 +2609,7 @@ class CardPictureReplaceModal(discord.ui.Modal, title="Replace a picture"):
                 try:
                     data = await f.read()
                 except Exception:
+                    logger.warning("swallowed exception in CardPictureReplaceModal.on_submit", exc_info=True)
                     why = "could not be read"
         elif url:
             async with aiohttp.ClientSession() as session:

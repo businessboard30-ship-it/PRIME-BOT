@@ -72,12 +72,14 @@ def _adapt_used_response(interaction):
     try:
         used = resp is not None and resp.is_done()
     except Exception:
+        logger.debug("swallowed exception in _adapt_used_response", exc_info=True)
         used = False
     if not used or isinstance(resp, _AlreadyRespondedResponse) or not isinstance(interaction, discord.Interaction):
         return None
     try:
         interaction.response = _AlreadyRespondedResponse(resp, interaction)
     except Exception:
+        logger.debug("swallowed exception in _adapt_used_response", exc_info=True)
         return None
     return resp
 

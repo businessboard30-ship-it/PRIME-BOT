@@ -11,6 +11,9 @@ from __future__ import annotations
 
 import time
 from datetime import datetime, timezone
+import logging
+
+logger = logging.getLogger(__name__)
 
 ACCOUNT_DAYS = 30
 JOIN_DAYS = 7
@@ -24,6 +27,7 @@ def _age_days(dt) -> "float | None":
             dt = dt.replace(tzinfo=timezone.utc)
         return (datetime.now(timezone.utc) - dt).total_seconds() / 86400
     except Exception:
+        logger.debug("swallowed exception in _age_days", exc_info=True)
         return None
 
 
@@ -41,6 +45,7 @@ def risky(message) -> bool:
         if hasattr(a, "avatar") and a.avatar is None:
             return True
     except Exception:
+        logger.debug("swallowed exception in risky", exc_info=True)
         return False
     return False
 

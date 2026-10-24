@@ -85,6 +85,7 @@ def allowed_url(url: str) -> bool:
         u = urlparse(url or "")
         return u.scheme == "https" and (u.hostname or "").lower() in PROXY_HOSTS
     except Exception:
+        logger.debug("swallowed exception in allowed_url", exc_info=True)
         return False
 
 

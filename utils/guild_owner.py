@@ -6,6 +6,9 @@ owner join DM was sent and broke the automod reminders. This helper uses the rea
 fetch of the owner as a member, then as a plain user. Never raises for Discord errors; returns None instead.
 """
 import discord
+import logging
+
+logger = logging.getLogger(__name__)
 
 
 async def resolve_guild_owner(guild: discord.Guild):
@@ -22,4 +25,5 @@ async def resolve_guild_owner(guild: discord.Guild):
     try:
         return await guild._state._get_client().fetch_user(owner_id)
     except Exception:
+        logger.warning("swallowed exception in resolve_guild_owner", exc_info=True)
         return None

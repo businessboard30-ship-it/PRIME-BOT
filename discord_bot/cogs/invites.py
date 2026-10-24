@@ -348,6 +348,7 @@ class InvitesCog(GuildOnlyCog):
             try:
                 listing = await db.get_server_listing(guild.id, clone_id=clone_id)
             except Exception:
+                logger.warning("swallowed exception in InvitesCog._handle_join", exc_info=True)
                 listing = None
             if listing and listing.get("invite_code") == invite_code:
                 via_site = True
@@ -357,6 +358,7 @@ class InvitesCog(GuildOnlyCog):
                     if await db.is_disguild_invite(guild.id, invite_code):
                         via_site, site_label = True, "Disguild"
                 except Exception:
+                    logger.warning("swallowed exception in InvitesCog._handle_join", exc_info=True)
                     pass
 
         if inviter_id:
@@ -379,7 +381,9 @@ class InvitesCog(GuildOnlyCog):
                 f"(e.g. server Discovery, or an invite that changed before I could check it)."
             )
         try:
-            await channel.send(content)
+            # The names stay visible as mentions, but nobody gets a notification: a busy
+            # server's join feed must not ping the new member and the inviter every time.
+            await channel.send(content, allowed_mentions=discord.AllowedMentions.none())
         except (discord.Forbidden, discord.HTTPException):
             pass
 

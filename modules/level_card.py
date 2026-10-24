@@ -74,6 +74,7 @@ def _load_font(size: int):
         try:
             return ImageFont.truetype(FONT_PATH, size)
         except Exception:
+            logger.debug("swallowed exception in _load_font", exc_info=True)
             pass
     try:
         # Pillow >=10 default font supports a size arg; older versions don't.

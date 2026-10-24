@@ -5,6 +5,9 @@ from dataclasses import dataclass, replace
 from typing import List, Optional
 
 from modules import cat_adopt
+import logging
+
+logger = logging.getLogger(__name__)
 
 SORTS = {
     "rarest": "Rarest first",
@@ -64,6 +67,7 @@ def _ts(cat) -> float:
     try:
         return at.timestamp() if at else 0.0
     except Exception:
+        logger.debug("swallowed exception in _ts", exc_info=True)
         return 0.0
 
 

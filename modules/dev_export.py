@@ -10,6 +10,9 @@ import json
 import re
 import secrets
 import unicodedata
+import logging
+
+logger = logging.getLogger(__name__)
 
 MAX_BYTES = 256 * 1024            # plaintext cap per export
 MAX_PER_DAY = 10                  # exports per user per rolling 24 hours
@@ -75,6 +78,7 @@ def decrypt(blob: bytes):
     try:
         return secret_manager.cipher.decrypt(blob)
     except Exception:
+        logger.debug("swallowed exception in decrypt", exc_info=True)
         return None
 
 

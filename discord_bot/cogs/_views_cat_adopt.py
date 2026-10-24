@@ -79,6 +79,7 @@ async def cat_image_url(client, cat: ca.Cat) -> Optional[str]:
     try:
         return await cat_pool.url_for(client, cat.pool_id) or None
     except Exception:
+        logger.warning("swallowed exception in cat_image_url", exc_info=True)
         return None
 
 

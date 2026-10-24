@@ -135,6 +135,7 @@ class TopggStatsCog(commands.Cog):
             try:
                 info = json.loads(text) if text else {}
             except Exception:
+                logger.debug("swallowed exception in TopggStatsCog.verify_token", exc_info=True)
                 info = {}
             logger.info("[topgg] token OK — project %r (id=%s, type=%s, platform=%s); this bot (%s) is in %d guild(s)",
                         info.get("name"), info.get("id"), info.get("type"), info.get("platform"),

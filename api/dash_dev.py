@@ -192,6 +192,7 @@ async def _gh_secret(uid, db):
     try:
         return dev_github.unpack_secret(_decrypt(enc))
     except Exception:
+        logger.debug("swallowed exception in _gh_secret", exc_info=True)
         return None, None
 
 
@@ -337,6 +338,7 @@ async def _fetch_bytes(url: str, limit: int):
                 data = await r.content.read(limit + 1)
                 return data if len(data) <= limit else None
     except Exception:
+        logger.warning("swallowed exception in _fetch_bytes", exc_info=True)
         return None
 
 
@@ -385,6 +387,7 @@ async def dev_export_create(uid, body, db):
         try:
             await dash._bot_request("DELETE", f"/channels/{channel}/messages/{message_id}")
         except Exception:
+            logger.warning("swallowed exception in dev_export_create", exc_info=True)
             pass
         return {"_status": 502, "message": "Couldn't save the export right now. Try again in a moment."}
     try:                                           # best-effort extra audit; the receipt row is the durable record
@@ -406,6 +409,7 @@ async def _send_dm(uid, spec) -> bool:
         await dash._bot_post(f"/channels/{ch['id']}/messages", form=form)
         return True
     except Exception:
+        logger.warning("swallowed exception in _send_dm", exc_info=True)
         return False                               # DMs closed is normal; the Export page still has the file
 
 
@@ -426,6 +430,7 @@ async def dev_export_download(uid, q, db):
         msg = await dash._bot_get(f"/channels/{channel}/messages/{row['message_id']}")
         att = (msg.get("attachments") or [None])[0]
     except Exception:
+        logger.warning("swallowed exception in dev_export_download", exc_info=True)
         return gone
     if not att or att.get("filename") != dev_export.opaque_filename(export_id):
         return gone
@@ -450,6 +455,7 @@ async def dev_export_delete(uid, body, db):
     try:
         status = await dash._bot_request("DELETE", f"/channels/{_storage_channel()}/messages/{row['message_id']}")
     except Exception:
+        logger.warning("swallowed exception in dev_export_delete", exc_info=True)
         status = None
     if status not in (200, 204, 404):
         return {"_status": 502, "message": "Couldn't delete it right now. Try again in a moment."}

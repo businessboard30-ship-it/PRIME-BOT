@@ -22,6 +22,9 @@ import re
 import discord
 
 import config as app_config
+import logging
+
+logger = logging.getLogger(__name__)
 
 
 class BoostXPButton(discord.ui.DynamicItem[discord.ui.Button], template=r"^levelboost_xp:(\d+):(-?\d+|-)$"):
@@ -86,6 +89,7 @@ async def pass_offered(clone_id) -> bool:
         from database import db
         return (await db.get_payment_mode(clone_id)) != "gumroad"
     except Exception:
+        logger.warning("swallowed exception in pass_offered", exc_info=True)
         return False
 
 

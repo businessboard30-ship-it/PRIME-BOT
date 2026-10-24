@@ -298,6 +298,7 @@ async def is_premium(guild_id: int, clone_id) -> bool:
     try:
         return bool(await db.is_guild_premium_active(guild_id, clone_id))
     except Exception:
+        logger.warning("swallowed exception in is_premium", exc_info=True)
         return False
 
 

@@ -202,6 +202,7 @@ async def resolve_log_channel(guild: discord.Guild, clone_id, cfg: dict):
             automod = await db.get_automod_config(guild.id, clone_id=clone_id)
             channel_id = automod.get("log_channel_id")
         except Exception:
+            logger.warning("swallowed exception in resolve_log_channel", exc_info=True)
             channel_id = None
     return guild.get_channel(channel_id) if channel_id else None
 
@@ -286,6 +287,7 @@ async def apply_profile_filter(bot, member: discord.Member, cfg: dict) -> tuple:
                 await guild.kick(member, reason="[anti-raid] profile filter: " + "; ".join(reasons)[:300])
                 outcome = "kicked"
             except Exception:
+                logger.warning("swallowed exception in apply_profile_filter", exc_info=True)
                 outcome, note = "failed", "Couldn't kick them — check my role and **Kick Members**."
         if pro.flag_post_allowed((guild.id, clone_id)):      # a big raid must not flood the log
             embed = _raid_embed(f"🪪 Profile filter — {pro.OUTCOMES.get(outcome, outcome)}",

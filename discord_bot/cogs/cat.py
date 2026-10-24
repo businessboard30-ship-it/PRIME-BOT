@@ -158,6 +158,7 @@ async def _grow_pool(bot, session):
         try:
             known = await cat_pool.known_source_ids(source, [c["id"] for c in cands])
         except Exception:
+            logger.warning("swallowed exception in _grow_pool", exc_info=True)
             known = set()
         good = []
         for c in cands:
@@ -167,6 +168,7 @@ async def _grow_pool(bot, session):
             try:
                 data = await _download(session, c["url"])
             except Exception:
+                logger.warning("swallowed exception in _grow_pool", exc_info=True)
                 cat_health.record("cand_download")
                 continue
             if not data:

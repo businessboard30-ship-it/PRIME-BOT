@@ -37,6 +37,7 @@ def _owners() -> set:
         from config import DISCORD_CLONE_ADMIN_IDS, DISCORD_OWNER_BROADCAST_IDS
         return set(DISCORD_CLONE_ADMIN_IDS) | set(DISCORD_OWNER_BROADCAST_IDS)
     except Exception:
+        logger.debug("swallowed exception in _owners", exc_info=True)
         return set()
 
 

@@ -27,6 +27,7 @@ this module is deliberately modeled on.
 """
 
 import logging
+import re
 
 import discord
 

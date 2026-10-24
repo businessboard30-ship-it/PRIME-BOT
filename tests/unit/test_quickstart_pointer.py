@@ -109,16 +109,20 @@ def test_panel_button_wrong_server_refused():
     assert "different server" in it.response.send_message.await_args.args[0]
 
 
-def test_followup_nudge_is_one_short_embed():
+def test_followup_nudge_is_one_short_embed(monkeypatch):
     import sys
-    cfg = types.ModuleType("config"); cfg.PREMIUM_FEE_USD = 5
-    sys.modules.setdefault("config", cfg)
+    # Everything below goes through monkeypatch so it is undone at teardown. Assigning
+    # sys.modules["database"] directly used to leak a stub into every later test file
+    # (get_pool missing, db a MagicMock) and made the full suite fail in CI.
+    if "config" not in sys.modules:
+        cfg = types.ModuleType("config"); cfg.PREMIUM_FEE_USD = 5
+        monkeypatch.setitem(sys.modules, "config", cfg)
     sc = types.ModuleType("discord_bot.cogs.setup_channels")
     sc.scan_missing_channels = sc.build_suggestions_embed = sc.SetupSuggestView = MagicMock()
-    sys.modules["discord_bot.cogs.setup_channels"] = sc
+    monkeypatch.setitem(sys.modules, "discord_bot.cogs.setup_channels", sc)
     dbm = types.ModuleType("database"); dbm.db = MagicMock()
-    sys.modules["database"] = dbm
-    sys.modules.pop("discord_bot.cogs.quickstart", None)
+    monkeypatch.setitem(sys.modules, "database", dbm)
+    monkeypatch.delitem(sys.modules, "discord_bot.cogs.quickstart", raising=False)
     qs = importlib.import_module("discord_bot.cogs.quickstart")
     cog = qs.QuickstartCog.__new__(qs.QuickstartCog)
     e = cog._build_embed(SimpleNamespace(name="G"), intro="Quick nudge")

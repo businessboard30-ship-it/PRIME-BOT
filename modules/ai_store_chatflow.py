@@ -75,6 +75,7 @@ async def run_chat_turn(user_id: int, session_id: int, provider: str, model: str
         try:
             estimate_margin(provider, model, result["input_tokens"], result["output_tokens"])
         except Exception:
+            logger.debug("swallowed exception in run_chat_turn", exc_info=True)
             pass
 
     return {

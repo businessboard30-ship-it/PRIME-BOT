@@ -35,6 +35,7 @@ async def _fetch_application(app_id: int) -> dict | None:
                     return None
                 return await resp.json()
     except Exception:
+        logger.warning("swallowed exception in _fetch_application", exc_info=True)
         return None
 
 

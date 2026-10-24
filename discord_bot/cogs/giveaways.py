@@ -224,6 +224,7 @@ class GiveawayCog(GuildOnlyCog):
         try:
             premium = bool(await db.is_guild_premium_active(interaction.guild_id, _clone_id_of(interaction)))
         except Exception:
+            logger.warning("swallowed exception in GiveawayCog.setup_wizard", exc_info=True)
             premium = False
         await interaction.response.send_message(view=build_giveaway_wizard_view(0, {}, premium))
         sent = await interaction.original_response()

@@ -93,6 +93,7 @@ class ConnectCog(commands.Cog):
                     return False
             return bool(rows)
         except Exception:
+            logger.debug("swallowed exception in ConnectCog._all_quiet", exc_info=True)
             return False
 
     # ── YouTube uploads ──────────────────────────────────────────────────

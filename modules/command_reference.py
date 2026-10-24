@@ -15,6 +15,9 @@ hide anything.
 """
 
 from typing import Optional
+import logging
+
+logger = logging.getLogger(__name__)
 
 # (command, usage, one-line description, required permission attr or None)
 COMMANDS: list[tuple[str, str, str, Optional[str]]] = [
@@ -176,6 +179,7 @@ def _live_lines(bot) -> list:
                 lines.append(f"/{cmd.name}{(' ' + args) if args else ''} — {desc}{tag}")
         return lines
     except Exception:
+        logger.debug("swallowed exception in _live_lines", exc_info=True)
         return []
 
 

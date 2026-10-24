@@ -116,6 +116,7 @@ class BumpView(ServerPanelView):
             freq = INTENSITY_LABELS.get(cfg.get("intensity_level"), str(cfg.get("intensity_level")))
             lang = dict(LANGUAGE_OPTIONS).get(cfg.get("language"), cfg.get("language"))
         except Exception:
+            logger.debug("swallowed exception in BumpView.body", exc_info=True)
             freq, lang = cfg.get("intensity_level"), cfg.get("language")
         lines = [
             f"Bump channel: {_chan(None, cfg.get('bump_channel_id'))}",

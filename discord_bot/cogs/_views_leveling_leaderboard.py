@@ -448,6 +448,7 @@ async def build_leaderboard_view(bot, guild: discord.Guild, clone_id, mode: str 
         try:
             is_prem = await premium_task
         except Exception:
+            logger.warning("swallowed exception in build_leaderboard_view._assemble", exc_info=True)
             is_prem = False
         if not is_prem:
             import config as _config

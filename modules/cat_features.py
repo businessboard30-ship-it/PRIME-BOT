@@ -11,6 +11,9 @@ from datetime import date, timedelta, timezone, datetime
 from typing import Optional
 
 from modules import cat_adopt, cat_wallet
+import logging
+
+logger = logging.getLogger(__name__)
 
 CARE_BASE_COINS = 25
 CARE_STREAK_CAP = 30
@@ -104,6 +107,7 @@ async def wardrobe(owner_id: int, clone_id) -> tuple:
                 "LEFT JOIN cat_equipped e ON e.owner_id = o.owner_id AND e.clone_key = o.clone_key AND e.cosmetic_id = c.id "
                 "WHERE o.owner_id = $1 AND o.clone_key = $2 ORDER BY c.kind, c.id", owner_id, _key(clone_id))
     except Exception:
+        logger.warning("swallowed exception in wardrobe", exc_info=True)
         return [], set()
     owned = [Cosmetic(int(r["id"]), r["slug"], r["kind"], r["name"], r["emoji"], int(r["price_coins"]), int(r["price_diamonds"])) for r in rows]
     return owned, {int(r["id"]) for r in rows if r["worn"]}
@@ -145,6 +149,7 @@ async def equipped(owner_id: int, clone_id) -> dict:
                 "WHERE e.owner_id = $1 AND e.clone_key = $2", owner_id, _key(clone_id))
         return {r["kind"]: {"slug": r["slug"], "name": r["name"], "emoji": r["emoji"]} for r in rows}
     except Exception:
+        logger.warning("swallowed exception in equipped", exc_info=True)
         return {}
 
 

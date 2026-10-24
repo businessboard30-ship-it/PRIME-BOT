@@ -79,6 +79,7 @@ async def handle_incoming(client, message: discord.Message) -> bool:
     try:
         audio = await att.read()
     except Exception:
+        logger.warning("swallowed exception in handle_incoming", exc_info=True)
         await message.channel.send("I couldn't read that clip. Tap Voice message again to retry.")
         return True
     res = await mv.send(message.author.id, listing_id, audio, dur_ms)
@@ -91,6 +92,7 @@ async def handle_incoming(client, message: discord.Message) -> bool:
         await message.delete()
         deleted = True
     except Exception:
+        logger.warning("swallowed exception in handle_incoming", exc_info=True)
         pass
     note = "" if deleted else "\nDiscord does not let a bot delete your message in a DM, so delete your own recording if you like."
     delivered = await _deliver_card(client, res.voice_id, res.receiver_id)

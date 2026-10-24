@@ -280,6 +280,7 @@ def live_view_owns(interaction: discord.Interaction) -> bool:
         message_id = interaction.message.id if interaction.message is not None else None
         return key in store._views.get(message_id, {})
     except Exception:
+        logger.debug("swallowed exception in live_view_owns", exc_info=True)
         return False
 
 

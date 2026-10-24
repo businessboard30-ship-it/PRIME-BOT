@@ -110,6 +110,7 @@ async def _is_premium(guild_id: int, clone_id: Optional[int]) -> bool:
         from database import db
         value = bool(await db.is_guild_premium_active(guild_id, clone_id))
     except Exception:
+        logger.warning("swallowed exception in _is_premium", exc_info=True)
         return False
     if len(_s.premium) > 3000:
         _s.premium.clear()
@@ -128,6 +129,7 @@ async def _is_plus(guild_id: int, clone_id: Optional[int]) -> bool:
         from database import db
         value = bool(await db.is_guild_plus_active(guild_id, clone_id))
     except Exception:
+        logger.warning("swallowed exception in _is_plus", exc_info=True)
         return False
     if len(_s.plus) > 3000:
         _s.plus.clear()
@@ -355,6 +357,7 @@ def prepare(data: bytes) -> Optional[bytes]:
             im.save(out, "JPEG", quality=80)
             return out.getvalue()
     except Exception:
+        logger.debug("swallowed exception in prepare", exc_info=True)
         return None
 
 
@@ -567,6 +570,7 @@ async def self_test() -> Tuple[bool, str]:
         out = io.BytesIO()
         im.save(out, "JPEG", quality=85)
     except Exception:
+        logger.debug("swallowed exception in self_test", exc_info=True)
         return False, "Couldn't build the test picture (Pillow problem)."
     jpeg = out.getvalue()
 

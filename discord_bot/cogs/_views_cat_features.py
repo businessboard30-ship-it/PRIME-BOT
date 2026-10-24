@@ -57,6 +57,7 @@ class CareButton(discord.ui.Button):
         try:
             result = await cat_features.care(interaction.user.id, getattr(interaction.client, "clone_id", None))
         except Exception:
+            logger.warning("swallowed exception in CareButton.callback", exc_info=True)
             await interaction.response.send_message("Daily care is temporarily unavailable. Try again shortly.", ephemeral=True)
             return
         def share():
@@ -83,6 +84,7 @@ class CosmeticBuySelect(discord.ui.Select):
         try:
             status = await cat_features.buy_cosmetic(interaction.user.id, getattr(interaction.client, "clone_id", None), int(self.values[0]))
         except Exception:
+            logger.warning("swallowed exception in CosmeticBuySelect.callback", exc_info=True)
             await interaction.response.send_message("The cosmetic shop is temporarily unavailable.", ephemeral=True)
             return
         text = {"ok": f"{item.emoji} You bought **{item.name}**! It stays yours even if you sell or release cats.",
@@ -106,6 +108,7 @@ class CosmeticEquipSelect(discord.ui.Select):
         try:
             status = await cat_features.toggle_equip(interaction.user.id, getattr(interaction.client, "clone_id", None), int(self.values[0]))
         except Exception:
+            logger.warning("swallowed exception in CosmeticEquipSelect.callback", exc_info=True)
             await interaction.response.send_message("Your wardrobe is temporarily unavailable.", ephemeral=True)
             return
         text = {"equipped": f"{item.emoji} **{item.name}** is on your profile card now. Open **My profile** to see it.",
@@ -123,6 +126,7 @@ class CosmeticsButton(discord.ui.Button):
         try:
             items = await cat_features.cosmetics()
         except Exception:
+            logger.warning("swallowed exception in CosmeticsButton.callback", exc_info=True)
             await interaction.response.send_message("The cosmetic shop is temporarily unavailable.", ephemeral=True)
             return
         available = "\n".join(
@@ -152,6 +156,7 @@ class ProfileButton(discord.ui.Button):
             profile = await cat_features.public_profile(interaction.user.id, _clone(interaction))
             badges = await cat_quests.owned_badges(interaction.user.id, _clone(interaction))
         except Exception:
+            logger.warning("swallowed exception in ProfileButton.callback", exc_info=True)
             await interaction.response.send_message("Your profile is temporarily unavailable.", ephemeral=True)
             return
         hidden = None if profile["show_profile"] else HIDDEN_NOTE
@@ -179,6 +184,7 @@ class ShareButton(discord.ui.Button):
         try:
             card = await self._card(interaction)
         except Exception:
+            logger.warning("swallowed exception in ShareButton.callback", exc_info=True)
             await interaction.followup.send("Sharing is temporarily unavailable.", ephemeral=True)
             return
         if isinstance(card, str):
@@ -236,6 +242,7 @@ async def _update_profile(interaction, bio=None, pinned=None, show=None, done="S
             [c.id for c in cur["pinned"]] if pinned is None else pinned,
             cur["show_profile"] if show is None else show)
     except Exception:
+        logger.warning("swallowed exception in _update_profile", exc_info=True)
         await interaction.response.send_message("Your profile is temporarily unavailable.", ephemeral=True)
         return
     await interaction.response.send_message(done, ephemeral=True)
@@ -295,6 +302,7 @@ class ProfileView(discord.ui.LayoutView):
         try:
             cats = (await cat_adopt.list_cats(interaction.user.id, _clone(interaction)))[:25]
         except Exception:
+            logger.warning("swallowed exception in ProfileView._pin", exc_info=True)
             await interaction.response.send_message("Your cats are temporarily unavailable.", ephemeral=True)
             return
         if not cats:
@@ -323,6 +331,7 @@ async def show_public_profile(interaction: discord.Interaction, target) -> None:
         profile = await asyncio.wait_for(cat_features.public_profile(target.id, _clone(interaction)), 2.0)
         badges = await asyncio.wait_for(cat_quests.owned_badges(target.id, _clone(interaction)), 2.0)
     except Exception:
+        logger.warning("swallowed exception in show_public_profile", exc_info=True)
         await interaction.response.send_message("Profiles are temporarily unavailable. Try again shortly.", ephemeral=True)
         return
     if not profile["show_profile"] and target.id != interaction.user.id:
@@ -360,6 +369,7 @@ def _avatar(user):
     try:
         return user.display_avatar.url
     except Exception:
+        logger.debug("swallowed exception in _avatar", exc_info=True)
         return None
 
 
@@ -377,6 +387,7 @@ class QuestClaimSelect(discord.ui.Select):
         try:
             status = await cat_quests.claim(interaction.user.id, _clone(interaction), self.values[0])
         except Exception:
+            logger.warning("swallowed exception in QuestClaimSelect.callback", exc_info=True)
             await interaction.response.send_message("🎯 Quests are temporarily unavailable.", ephemeral=True)
             return
         text = {"ok": "🎁 Quest claimed! Your 💎 were added to your wallet.",
@@ -386,6 +397,7 @@ class QuestClaimSelect(discord.ui.Select):
             try:
                 done = all(q.claimed for q in await cat_quests.quests(interaction.user.id, _clone(interaction)))
             except Exception:
+                logger.warning("swallowed exception in QuestClaimSelect.callback", exc_info=True)
                 done = False
             if done:
                 await cat_announce.announce(interaction, cat_announce.quests_text(interaction.user.mention), kind="milestone")
@@ -399,6 +411,7 @@ class QuestsButton(discord.ui.Button):
         try:
             items = await cat_quests.quests(interaction.user.id, _clone(interaction))
         except Exception:
+            logger.warning("swallowed exception in QuestsButton.callback", exc_info=True)
             await interaction.response.send_message("🎯 Quests are temporarily unavailable.", ephemeral=True)
             return
         lines = [f"{'✅' if q.progress >= q.target else '🟦'} **{q.title}** — {q.progress}/{q.target} · 💎 {q.reward}"
@@ -418,6 +431,7 @@ class BadgesButton(discord.ui.Button):
             new = await cat_quests.award_badges(interaction.user.id, _clone(interaction))
             have = await cat_quests.owned_badges(interaction.user.id, _clone(interaction))
         except Exception:
+            logger.warning("swallowed exception in BadgesButton.callback", exc_info=True)
             await interaction.response.send_message("🏅 Badges are temporarily unavailable.", ephemeral=True)
             return
         lines = [f"{'✅' if slug in have else '🔒'} {emoji} **{name}** — {how} (+{reward} 💎)"
@@ -483,6 +497,7 @@ class WishlistBoardView(discord.ui.LayoutView):
             try:
                 await self._render(interaction, max(0, self.page + delta), self.rarity)
             except Exception:
+                logger.warning("swallowed exception in WishlistBoardView._turn.cb", exc_info=True)
                 await interaction.response.send_message("The wishlist is temporarily unavailable.", ephemeral=True)
         return cb
 
@@ -491,6 +506,7 @@ class WishlistBoardView(discord.ui.LayoutView):
         try:
             await self._render(interaction, 0, None if v == "any" else v)
         except Exception:
+            logger.warning("swallowed exception in WishlistBoardView._filter", exc_info=True)
             await interaction.response.send_message("The wishlist is temporarily unavailable.", ephemeral=True)
 
     async def _post(self, interaction: discord.Interaction):
@@ -501,6 +517,7 @@ class WishlistBoardView(discord.ui.LayoutView):
         try:
             mine = await cat_wishlist.mine(interaction.user.id, _clone(interaction))
         except Exception:
+            logger.warning("swallowed exception in WishlistBoardView._mine", exc_info=True)
             await interaction.response.send_message("The wishlist is temporarily unavailable.", ephemeral=True)
             return
         if not mine:
@@ -523,6 +540,7 @@ class WishlistNoteModal(discord.ui.Modal, title="Post a want"):
         try:
             status = await cat_wishlist.add(interaction.user.id, _clone(interaction), self.rarity, self.trait, self.note.value)
         except Exception:
+            logger.warning("swallowed exception in WishlistNoteModal.on_submit", exc_info=True)
             await interaction.response.send_message("The wishlist is temporarily unavailable.", ephemeral=True)
             return
         text = {"ok": "🔎 Posted! Traders can see your want for 14 days.",
@@ -592,6 +610,7 @@ class WishlistRemoveSelect(discord.ui.Select):
         try:
             ok = await cat_wishlist.remove(int(self.values[0]), interaction.user.id)
         except Exception:
+            logger.warning("swallowed exception in WishlistRemoveSelect.callback", exc_info=True)
             await interaction.response.send_message("The wishlist is temporarily unavailable.", ephemeral=True)
             return
         await interaction.response.send_message("🗑 Removed." if ok else "That want is already gone.", ephemeral=True)
@@ -605,6 +624,7 @@ class WishlistButton(discord.ui.Button):
         try:
             wants, total = await cat_wishlist.board()
         except Exception:
+            logger.warning("swallowed exception in WishlistButton.callback", exc_info=True)
             await interaction.response.send_message("The wishlist is temporarily unavailable.", ephemeral=True)
             return
         await vis.send(interaction, view=WishlistBoardView(0, total, None, wants))

@@ -7,6 +7,9 @@ from __future__ import annotations
 
 import random
 from typing import Optional, Sequence
+import logging
+
+logger = logging.getLogger(__name__)
 
 MAX_PICTURES = 10
 
@@ -61,6 +64,7 @@ def pick_slot(
         choices = [s for s in usable if s != last_slot] or usable
         return (rng or random).choice(choices)
     except Exception:
+        logger.debug("swallowed exception in pick_slot", exc_info=True)
         return None
 
 
@@ -94,6 +98,7 @@ def prepare_picture(data: bytes) -> Optional[bytes]:
         img.save(out, format="JPEG", quality=JPEG_QUALITY, optimize=True)
         return out.getvalue()
     except Exception:
+        logger.debug("swallowed exception in prepare_picture", exc_info=True)
         return None
 
 
@@ -113,6 +118,7 @@ def uploads_left(guild_id: int, clone_id: Optional[int], db_recent: int = 0, now
             mem = len(q)
         return max(0, DAILY_UPLOAD_LIMIT - max(int(db_recent or 0), mem))
     except Exception:
+        logger.debug("swallowed exception in uploads_left", exc_info=True)
         return 0
 
 
@@ -124,6 +130,7 @@ def note_upload(guild_id: int, clone_id: Optional[int], now: Optional[float] = N
             for k in list(_RECENT)[:1000]:
                 _RECENT.pop(k, None)
     except Exception:
+        logger.debug("swallowed exception in note_upload", exc_info=True)
         pass
 
 
@@ -148,6 +155,7 @@ def clean_override(raw) -> dict:
             out["text_color"] = raw["text_color"]
         return out
     except Exception:
+        logger.debug("swallowed exception in clean_override", exc_info=True)
         return {}
 
 

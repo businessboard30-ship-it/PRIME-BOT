@@ -38,6 +38,9 @@ Usage inside a @tasks.loop function:
         self._gate.record(found_something=bool(due))
         ... existing loop body using `due` ...
 """
+import logging
+
+logger = logging.getLogger(__name__)
 
 
 class AdaptiveSkip:
@@ -84,6 +87,7 @@ class AdaptiveSkip:
             from modules import sleep_events
             sleep_events.emit(kind, self._name, text.format(label=sleep_events.label(self._name)))
         except Exception:
+            logger.debug("swallowed exception in AdaptiveSkip._report", exc_info=True)
             pass
 
     def _report_wake(self) -> None:

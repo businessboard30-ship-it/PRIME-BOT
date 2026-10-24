@@ -8,6 +8,9 @@ import re
 from typing import Optional
 
 from modules.welcome_card import AVATAR_SHAPES, DEFAULT_AVATAR_SHAPE, parse_ultra_options
+import logging
+
+logger = logging.getLogger(__name__)
 
 MAX_DESIGNS = 5          # per server (and per clone)
 MAX_NAME_LEN = 30
@@ -22,6 +25,7 @@ def clean_name(raw) -> Optional[str]:
         text = re.sub(r"\s+", " ", text).strip()[:MAX_NAME_LEN].strip()
         return text or None
     except Exception:
+        logger.debug("swallowed exception in clean_name", exc_info=True)
         return None
 
 

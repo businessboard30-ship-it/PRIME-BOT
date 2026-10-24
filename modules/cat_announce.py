@@ -103,6 +103,7 @@ async def mode_for(guild_id: int, clone_id) -> str:
         cfg = await asyncio.wait_for(cat_setup.get_config(guild_id, clone_id), 2.0)
         mode = cat_setup.clamp_announce(cfg.announce_mode)
     except Exception:
+        logger.warning("swallowed exception in mode_for", exc_info=True)
         return "all"
     remember_mode(guild_id, clone_id, mode)
     return mode

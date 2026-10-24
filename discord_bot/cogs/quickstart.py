@@ -194,30 +194,35 @@ class QuickstartCog(commands.Cog):
             if welcome.get("enabled"):
                 return True
         except Exception:
+            logger.warning("swallowed exception in QuickstartCog._guild_has_any_setup", exc_info=True)
             pass
         try:
             automod = await db.get_automod_config(guild_id, clone_id)
             if automod.get("enabled"):
                 return True
         except Exception:
+            logger.warning("swallowed exception in QuickstartCog._guild_has_any_setup", exc_info=True)
             pass
         try:
             starboard = await db.get_starboard_config(guild_id, clone_id)
             if starboard.get("channel_id"):
                 return True
         except Exception:
+            logger.warning("swallowed exception in QuickstartCog._guild_has_any_setup", exc_info=True)
             pass
         try:
             ticket = await db.get_ticket_config(guild_id, clone_id)
             if ticket.get("panel_channel_id"):
                 return True
         except Exception:
+            logger.warning("swallowed exception in QuickstartCog._guild_has_any_setup", exc_info=True)
             pass
         try:
             downloadhub = await db.get_download_config(guild_id, clone_id)
             if downloadhub.get("channel_id"):
                 return True
         except Exception:
+            logger.warning("swallowed exception in QuickstartCog._guild_has_any_setup", exc_info=True)
             pass
         return False
 

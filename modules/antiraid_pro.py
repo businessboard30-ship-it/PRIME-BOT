@@ -85,6 +85,7 @@ async def is_premium(guild_id: int, clone_id) -> bool:
         from database import db
         value = bool(await db.is_guild_premium_active(guild_id, clone_id))
     except Exception:
+        logger.warning("swallowed exception in is_premium", exc_info=True)
         return False
     _premium_cache[key] = (now + _PREMIUM_TTL, value)
     return value

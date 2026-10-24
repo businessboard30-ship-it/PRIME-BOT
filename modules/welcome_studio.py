@@ -55,6 +55,7 @@ def uses_studio_options(raw) -> bool:
         o = parse_ultra_options(raw)
         return any(o.get(k) != v for k, v in STUDIO_DEFAULTS.items())
     except Exception:
+        logger.debug("swallowed exception in uses_studio_options", exc_info=True)
         return False
 
 
@@ -78,6 +79,7 @@ def forget_schedule_cache(guild_id=None, clone_id=None) -> None:
         for k in [k for k in _SCHED_CACHE if k[0] == int(guild_id) and k[1] == ck]:
             _SCHED_CACHE.pop(k, None)
     except Exception:
+        logger.debug("swallowed exception in forget_schedule_cache", exc_info=True)
         _SCHED_CACHE.clear()
 
 
@@ -136,6 +138,7 @@ async def options_for_render(config: dict):
             from modules.welcome_card import parse_ultra_options
             return effective_studio_options(parse_ultra_options(raw), False, STUDIO_KEYS)
         except Exception:
+            logger.debug("swallowed exception in options_for_render", exc_info=True)
             return None
 
 
@@ -151,6 +154,7 @@ async def avatar_shape_for_render(config: dict) -> str:
         shape = (sched or {}).get("avatar_shape") or (config or {}).get("avatar_shape")
         return shape if shape in AVATAR_SHAPES else DEFAULT_AVATAR_SHAPE
     except Exception:
+        logger.warning("swallowed exception in avatar_shape_for_render", exc_info=True)
         return "circle"
 
 

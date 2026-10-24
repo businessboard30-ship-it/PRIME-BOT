@@ -19,6 +19,9 @@ from discord_bot.cogs._views_server_panel import (
     ServerPanelView, WelcomeView, _btn, _onoff, clone_id_of, guard,
 )
 from discord_bot.cogs import welcome_extras as we
+import logging
+
+logger = logging.getLogger(__name__)
 
 
 class GoodbyeMessageModal(discord.ui.Modal, title="Edit goodbye message"):
@@ -64,6 +67,7 @@ class WelcomeExtrasView(ServerPanelView):
         try:
             vc = await db.get_verification_config(interaction.guild_id, cid)
         except Exception:
+            logger.warning("swallowed exception in WelcomeExtrasView.load", exc_info=True)
             pass
         return {"x": extras, "gate": bool(vc and vc.get("enabled"))}
 

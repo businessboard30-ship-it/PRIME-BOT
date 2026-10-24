@@ -319,6 +319,7 @@ async def _gallery_slot_url(bot: commands.Bot, row: dict) -> tuple[str | None, b
     except (discord.NotFound, discord.Forbidden):
         return None, True
     except Exception:
+        logger.warning("swallowed exception in _gallery_slot_url", exc_info=True)
         return ((row.get("url_cache") or "").strip() or None), False
     if not message.attachments:
         return None, True
@@ -392,6 +393,7 @@ async def _gallery_pick_for_render(
         try:
             return await _custom_bg_bytes_for_render(session, config_row, bot), {}
         except Exception:
+            logger.warning("swallowed exception in _gallery_pick_for_render", exc_info=True)
             return None, {}
 
 
@@ -1196,6 +1198,7 @@ class WelcomeCog(GuildOnlyCog):
             try:
                 await refresh_posted_wizard(self.bot, guild_id, clone_id)
             except Exception:
+                logger.warning("swallowed exception in WelcomeCog._expire_ultra_trials", exc_info=True)
                 pass
 
     @_expire_ultra_trials.before_loop
@@ -1363,6 +1366,7 @@ class WelcomeCog(GuildOnlyCog):
                 sticker_bytes = await _fetch_sticker_bytes(session, config.get("sticker_url"))
                 custom_bg_bytes = await _custom_bg_bytes_for_render(session, config, self.bot)
         except Exception:
+            logger.warning("swallowed exception in WelcomeCog._send_nudge_post", exc_info=True)
             pass
 
         try:

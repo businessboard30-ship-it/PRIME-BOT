@@ -25,6 +25,9 @@ from modules import catch_theme
 from modules.catch_emoji import STAT_BAR_MAX
 from modules.catch_game import LEVEL_MAX
 from modules.catch_xp import xp_to_next
+import logging
+
+logger = logging.getLogger(__name__)
 
 W, H = 720, 400
 SCALE = 2  # draw at 2x, shrink at the end: smooth edges
@@ -55,6 +58,7 @@ def _font(size: int):
     try:
         return ImageFont.truetype(_FONT_FILE, size * SCALE)
     except Exception:
+        logger.debug("swallowed exception in _font", exc_info=True)
         try:
             return ImageFont.load_default(size=size * SCALE)
         except TypeError:

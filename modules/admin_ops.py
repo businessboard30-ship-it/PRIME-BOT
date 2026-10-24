@@ -84,7 +84,7 @@ class RingBufferHandler(logging.Handler):
                 exc = record.exc_info[1]
                 msg = f"{msg} | {type(exc).__name__}: {exc}"
             self.entries.append(LogEntry(record.created, record.levelno, record.name, msg))
-        except Exception:  # a logging handler must never raise
+        except Exception:  # a logging handler must never raise, and must never log (it would re-enter itself)
             self.handleError(record)
 
 
@@ -231,6 +231,7 @@ def pool_status(pool: Any) -> dict:
         try:
             return int(fn()) if fn else None
         except Exception:
+            logger.debug("swallowed exception in pool_status.call", exc_info=True)
             return None
     size, idle = call("get_size"), call("get_idle_size")
     return {"size": size, "idle": idle,
@@ -245,6 +246,7 @@ async def _estimate(conn: Any, table: str) -> Optional[int]:
         n = await conn.fetchval("SELECT reltuples::bigint FROM pg_class WHERE relname = $1", table, timeout=COUNT_TIMEOUT)
         return int(n) if n is not None and int(n) >= 0 else None
     except Exception:
+        logger.warning("swallowed exception in _estimate", exc_info=True)
         return None
 
 
@@ -266,6 +268,7 @@ async def table_counts(conn: Any, approx: Optional[set] = None) -> List[Tuple[st
                 approx.add(table)
             out.append((table, est))
         except Exception:
+            logger.warning("swallowed exception in table_counts", exc_info=True)
             out.append((table, None))
     return out
 

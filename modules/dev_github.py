@@ -18,6 +18,9 @@ from urllib.parse import quote, urlencode
 import aiohttp
 
 import config
+import logging
+
+logger = logging.getLogger(__name__)
 
 PROVIDER = "github"                   # row in dev_connections (ciphertext is JSON {"token", "login"})
 STATE_PREFIX = "gh."                  # tells api/dash.py's callback this is GitHub, not a Discord sign-in
@@ -99,6 +102,7 @@ async def exchange_code(code: str, verifier: str):
                 status = r.status
                 data = await r.json(content_type=None) if status == 200 else None
     except Exception:
+        logger.warning("swallowed exception in exchange_code", exc_info=True)
         return None, "Couldn't reach GitHub. Try again in a moment."
     token = data.get("access_token") if isinstance(data, dict) else None
     if not isinstance(token, str) or not _TOKEN_RE.match(token):
@@ -120,6 +124,7 @@ def unpack_secret(plain):
         t, login = d.get("token"), d.get("login")
         return (t, login) if isinstance(t, str) and _TOKEN_RE.match(t) and isinstance(login, str) else (None, None)
     except Exception:
+        logger.debug("swallowed exception in unpack_secret", exc_info=True)
         return None, None
 
 
@@ -252,6 +257,7 @@ async def browse(token: str, repo: str, path: str, ref):
     try:
         raw = base64.b64decode(d.get("content") or "", validate=False)
     except Exception:
+        logger.debug("swallowed exception in browse", exc_info=True)
         raw = b""
     text = _decode_text(raw)
     if text is None or "\x00" in text:
@@ -276,4 +282,5 @@ async def revoke(token: str) -> None:
                                 json={"access_token": token}) as r:
                 await r.read()
     except Exception:
+        logger.warning("swallowed exception in revoke", exc_info=True)
         return

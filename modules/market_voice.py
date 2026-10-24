@@ -86,6 +86,7 @@ async def voice_on(owner_id: int) -> bool:
         async with p.acquire() as conn:
             return bool(await conn.fetchval("SELECT voice_on FROM market_voice_settings WHERE owner_id = $1", int(owner_id)))
     except Exception:
+        logger.warning("swallowed exception in voice_on", exc_info=True)
         return False
 
 

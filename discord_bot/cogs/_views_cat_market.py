@@ -63,6 +63,7 @@ async def listing_embed(client, listing: cm.Listing, status_line: Optional[str] 
         try:
             url = await cat_pool.url_for(client, cat.pool_id)
         except Exception:
+            logger.warning("swallowed exception in listing_embed", exc_info=True)
             url = None
         if url:
             e.set_image(url=url)
@@ -96,6 +97,7 @@ async def listing_layout(client, listing: cm.Listing, status_line: Optional[str]
         try:
             url = await cat_pool.url_for(client, cat.pool_id)
         except Exception:
+            logger.warning("swallowed exception in listing_layout", exc_info=True)
             url = None
         if url:
             box.add_item(discord.ui.MediaGallery(discord.MediaGalleryItem(str(url), description=cat.name[:256])))
@@ -396,6 +398,7 @@ async def _seller_info(client, seller_id: int) -> Tuple[str, Optional[str]]:
         try:
             user = await asyncio.wait_for(client.fetch_user(seller_id), timeout=3)
         except Exception:
+            logger.warning("swallowed exception in _seller_info", exc_info=True)
             user = None
     name = (getattr(user, "display_name", None) or getattr(user, "name", None)) if user else None
     avatar = user.display_avatar.url if user is not None and getattr(user, "display_avatar", None) else None

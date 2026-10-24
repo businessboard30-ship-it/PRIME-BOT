@@ -1098,6 +1098,7 @@ class RoastMemberRequestView(discord.ui.View):
         try:
             premium = bool(await db.is_guild_premium_active(self.guild.id, clone_id))
         except Exception:
+            logger.warning("swallowed exception in RoastMemberRequestView._on_confirm_hardcore", exc_info=True)
             premium = False
         if not premium:
             from discord_bot.cogs._views_premium import send_premium_pitch
@@ -1180,6 +1181,7 @@ class _RoastApproveButton(discord.ui.DynamicItem[discord.ui.Button], template=r"
             try:
                 await interaction.edit_original_response(content=f"⚠️ Something went wrong — check Railway logs. ({e!r})")
             except Exception:
+                logger.warning("swallowed exception in _RoastApproveButton.callback", exc_info=True)
                 pass
 
 
@@ -1221,6 +1223,7 @@ class _RoastDenyButton(discord.ui.DynamicItem[discord.ui.Button], template=r"^ro
             try:
                 await interaction.edit_original_response(content=f"⚠️ Something went wrong — check Railway logs. ({e!r})")
             except Exception:
+                logger.warning("swallowed exception in _RoastDenyButton.callback", exc_info=True)
                 pass
 
 
@@ -1286,6 +1289,7 @@ class _RoastAcceptButton(discord.ui.DynamicItem[discord.ui.Button], template=r"^
             try:
                 await interaction.followup.send(f"⚠️ Something went wrong accepting — check Railway logs. ({e!r})", ephemeral=True)
             except Exception:
+                logger.warning("swallowed exception in _RoastAcceptButton.callback", exc_info=True)
                 pass
 
 
@@ -1319,6 +1323,7 @@ class _RoastDeclineButton(discord.ui.DynamicItem[discord.ui.Button], template=r"
             try:
                 await interaction.followup.send(f"⚠️ Something went wrong declining — check Railway logs. ({e!r})", ephemeral=True)
             except Exception:
+                logger.warning("swallowed exception in _RoastDeclineButton.callback", exc_info=True)
                 pass
 
 
@@ -1513,6 +1518,7 @@ class RoastBattleView(discord.ui.View):
             try:
                 await interaction.followup.send(f"⚠️ Couldn't end the roast — check Railway logs. ({e!r})", ephemeral=True)
             except Exception:
+                logger.warning("swallowed exception in RoastBattleView.quit_btn", exc_info=True)
                 pass
 
 
@@ -2404,6 +2410,7 @@ class RoastCog(GuildOnlyCog):
         try:
             premium = bool(await _db.is_guild_premium_active(interaction.guild.id, clone_id))
         except Exception:
+            logger.warning("swallowed exception in RoastCog.hardcore_initiate", exc_info=True)
             premium = False
         if not premium:
             from discord_bot.cogs._views_premium import send_premium_pitch

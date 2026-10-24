@@ -103,6 +103,7 @@ def _open(data: Optional[bytes]) -> Optional[Image.Image]:
         img.load()
         return img
     except Exception:
+        logger.debug("swallowed exception in _open", exc_info=True)
         return None
 
 
@@ -232,6 +233,7 @@ def _allowed(url: str) -> bool:
         p = urlparse(str(url))
         return p.scheme == "https" and (p.hostname or "") in CDN_HOSTS
     except Exception:
+        logger.debug("swallowed exception in _allowed", exc_info=True)
         return False
 
 
@@ -248,6 +250,7 @@ async def _download(url: Optional[str]) -> Optional[bytes]:
                 data = await resp.content.read(MAX_IMAGE_BYTES + 1)
                 return data if len(data) <= MAX_IMAGE_BYTES else None
     except Exception:
+        logger.warning("swallowed exception in _download", exc_info=True)
         return None
 
 
@@ -256,6 +259,7 @@ async def _avatar_bytes(user) -> Optional[bytes]:
         asset = user.display_avatar.replace(size=256, format="png")
         return await asyncio.wait_for(asset.read(), FETCH_TIMEOUT)
     except Exception:
+        logger.warning("swallowed exception in _avatar_bytes", exc_info=True)
         return None
 
 
@@ -272,6 +276,7 @@ async def render(client, user, display_name: str, profile: dict, badges) -> Opti
             try:
                 return await _download(await asyncio.wait_for(cat_pool.url_for(client, c.pool_id), FETCH_TIMEOUT))
             except Exception:
+                logger.warning("swallowed exception in render.thumb", exc_info=True)
                 return None
         avatar, *pics = await asyncio.gather(_avatar_bytes(user), *[thumb(c) for c in pinned])
         rarest = profile.get("rarest")

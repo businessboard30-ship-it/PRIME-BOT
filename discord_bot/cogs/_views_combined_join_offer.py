@@ -31,6 +31,7 @@ no matter which half gets answered first.
 """
 
 import logging
+import re
 
 import discord
 
