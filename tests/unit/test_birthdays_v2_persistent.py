@@ -6,6 +6,7 @@ from unittest.mock import AsyncMock, MagicMock
 import discord
 
 from discord_bot.cogs import birthdays as bc
+from modules import channel_finder as cf
 
 
 def _walk(view):
@@ -56,11 +57,14 @@ def test_non_admin_never_sees_server_setup_button():
 
 def test_every_rendered_custom_id_routes_to_a_registered_item():
     """After a restart discord.py matches custom_ids against the registered templates."""
-    templates = [c.__discord_ui_compiled_template__ for c in bc.DYNAMIC_ITEMS]
+    # modules.channel_finder (installed at bot start-up) adds a "Find by name" button under every channel
+    # dropdown; it is routed by its own registered item, so count those templates as owners too.
+    templates = [c.__discord_ui_compiled_template__ for c in bc.DYNAMIC_ITEMS + tuple(cf.DYNAMIC_ITEMS)]
     ids = set(_ids(bc.build_main_view(True)) + _ids(bc._month_view()) + _ids(bc.build_setup_view(_guild(), CFG, True)))
     assert len(ids) >= 14
     for cid in ids:
         assert sum(1 for t in templates if t.match(cid)) == 1, cid      # exactly one owner each
+    assert any(i.startswith("bday:") for i in ids)
     for cls in bc.DYNAMIC_ITEMS:                                       # rebuilt with no state at all
         m = cls.__discord_ui_compiled_template__.match(cls().item.custom_id)
         assert isinstance(asyncio.run(cls.from_custom_id(None, None, m)), cls)
@@ -143,3 +147,14 @@ def test_no_classic_views_or_embeds_left_in_birthdays():
     import inspect
     src = inspect.getsource(bc)
     assert "discord.ui.View)" not in src and "discord.Embed(" not in src
+
+
+def test_setup_panel_stays_valid_with_the_channel_finder_installed():
+    """The finder inserts a 'Find by name' row under the channel dropdown; the panel must still be
+    a valid V2 message inside Discord's 40-component limit, with the real dropdown routed by chfind:."""
+    cf.install()
+    v = bc.build_setup_view(_guild(), CFG, True)
+    assert v.to_components() and len(list(v.walk_children())) <= 40
+    ids = _ids(v)
+    assert "bday:channel" in ids and f"chfind:bday:channel" in ids
+    assert any(t.match("chfind:bday:channel") for t in [c.__discord_ui_compiled_template__ for c in cf.DYNAMIC_ITEMS])
