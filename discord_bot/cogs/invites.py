@@ -381,7 +381,9 @@ class InvitesCog(GuildOnlyCog):
                 f"(e.g. server Discovery, or an invite that changed before I could check it)."
             )
         try:
-            await channel.send(content)
+            # The names stay visible as mentions, but nobody gets a notification: a busy
+            # server's join feed must not ping the new member and the inviter every time.
+            await channel.send(content, allowed_mentions=discord.AllowedMentions.none())
         except (discord.Forbidden, discord.HTTPException):
             pass
 
