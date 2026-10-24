@@ -23,7 +23,6 @@ import discord
 from discord import app_commands
 from discord.ext import commands
 
-from config import DISCORD_SUPPORT_SERVER_INVITE
 
 CATEGORIES: dict[str, list[tuple[list[str], str]]] = {
     "🛡️ Moderation & Safety": [
@@ -144,20 +143,6 @@ def category_description(name: str) -> str:
     return text
 
 
-def build_category_embed(name: str, *, highlight: str | None = None) -> discord.Embed:
-    """highlight: a command name (without slash) to bold in the listing."""
-    lines = []
-    for cmds, desc in CATEGORIES[name]:
-        line = _line_for(cmds, desc)
-        if highlight and highlight in cmds:
-            line = f"**{line}**"
-        lines.append(line)
-    text = "\n".join(lines)
-    if name == "📣 Bump Network":
-        text += _BUMP_NOTE
-    return discord.Embed(title=name, description=text, color=discord.Color.blurple())
-
-
 def search_commands(query: str) -> list[tuple[str, str, str]]:
     """Returns (command, description, category) tuples matching query
     against either the command name or its description, case-insensitive."""
@@ -172,92 +157,6 @@ def search_commands(query: str) -> list[tuple[str, str, str]]:
                 for c in cmds:
                     results.append((c, desc, category))
     return results
-
-
-class SearchModal(discord.ui.Modal, title="Search commands"):
-    query = discord.ui.TextInput(
-        label="Command name or keyword",
-        placeholder="e.g. mute, leveling, bump...",
-        max_length=100,
-    )
-
-    def __init__(self, view: "HelpView"):
-        super().__init__()
-        self.help_view = view
-
-    async def on_submit(self, interaction: discord.Interaction):
-        matches = search_commands(str(self.query.value))
-
-        if not matches:
-            embed = discord.Embed(
-                title="🔍 No matching commands",
-                description=(
-                    f"Nothing found for **{self.query.value}**.\n"
-                    "Try a different keyword, or browse a category below."
-                ),
-                color=discord.Color.orange(),
-            )
-            await interaction.response.edit_message(embed=embed, view=self.help_view)
-            return
-
-        if len(matches) == 1:
-            cmd, desc, category = matches[0]
-            embed = build_category_embed(category, highlight=cmd)
-            embed.set_footer(text=f"Jumped here from your search: \"{self.query.value}\"")
-            await interaction.response.edit_message(embed=embed, view=self.help_view)
-            return
-
-        shown = matches[:MAX_SEARCH_RESULTS]
-        lines = [f"`/{cmd}` — {desc}  _({category})_" for cmd, desc, category in shown]
-        embed = discord.Embed(
-            title=f"🔍 Results for \"{self.query.value}\"",
-            description="\n".join(lines),
-            color=discord.Color.blurple(),
-        )
-        if len(matches) > MAX_SEARCH_RESULTS:
-            embed.set_footer(text=f"Showing first {MAX_SEARCH_RESULTS} of {len(matches)} matches — try a more specific keyword.")
-        await interaction.response.edit_message(embed=embed, view=self.help_view)
-
-
-class SearchButton(discord.ui.Button):
-    def __init__(self):
-        super().__init__(label="Search", emoji="🔍", style=discord.ButtonStyle.secondary, row=1)
-
-    async def callback(self, interaction: discord.Interaction):
-        await interaction.response.send_modal(SearchModal(self.view))
-
-
-class CategorySelect(discord.ui.Select):
-    def __init__(self):
-        options = [
-            discord.SelectOption(label=name.split(" ", 1)[1], emoji=name.split(" ", 1)[0], value=name)
-            for name in CATEGORIES
-        ]
-        super().__init__(placeholder="Choose a category...", options=options, min_values=1, max_values=1)
-
-    async def callback(self, interaction: discord.Interaction):
-        name = self.values[0]
-        embed = build_category_embed(name)
-        await interaction.response.edit_message(embed=embed, view=self.view)
-
-
-class HelpView(discord.ui.View):
-    def __init__(self, guild_id=None, clone_id=None):
-        super().__init__(timeout=180)
-        self.add_item(CategorySelect())
-        self.add_item(SearchButton())
-        self.add_item(_HelpGoPremiumButton())
-        from discord_bot.cogs.my_data import MyDataButton
-        self.add_item(MyDataButton(row=1))
-        from utils.dash_links import dashboard_link_button
-        link = dashboard_link_button(guild_id, clone_id, row=1)
-        if link is not None:
-            self.add_item(link)
-        if DISCORD_SUPPORT_SERVER_INVITE:
-            self.add_item(discord.ui.Button(
-                label="Join our support server", style=discord.ButtonStyle.link,
-                emoji="🆘", url=DISCORD_SUPPORT_SERVER_INVITE, row=1,
-            ))
 
 
 def _HelpGoPremiumButton():
@@ -277,17 +176,11 @@ class HelpCog(commands.Cog):
         # (the main bot, or a specific clone's own process/token) — using
         # its real user name here instead of a hardcoded brand means /help
         # says the right thing on every clone, not just the main bot.
+        from discord_bot.cogs._views_help import build_home_view
         bot_name = interaction.client.user.display_name if interaction.client.user else "this bot"
-        embed = discord.Embed(
-            title=f"✨ {bot_name} — Help",
-            description=(
-                "Pick a category below, or tap 🔍 **Search** to find a command by name or keyword.\n\n"
-                + "\n".join(f"**{name}**" for name in CATEGORIES)
-            ),
-            color=discord.Color.blurple(),
-        )
         await interaction.response.send_message(
-            embed=embed, view=HelpView(interaction.guild_id, getattr(interaction.client, "clone_id", None)), ephemeral=True)
+            view=build_home_view(bot_name, interaction.guild_id, getattr(interaction.client, "clone_id", None)),
+            ephemeral=True)
 
 
 async def setup(bot: commands.Bot):

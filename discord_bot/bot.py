@@ -82,6 +82,8 @@ from discord_bot.cogs._views_card_customize import DYNAMIC_ITEMS as CARD_CUSTOMI
 from discord_bot.cogs.catch import DYNAMIC_ITEMS as CATCH_DYNAMIC_ITEMS
 from discord_bot.cogs._views_cat_adopt import DYNAMIC_ITEMS as CAT_ADOPT_DYNAMIC_ITEMS
 from discord_bot.cogs._views_invites import DYNAMIC_ITEMS as INVITES_WIZARD_DYNAMIC_ITEMS
+from discord_bot.cogs._views_help import HELP_DYNAMIC_ITEMS
+from discord_bot.cogs.birthdays import DYNAMIC_ITEMS as BIRTHDAY_DYNAMIC_ITEMS
 from discord_bot.cogs._views_automod_wizard import DYNAMIC_ITEMS as AUTOMOD_WIZARD_DYNAMIC_ITEMS
 from discord_bot.cogs._views_modlog_wizard import DYNAMIC_ITEMS as MODLOG_WIZARD_DYNAMIC_ITEMS
 from discord_bot.cogs._views_terms import DYNAMIC_ITEMS as TERMS_DYNAMIC_ITEMS
@@ -249,6 +251,8 @@ class AnimeBotDiscord(commands.Bot):
         self.add_dynamic_items(*CATCH_DYNAMIC_ITEMS)
         self.add_dynamic_items(*CAT_ADOPT_DYNAMIC_ITEMS)
         self.add_dynamic_items(*INVITES_WIZARD_DYNAMIC_ITEMS)
+        self.add_dynamic_items(*HELP_DYNAMIC_ITEMS)
+        self.add_dynamic_items(*BIRTHDAY_DYNAMIC_ITEMS)
         self.add_dynamic_items(*AUTOMOD_WIZARD_DYNAMIC_ITEMS)
         self.add_dynamic_items(*MODLOG_WIZARD_DYNAMIC_ITEMS)
         self.add_dynamic_items(*TERMS_DYNAMIC_ITEMS)
