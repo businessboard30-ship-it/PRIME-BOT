@@ -686,8 +686,7 @@ class LeaderboardPingButton(discord.ui.DynamicItem[discord.ui.Button],
             logger.exception("[leveling] ping status lookup failed")
             await interaction.followup.send("Couldn't check your ping setting right now. Try again in a moment.", ephemeral=True)
             return
-        view = _PingStatusView(self.guild_id, muted)
-        await interaction.followup.send(_ping_status_text(muted), view=view, ephemeral=True)
+        await interaction.followup.send(view=build_ping_status_view(self.guild_id, muted), ephemeral=True)
 
 
 class LeaderboardCardButton(discord.ui.DynamicItem[discord.ui.Button],
@@ -739,23 +738,38 @@ def _ping_status_text(muted: bool) -> str:
             "I'll @ping you when you level up.")
 
 
-class _PingStatusView(discord.ui.View):
-    """Ephemeral, non-persistent panel opened by LeaderboardPingButton. Shows the
-    member's current state and lets them flip it, so checking never changes it."""
-    def __init__(self, guild_id: int, muted: bool):
-        super().__init__(timeout=120)
-        self.guild_id = guild_id
-        self.toggle_btn.label = "Turn pings ON" if muted else "Turn pings OFF"
-        self.toggle_btn.emoji = "🔔" if muted else "🔕"
-        self.toggle_btn.style = discord.ButtonStyle.success if muted else discord.ButtonStyle.danger
+def build_ping_status_view(guild_id: int, muted: bool) -> discord.ui.LayoutView:
+    """Ephemeral panel opened by LeaderboardPingButton: the member's current ping state plus a
+    button to flip it, so merely checking never changes it. Components V2, no timeout."""
+    view = discord.ui.LayoutView(timeout=None)
+    box = discord.ui.Container(accent_colour=discord.Color.dark_grey() if muted else discord.Color.green())
+    box.add_item(discord.ui.TextDisplay(_ping_status_text(muted)))
+    box.add_item(discord.ui.ActionRow(LevelPingToggleButton(guild_id, muted)))
+    view.add_item(box)
+    return view
 
-    @discord.ui.button(label="Toggle", style=discord.ButtonStyle.secondary)
-    async def toggle_btn(self, interaction: discord.Interaction, button: discord.ui.Button):
+
+class LevelPingToggleButton(discord.ui.DynamicItem[discord.ui.Button], template=r"^lvl_pingtoggle:(\d+)$"):
+    """Flips the member's level-up ping setting. The guild is in the custom_id and the current
+    state is read from the database on every click, so an old panel (or one from before a
+    restart) always acts on, and shows, the real setting."""
+
+    def __init__(self, guild_id: int, muted: bool = False):
+        self.guild_id = guild_id
+        super().__init__(discord.ui.Button(
+            label="Turn pings ON" if muted else "Turn pings OFF",
+            emoji="🔔" if muted else "🔕",
+            style=discord.ButtonStyle.success if muted else discord.ButtonStyle.danger,
+            custom_id=f"lvl_pingtoggle:{guild_id}",
+        ))
+
+    @classmethod
+    async def from_custom_id(cls, interaction: discord.Interaction, item, match: re.Match):
+        return cls(int(match.group(1)))
+
+    async def callback(self, interaction: discord.Interaction):
         muted = await db.toggle_level_ping_optout(self.guild_id, interaction.user.id)
-        self.toggle_btn.label = "Turn pings ON" if muted else "Turn pings OFF"
-        self.toggle_btn.emoji = "🔔" if muted else "🔕"
-        self.toggle_btn.style = discord.ButtonStyle.success if muted else discord.ButtonStyle.danger
-        await interaction.response.edit_message(content=_ping_status_text(muted), view=self)
+        await interaction.response.edit_message(view=build_ping_status_view(self.guild_id, muted))
 
 
 class LevelUpPingButton(discord.ui.DynamicItem[discord.ui.Button], template=r"^lvlup_ping:(\d+):(\d+)$"):
@@ -842,4 +856,5 @@ class _LeaderboardGoPremiumButton(discord.ui.DynamicItem[discord.ui.Button],
 
 DYNAMIC_ITEMS = (LeaderboardModeSelect, LeaderboardNavButton, LeaderboardMyRankButton,
                  LeaderboardClansButton, LeaderboardPingButton, _LeaderboardGoPremiumButton,
-                 LeaderboardXPOptionsButton, LeaderboardCardButton, LevelUpPingButton)
+                 LeaderboardXPOptionsButton, LeaderboardCardButton, LevelUpPingButton,
+                 LevelPingToggleButton)

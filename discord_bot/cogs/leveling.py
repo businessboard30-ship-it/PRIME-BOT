@@ -1058,10 +1058,12 @@ class LevelingCog(GuildOnlyCog):
         if not rows:
             await interaction.followup.send("No level-up roles configured.", ephemeral=True)
             return
-        embed = discord.Embed(title="Level-up role rewards", color=discord.Color.blurple())
-        for r in rows:
-            embed.add_field(name=f"Level {r['level']}", value=f"<@&{r['role_id']}>", inline=True)
-        await interaction.followup.send(embed=embed, ephemeral=True)
+        view = discord.ui.LayoutView(timeout=None)
+        box = discord.ui.Container(accent_colour=discord.Color.blurple())
+        box.add_item(discord.ui.TextDisplay(
+            "## Level-up role rewards\n" + "\n".join(f"**Level {r['level']}** — <@&{r['role_id']}>" for r in rows)))
+        view.add_item(box)
+        await interaction.followup.send(view=view, ephemeral=True, allowed_mentions=discord.AllowedMentions.none())
 
 
 async def setup(bot: commands.Bot):
