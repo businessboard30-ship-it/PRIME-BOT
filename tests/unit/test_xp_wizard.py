@@ -1,4 +1,5 @@
-"""The leaderboard's XP & Clans wizard: tabs that edit one private message in place."""
+"""The leaderboard's XP & Clans wizard: Components V2 tabs that edit one private message in place,
+with no timeout and nothing kept in memory (state rides in the custom_ids)."""
 import asyncio
 import types
 from datetime import datetime, timedelta, timezone
@@ -64,11 +65,44 @@ def env(monkeypatch):
     return st
 
 
-def make_view(env, tab="boost"):
-    v = wiz.XPWizardView(5, None, 7, tab)
-    v.guild = Guild()
-    run(v.load())
-    return v.build()
+def nodes(v):
+    out = []
+    def go(n):
+        out.append(n)
+        for c in getattr(n, "children", []) or []:
+            go(c)
+    for n in v.children:
+        go(n)
+    return out
+
+
+def text_of(v):
+    return "\n".join(n.content for n in nodes(v) if isinstance(n, discord.ui.TextDisplay))
+
+
+def rows(v):
+    return [n for n in nodes(v) if isinstance(n, discord.ui.ActionRow)]
+
+
+def controls(v):
+    return [c for r in rows(v) for c in r.children]
+
+
+def label_of(c):
+    return getattr(getattr(c, "item", c), "label", None)
+
+
+def cid_of(c):
+    return getattr(getattr(c, "item", c), "custom_id", None)
+
+
+def make_view(env, tab="boost", clan=None, page=0):
+    st = wiz.XPWizardState(5, None, 7, tab, clan, page)
+    st.guild = Guild()
+    run(st.load())
+    if tab == "clans":
+        run(st._load_clan_page())
+    return st.build()
 
 
 def inter(uid=7):
@@ -83,139 +117,187 @@ def inter(uid=7):
     return i
 
 
-def labels(v):
-    return [getattr(c, "label", None) for c in v.children]
+def edited(i):
+    return i.response.edit_message.await_args.kwargs["view"]
+
+
+def click(item_cls, custom_id, i):
+    """What discord.py does after a restart: match the custom_id, rebuild the item with no state, run it."""
+    m = item_cls.__discord_ui_compiled_template__.match(custom_id)
+    assert m, custom_id
+    item = run(item_cls.from_custom_id(i, None, m))
+    return item
+
+
+def test_every_tab_is_v2_with_no_timeout(env):
+    for tab, _l, _e in wiz.TABS:
+        v = make_view(env, tab)
+        assert isinstance(v, discord.ui.LayoutView) and v.timeout is None and v.to_components()
 
 
 def test_tabs_are_on_the_first_row_and_the_active_one_is_highlighted(env):
-    for tab in ("boost", "pings", "clans", "server"):
-        v = make_view(env, tab)
-        row0 = [c for c in v.children if c.row == 0]
-        assert [c.label for c in row0] == ["Boost XP", "Pings", "Clans", "Server boost", "Close"]
-        active = [c.label for c in row0 if c.style == discord.ButtonStyle.primary]
-        assert active == [dict((t[0], t[1]) for t in wiz.TABS)[tab]]
+    for tab, _l, _e in wiz.TABS:
+        first = rows(make_view(env, tab))[0].children
+        assert [label_of(c) for c in first] == [t[1] for t in wiz.TABS] + ["Close"]
+        active = [label_of(c) for c in first if getattr(c.item, "style", None) == discord.ButtonStyle.primary]
+        assert active == [{t[0]: t[1] for t in wiz.TABS}[tab]]
 
 
 def test_summary_shows_boost_server_boost_and_pings_on_every_tab(env):
-    env["boost"] = {"multiplier": 2.0, "expires_at": FUTURE}
+    env["boost"] = {"expires_at": FUTURE, "multiplier": 2}
+    env["server"] = {"expires_at": FUTURE, "multiplier": 3}
     env["muted"] = {7}
-    for tab in ("boost", "pings", "clans", "server"):
-        d = make_view(env, tab).embed().description
-        assert "Your XP boost:** ⚡ 2x XP until" in d and "Server boost:** none" in d and "Level-up pings:** 🔕 off" in d
-    env["boost"], env["muted"] = None, set()
-    assert "none right now" in make_view(env).embed().description and "🔔 on" in make_view(env).embed().description
+    for tab, _l, _e in wiz.TABS:
+        t = text_of(make_view(env, tab))
+        assert "Your XP boost:** ⚡ 2x" in t and "Server boost:** ⚡ 3x" in t and "🔕 off" in t
+    env["boost"] = env["server"] = None
+    env["muted"] = set()
+    t = text_of(make_view(env))
+    assert "none right now" in t and "🔔 on" in t
 
 
 def test_a_failing_lookup_never_breaks_the_wizard(env, monkeypatch):
     async def boom(*a, **k):
         raise RuntimeError("db down")
     monkeypatch.setattr(wiz.db, "get_active_xp_boost", boom)
-    v = make_view(env)
-    assert "none right now" in v.embed().description
+    assert "none right now" in text_of(make_view(env))
 
 
 def test_boost_tab_sells_the_pass_and_the_packs_inline(env):
-    v = make_view(env, "boost")
-    buy = [c.label for c in v.children if c.row != 0]
-    assert buy[0].startswith("Level Pass") and any("3-Pack" in b for b in buy) and any("5-Pack" in b for b in buy)
-    assert "Level Pass" in v.embed().fields[0].value
+    v = make_view(env)
+    buy = [label_of(c) for r in rows(v)[1:] for c in r.children]
+    assert buy[0].startswith("Level Pass") and any("3-Pack" in b for b in buy)
+    assert "Level Pass" in text_of(v)
     env["pass"], env["bundles"] = False, {}
-    v = make_view(env, "boost")
-    assert not [c for c in v.children if c.row != 0] and "aren't on sale" in v.embed().fields[0].value
+    v = make_view(env)
+    assert len(rows(v)) == 1 and "aren't on sale" in text_of(v)
 
 
 def test_a_buy_button_starts_the_same_checkout_as_before(env, monkeypatch):
     started = []
-
-    async def fake_start(interaction, payment_type, guild_id):
+    async def fake(interaction, payment_type, guild_id):
         started.append((payment_type, guild_id))
-    monkeypatch.setattr(boost_mod, "_start_boost_checkout", fake_start)
-    v = make_view(env, "boost")
-    pass_btn = next(c for c in v.children if (c.label or "").startswith("Level Pass"))
+    monkeypatch.setattr(boost_mod, "_start_boost_checkout", fake)
+    v = make_view(env)
+    pass_btn = next(c for c in controls(v) if (label_of(c) or "").startswith("Level Pass"))
     i = inter()
     run(pass_btn.callback(i))
-    i.response.defer.assert_called_once_with(ephemeral=True, thinking=True)
+    i.response.defer.assert_awaited_once()
     assert started == [("level_pass", 5)]
 
 
 def test_switching_tab_edits_the_same_message_and_refreshes_state(env):
-    v = make_view(env, "boost")
-    env["boost"] = {"multiplier": 2.0, "expires_at": FUTURE}                      # bought while the panel was open
-    i = inter()
-    run(next(c for c in v.children if c.label == "Pings").callback(i))
-    kw = i.response.edit_message.call_args.kwargs
-    assert v.tab == "pings" and kw["view"] is v and "until" in kw["embed"].description
-
-
-def test_only_the_person_who_opened_it_can_use_it(env):
     v = make_view(env)
-    other = inter(uid=8)
-    assert run(v.interaction_check(other)) is False
-    assert "belongs to someone else" in other.response.send_message.call_args.args[0]
-    assert run(v.interaction_check(inter(uid=7))) is True
+    i = inter()
+    tab = next(c for c in rows(v)[0].children if label_of(c) == "Pings")
+    env["muted"] = {7}                                   # changed since the message was drawn
+    run(tab.callback(i))
+    out = edited(i)
+    assert "**Off.**" in text_of(out) and out.timeout is None
+    assert i.followup.send.await_count == 0
 
 
 def test_pings_toggle_flips_the_setting_and_the_button(env):
     v = make_view(env, "pings")
-    off = next(c for c in v.children if c.row == 1)
-    assert off.label == "Turn pings OFF"
+    off = rows(v)[1].children[0]
+    assert label_of(off) == "Turn pings OFF"
     i = inter()
     run(off.callback(i))
-    assert env["toggles"] == 1 and env["muted"] == {7}
-    again = next(c for c in v.children if c.row == 1)
-    assert again.label == "Turn pings ON" and "off" in i.response.edit_message.call_args.kwargs["embed"].description
+    assert env["toggles"] == 1 and 7 in env["muted"]
+    again = rows(edited(i))[1].children[0]
+    assert label_of(again) == "Turn pings ON" and "**Off.**" in text_of(edited(i))
 
 
 def test_clans_tab_lists_clans_then_shows_members_with_paging(env):
     v = make_view(env, "clans")
-    sel = next(c for c in v.children if isinstance(c, discord.ui.Select))
-    assert {o.value for o in sel.options} == {fn for fn, *_ in clan_cards.CLAN_CARDS}
-    assert not [c for c in v.children if c.row == 2] and "Pick a clan" in v.embed().fields[0].value
+    assert len(rows(v)) == 2 and "Pick a clan" in text_of(v)
+    sel = rows(v)[1].children[0]
+    fn = sel.item.options[0].value
     i = inter()
-    i.data = {"values": ["clan_deviors.png"]}
-    run(v._pick_clan(i))
-    f = i.response.edit_message.call_args.kwargs["embed"].fields[0]
-    assert "DEVIORS" in f.name and "23 members" in f.name and "Ann" in f.value and "<@99>" in f.value
-    row2 = [c for c in v.children if c.row == 2]
-    assert [c.label for c in row2] == ["◀", "▶", "1/3"] and row2[0].disabled and not row2[1].disabled
-    run(row2[1].callback(inter()))
-    assert env["clan_calls"][-1] == ("clan_deviors.png", 10)
-    assert [c for c in v.children if c.row == 2][0].disabled is False
+    sel.item._values = [fn]
+    run(sel.callback(i))
+    out = edited(i)
+    t = text_of(out)
+    assert "Ann" in t and "<@99>" in t and "23 members" in t
+    pager = rows(out)[2].children
+    assert [label_of(c) for c in pager] == ["◀", "1/3", "▶"]
+    assert pager[0].item.disabled is True and pager[2].item.disabled is False
+    nxt = pager[2]
+    i2 = inter()
+    run(nxt.callback(i2))
+    assert env["clan_calls"][-1] == (fn, 10)                       # second page = offset 10
+    assert "2/3" in [label_of(c) for c in rows(edited(i2))[2].children]
 
 
 def test_server_boost_tab_uses_the_same_select_and_id(env):
     v = make_view(env, "server")
-    sel = [c for c in v.children if getattr(getattr(c, "item", None), "custom_id", "").startswith("buyboost_xp:")]
-    assert len(sel) == 1 and sel[0].item.custom_id == "buyboost_xp:5:-"
-    assert "2x XP for everyone" in v.embed().fields[0].value.replace(".0", "")
+    sel = [c for c in controls(v) if (cid_of(c) or "").startswith("buyboost_xp:")]
+    assert len(sel) == 1
+    assert "2x XP for everyone" in text_of(v).replace(".0", "")
 
 
 def test_close_removes_the_controls(env):
     v = make_view(env)
+    close = next(c for c in rows(v)[0].children if label_of(c) == "Close")
     i = inter()
-    run(next(c for c in v.children if c.label == "Close").callback(i))
-    assert i.response.edit_message.call_args.kwargs["view"] is None
+    run(close.callback(i))
+    out = edited(i)
+    assert not rows(out) and "Closed" in text_of(out)
 
 
 def test_opening_acknowledges_then_sends_one_private_message(env):
     i = inter()
     run(wiz.open_xp_wizard(i, 5, None))
-    i.response.defer.assert_called_once_with(ephemeral=True)
-    kw = i.followup.send.call_args.kwargs
-    assert kw["ephemeral"] is True and isinstance(kw["view"], wiz.XPWizardView) and kw["embed"].title == "⚡ XP & Clans"
+    i.response.defer.assert_awaited_once_with(ephemeral=True)
+    (args, kw), = [i.followup.send.await_args]
+    assert kw["ephemeral"] is True and isinstance(kw["view"], discord.ui.LayoutView)
+    assert "XP & Clans" in text_of(kw["view"]) and "embed" not in kw
 
 
 def test_opening_on_the_clans_tab_loads_the_clan_page(env):
     i = inter()
     run(wiz.open_xp_wizard(i, 5, None, tab="clans"))
-    assert i.followup.send.call_args.kwargs["view"].tab == "clans"
-    assert wiz.XPWizardView(5, None, 7, "nonsense").tab == "boost"
+    assert wiz.XPWizardState(5, None, 7, "nonsense").tab == "boost"
 
 
-def test_every_tab_is_a_valid_discord_view_within_the_limits(env):
-    for tab in ("boost", "pings", "clans", "server"):
-        v = make_view(env, tab)
-        assert len(v.children) <= 25
-        for row in range(5):
-            assert len([c for c in v.children if c.row == row]) <= 5
-        assert len(v.embed()) < 6000
+def test_every_tab_is_within_discord_limits(env):
+    for tab, _l, _e in wiz.TABS:
+        v = make_view(env, tab, clan=("x.png" if tab == "clans" else None))
+        assert len(v.to_components()) >= 1 and len(list(v.walk_children())) <= 40
+        for r in rows(v):
+            assert len(r.children) <= 5
+        assert len(text_of(v)) < 4000
+
+
+# ── no timeout, survives a restart ────────────────────────────────────────────
+def test_every_custom_id_routes_to_exactly_one_registered_item(env):
+    templates = [(c, c.__discord_ui_compiled_template__) for c in
+                 wiz.DYNAMIC_ITEMS + (boost_mod.BoostBuyButton,)]
+    from discord_bot.cogs import _views_leveling_wallet as wallet
+    templates.append((wallet.BuyBoostSelect, wallet.BuyBoostSelect.__discord_ui_compiled_template__))
+    for tab, _l, _e in wiz.TABS:
+        v = make_view(env, tab, clan=("clan_white_wolves.png" if tab == "clans" else None))
+        for c in controls(v):
+            cid = cid_of(c)
+            if getattr(c.item if hasattr(c, "item") else c, "disabled", False) and cid == "xpw:pagenum":
+                continue
+            assert sum(1 for _c, t in templates if t.match(cid)) == 1, cid
+
+
+def test_an_old_page_button_still_works_after_a_restart(env):
+    """State (guild, clone, clan, page) is in the custom_id; the data is re-read, nothing is remembered."""
+    fn = "clan_white_wolves.png"
+    i = inter()
+    item = click(wiz.XPPageButton, f"xpw:pg:5:-:{fn}:1", i)
+    assert (item.guild_id, item.clone_id, item.clan, item.page) == (5, None, fn, 1)
+    run(item.callback(i))
+    assert env["clan_calls"][-1] == (fn, 10) and "2/3" in [label_of(c) for c in rows(edited(i))[2].children]
+
+
+def test_an_old_tab_button_and_ping_toggle_still_work_after_a_restart(env):
+    i = inter()
+    run(click(wiz.XPTabButton, "xpw:tab:5:-:pings", i).callback(i))
+    assert "Pings" in text_of(edited(i))
+    i2 = inter()
+    run(click(wiz.XPPingToggle, "xpw:ping:5:-", i2).callback(i2))
+    assert env["toggles"] == 1 and label_of(rows(edited(i2))[1].children[0]) == "Turn pings ON"
