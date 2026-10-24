@@ -317,12 +317,19 @@ def test_the_one_dollar_boost_is_gone(monkeypatch):
     monkeypatch.setattr(boost, "_available_bundles", lambda: dict(config.XP_BOOST_BUNDLES))
     j = Inter()
     run(boost.BoostXPButton(1, None).callback(j))
-    text = j.response.sent[0]["args"][0]
+    import discord as _d
+    picker = j.response.sent[0]["view"]
+    assert isinstance(picker, _d.ui.LayoutView) and picker.timeout is None
+    nodes = []
+    def walk(n):
+        nodes.append(n)
+        for c in getattr(n, "children", []) or []:
+            walk(c)
+    for n in picker.children:
+        walk(n)
+    text = "\n".join(n.content for n in nodes if isinstance(n, _d.ui.TextDisplay))
     assert "Level Pass" in text and "1 boost" not in text and "$1 " not in text
-
-    async def view():
-        return boost._BoostPackPickerView(1, dict(config.XP_BOOST_BUNDLES), True)
-    labels = [c.label for c in run(view()).children]
+    labels = [n.item.label for n in nodes if isinstance(n, boost.BoostBuyButton)]
     assert labels[0].startswith("Level Pass") and not any(l.startswith("1 boost") for l in labels)
 
 

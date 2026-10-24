@@ -74,7 +74,7 @@ class BoostXPButton(discord.ui.DynamicItem[discord.ui.Button], template=r"^level
                 f"level-up card for {app_config.LEVEL_PASS_CARD_DAYS} days"
             )
         await interaction.response.send_message(
-            "\n".join(lines), view=_BoostPackPickerView(self.guild_id, bundles, offer_pass), ephemeral=True,
+            view=build_boost_picker_view(self.guild_id, bundles, offer_pass, "\n".join(lines)), ephemeral=True,
         )
 
 
@@ -124,28 +124,53 @@ async def _start_boost_checkout(interaction: discord.Interaction, payment_type: 
     )
 
 
-class _BoostPackPickerView(discord.ui.View):
-    """Ephemeral one-shot picker shown after tapping Boost XP. Plain buttons
-    (not DynamicItems): it lives only in that ephemeral reply, and the durable
-    entry point is BoostXPButton itself."""
+class BoostBuyButton(discord.ui.DynamicItem[discord.ui.Button], template=r"^lvlboostbuy:(\d+):([a-z0-9_]+)$"):
+    """One purchase option in the Boost XP picker. Guild and product key live in the custom_id and
+    the offer is re-validated against what is on sale NOW, so the picker never expires and still
+    works after a restart (and a product that was withdrawn since says so instead of charging)."""
 
-    def __init__(self, guild_id: int, bundles: dict, offer_pass: bool = False):
-        super().__init__(timeout=180)
+    def __init__(self, guild_id: int, payment_type: str, label: str = "", style=discord.ButtonStyle.success,
+                 emoji: str = "⚡"):
         self.guild_id = guild_id
-        if offer_pass:
-            self._add("level_pass", f"Level Pass — ${app_config.LEVEL_PASS_FEE_USD:g}", discord.ButtonStyle.success, "🎫")
-        for key, b in bundles.items():
-            self._add(key, f"{b['label']} — ${b['fee_usd']:g}", discord.ButtonStyle.success)
+        self.payment_type = payment_type
+        super().__init__(discord.ui.Button(
+            label=label or payment_type, emoji=emoji, style=style,
+            custom_id=f"lvlboostbuy:{guild_id}:{payment_type}",
+        ))
 
-    def _add(self, payment_type: str, label: str, style: discord.ButtonStyle, emoji: str = "⚡"):
-        button = discord.ui.Button(label=label, emoji=emoji, style=style)
+    @classmethod
+    async def from_custom_id(cls, interaction: discord.Interaction, item, match: re.Match):
+        return cls(int(match.group(1)), match.group(2))
 
-        async def _cb(interaction: discord.Interaction, _pt=payment_type):
-            await interaction.response.defer(ephemeral=True, thinking=True)
-            await _start_boost_checkout(interaction, _pt, self.guild_id)
+    async def callback(self, interaction: discord.Interaction):
+        clone_id = getattr(interaction.client, "clone_id", None)
+        if self.payment_type == "level_pass":
+            on_sale = await pass_offered(clone_id)
+        else:
+            on_sale = self.payment_type in _available_bundles()
+        if not on_sale:
+            await interaction.response.send_message(
+                "That option isn't on sale any more. Tap **Boost XP** again to see what's available.", ephemeral=True)
+            return
+        await interaction.response.defer(ephemeral=True, thinking=True)
+        await _start_boost_checkout(interaction, self.payment_type, self.guild_id)
 
-        button.callback = _cb
-        self.add_item(button)
+
+def build_boost_picker_view(guild_id: int, bundles: dict, offer_pass: bool, text: str) -> discord.ui.LayoutView:
+    """Ephemeral 'pick a pack' message (Components V2, no timeout)."""
+    buttons = []
+    if offer_pass:
+        buttons.append(BoostBuyButton(guild_id, "level_pass", f"Level Pass — ${app_config.LEVEL_PASS_FEE_USD:g}", emoji="🎫"))
+    for key, b in bundles.items():
+        buttons.append(BoostBuyButton(guild_id, key, f"{b['label']} — ${b['fee_usd']:g}"))
+    view = discord.ui.LayoutView(timeout=None)
+    box = discord.ui.Container(accent_colour=discord.Color.gold())
+    box.add_item(discord.ui.TextDisplay(text))
+    box.add_item(discord.ui.Separator())
+    for i in range(0, len(buttons), 5):                      # an action row holds at most 5 buttons
+        box.add_item(discord.ui.ActionRow(*buttons[i:i + 5]))
+    view.add_item(box)
+    return view
 
 
 def build_boost_xp_view(guild_id: int, clone_id) -> discord.ui.View:
@@ -157,4 +182,4 @@ def build_boost_xp_view(guild_id: int, clone_id) -> discord.ui.View:
     return view
 
 
-DYNAMIC_ITEMS = (BoostXPButton,)
+DYNAMIC_ITEMS = (BoostXPButton, BoostBuyButton)
