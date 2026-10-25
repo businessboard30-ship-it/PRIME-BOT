@@ -183,12 +183,12 @@ async def _save(interaction: discord.Interaction, **fields):
     await interaction.response.edit_message(view=build_setup_view(guild, cfg, premium))
 
 
-def build_setup_view(guild: discord.Guild, cfg: dict, premium: bool) -> discord.ui.LayoutView:
+def build_setup_view(guild: discord.Guild, cfg: dict, premium: bool, note: str | None = None) -> discord.ui.LayoutView:
     ch = guild.get_channel(cfg["channel_id"]) if cfg.get("channel_id") else None
     on = _on_badge(cfg, ch)
     view = discord.ui.LayoutView(timeout=None)
     box = discord.ui.Container(accent_colour=discord.Color.green() if on else discord.Color.dark_grey())
-    box.add_item(discord.ui.TextDisplay(_config_text(guild, cfg, premium)))
+    box.add_item(discord.ui.TextDisplay(_config_text(guild, cfg, premium) + (f"\n-# {note}" if note else "")))
     box.add_item(discord.ui.Separator())
     box.add_item(discord.ui.ActionRow(PickChannelSelect()))
     box.add_item(discord.ui.ActionRow(PickPingRoleSelect()))
