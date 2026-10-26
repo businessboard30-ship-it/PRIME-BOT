@@ -28,7 +28,9 @@ import aiohttp
 
 logger = logging.getLogger(__name__)
 
-YOUTUBE_API_KEY = os.getenv("YOUTUBE_API_KEY", "")
+def _yt_key() -> str:
+    from modules import owner_env as _oe
+    return _oe.env("YOUTUBE_API_KEY")
 _TIMEOUT = aiohttp.ClientTimeout(total=15)
 
 
@@ -56,15 +58,16 @@ _PLAYLIST_ID = re.compile(r"^(PL|UU|LL|FL|OL|RD)[A-Za-z0-9_-]{10,}$")
 
 
 def youtube_configured() -> bool:
-    return bool(YOUTUBE_API_KEY)
+    return bool(_yt_key())
 
 
 async def _yt_get(path: str, **params) -> dict:
-    if not YOUTUBE_API_KEY:
+    key = _yt_key()
+    if not key:
         from modules import owner_env as _oe
         _oe.note_missing("YOUTUBE_API_KEY", "the YouTube connection")
         raise ConnectError("YouTube isn't configured yet — the bot owner needs to set `YOUTUBE_API_KEY`.")
-    params["key"] = YOUTUBE_API_KEY
+    params["key"] = key
     try:
         async with aiohttp.ClientSession(timeout=_TIMEOUT) as s:
             async with s.get(f"{YT_API}/{path}", params=params) as r:

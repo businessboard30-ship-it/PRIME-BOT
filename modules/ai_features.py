@@ -26,11 +26,15 @@ GROQ_API_KEY_BACKUP2 = os.getenv("GROQ_API_KEY_BACKUP2", "")      # third failov
 # Any number of extra keys: GROQ_API_KEYS="key1,key2,..." (see modules/groq_keys.py).
 from modules import groq_keys as _groq_keys
 GROQ_API_KEYS = _groq_keys.live_keys()
-FAL_API_KEY = os.getenv("FAL_API_KEY", "")
+def _fal_key() -> str:
+    from modules import owner_env as _oe
+    return _oe.env("FAL_API_KEY")
 # GEMINI_API_KEY: free Google AI Studio key (aistudio.google.com/apikey) — no
 # credit card, no billing setup. gemini-2.5-flash-image ("Nano Banana") has a
 # genuinely generous free tier (Google's own docs: up to 500 requests/day).
-GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", "")
+def _gemini_key() -> str:
+    from modules import owner_env as _oe
+    return _oe.env("GEMINI_API_KEY")
 
 # Status codes worth retrying with the backup key — auth problems (this key
 # specifically is bad/disabled), rate limits, and Groq-side server errors.
@@ -971,13 +975,13 @@ async def generate_image(user_id: int, prompt: str, style: str = "anime") -> Opt
         else:
             full_prompt = prompt
         
-        if FAL_API_KEY:
+        if _fal_key():
             result = await _generate_image_fal(full_prompt)
             if result:
                 await log_ai_usage(user_id, "images", prompt)
                 return result
 
-        if GEMINI_API_KEY:
+        if _gemini_key():
             result = await _generate_image_gemini(full_prompt)
             if result:
                 await log_ai_usage(user_id, "images", prompt)
@@ -1000,7 +1004,7 @@ async def _generate_image_fal(prompt: str) -> Optional[Dict]:
     """Generate image using Fal AI (fast, anime-friendly)."""
     try:
         async with aiohttp.ClientSession() as session:
-            headers = {"Authorization": f"Key {FAL_API_KEY}"}
+            headers = {"Authorization": f"Key {_fal_key()}"}
             
             # Use Fal's FLUX model for anime-style images
             payload = {
@@ -1047,7 +1051,7 @@ async def _generate_image_gemini(prompt: str) -> Optional[Dict]:
         import base64
         async with aiohttp.ClientSession() as session:
             headers = {
-                "x-goog-api-key": GEMINI_API_KEY,
+                "x-goog-api-key": _gemini_key(),
                 "Content-Type": "application/json",
             }
             payload = {"contents": [{"parts": [{"text": prompt}]}]}

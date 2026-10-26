@@ -2,7 +2,7 @@ import requests
 import hmac
 import hashlib
 from typing import Optional, Dict
-from config import PAYSTACK_SECRET_KEY, PAYSTACK_PUBLIC_KEY
+import config as _config
 
 class PaystackPayment:
     """Handle Paystack payment processing"""
@@ -10,9 +10,20 @@ class PaystackPayment:
     BASE_URL = "https://api.paystack.co"
     
     def __init__(self):
-        self.secret_key = PAYSTACK_SECRET_KEY
-        self.public_key = PAYSTACK_PUBLIC_KEY
-        self.headers = {
+        pass
+
+    # Read at call time so a key saved in /admin envsetup works without a restart.
+    @property
+    def secret_key(self):
+        return _config.PAYSTACK_SECRET_KEY
+
+    @property
+    def public_key(self):
+        return _config.PAYSTACK_PUBLIC_KEY
+
+    @property
+    def headers(self):
+        return {
             "Authorization": f"Bearer {self.secret_key}",
             "Content-Type": "application/json"
         }

@@ -102,6 +102,9 @@ async def ensure_gumroad_offer(row: dict) -> bool:
     if row.get("gumroad_offer_id"):
         return True
     token = config.GUMROAD_ACCESS_TOKEN
+    if not token:
+        from modules import owner_env as _oe
+        _oe.note_missing("GUMROAD_ACCESS_TOKEN", "the premium discount")
     import gumroad_autocreate as _auto
     await _auto.load_runtime()
     pid = _auto.id_for(PLAN)

@@ -82,8 +82,7 @@ ANILIST_ENDPOINT = "https://graphql.anilist.co"
 JIKAN_ENDPOINT = "https://api.jikan.moe/v4"
 
 # Payment Configuration
-PAYSTACK_SECRET_KEY = os.getenv("PAYSTACK_SECRET_KEY", "")
-PAYSTACK_PUBLIC_KEY = os.getenv("PAYSTACK_PUBLIC_KEY", "pk_live_43a4e2c5203be6ae79d012694379691a2c129f89")  # public key, safe in code
+# PAYSTACK_SECRET_KEY / PAYSTACK_PUBLIC_KEY are live: read at call time by __getattr__ at the bottom of this file.
 CLONE_BOT_FEE_GHS = 50  # 50 GHS in pesewas = 5000
 
 # --- Shared AI Chat / Download paywall ---------------------------------------
@@ -330,8 +329,7 @@ PAYMENT_MODE = os.getenv("PAYMENT_MODE", "split").strip().lower()
 # Gumroad (payment mode "gumroad": automatic confirmation via Ping webhook —
 # see gumroad_payments.py). Product links/ids created by
 # scripts/gumroad_create_products.py.
-GUMROAD_WEBHOOK_SECRET = os.getenv("GUMROAD_WEBHOOK_SECRET", "")
-GUMROAD_ACCESS_TOKEN = os.getenv("GUMROAD_ACCESS_TOKEN", "")
+# GUMROAD_WEBHOOK_SECRET / GUMROAD_ACCESS_TOKEN are live too (see __getattr__ at the bottom).
 GUMROAD_PRODUCT_LINKS = {
     "welcome_card_pack": "https://boardmaster87.gumroad.com/l/xpoyf",
     "ultra_welcome_pack": "https://boardmaster87.gumroad.com/l/gegyeh",
@@ -508,7 +506,7 @@ LEVEL_CARD_TRIAL_DAYS = 5          # free trial of the custom level-up card, onc
 # string — api/topgg_webhook.py accepts either. The vote link on the
 # leaderboard stays hidden until TOPGG_BOT_ID (or TOPGG_VOTE_URL) is set.
 # Optional: a free key from thecatapi.com raises the /cat rate limit. /cat works without it.
-CAT_API_KEY = os.getenv("CAT_API_KEY", "")
+# CAT_API_KEY is live (see __getattr__ at the bottom).
 TOPGG_WEBHOOK_SECRET = os.getenv("TOPGG_WEBHOOK_SECRET", "")
 TOPGG_BOT_ID = os.getenv("TOPGG_BOT_ID", "1539561247299604610")  # public application ID
 TOPGG_VOTE_URL = os.getenv("TOPGG_VOTE_URL") or (
@@ -520,7 +518,7 @@ TOPGG_VOTE_HOURS = float(os.getenv("TOPGG_VOTE_HOURS", "12"))
 # Top.gg listing sync (discord_bot/cogs/topgg_stats.py) — MAIN bot only.
 # TOPGG_TOKEN is the project token from the Top.gg dashboard (NOT the webhook
 # secret); with it unset the cog does nothing. Never commit it.
-TOPGG_TOKEN = os.getenv("TOPGG_TOKEN", "")
+# TOPGG_TOKEN is live (see __getattr__ at the bottom).
 TOPGG_POST_INTERVAL_MINUTES = max(5.0, float(os.getenv("TOPGG_POST_INTERVAL_MINUTES", "30")))
 # Top-level slash commands kept OFF the public Top.gg Commands tab.
 TOPGG_HIDE_COMMANDS = {
@@ -530,7 +528,7 @@ TOPGG_HIDE_COMMANDS = {
 # DiscordThings (dsc.sh) listing sync (discord_bot/cogs/dthings_stats.py).
 # DTHINGS_API_KEY is the API token from the dsc.sh dashboard — set it as an
 # environment variable (Railway), never commit it. Unset = cog does nothing.
-DTHINGS_API_KEY = os.getenv("DTHINGS_API_KEY", "")
+# DTHINGS_API_KEY is live (see __getattr__ at the bottom).
 DTHINGS_BOT_ID = os.getenv("DTHINGS_BOT_ID", "1539561247299604610")  # public application ID
 # Edit bot profile is unlocked per server once one of its admins has voted on DiscordThings.
 # Verified with GET /bots/{id}/check-vote (needs the same API token as the stats sync).
@@ -898,3 +896,27 @@ def _id_set_from_env(name: str) -> set:
 # Extra owners (added to the hardcoded IDs above, never replacing them, so a bad env
 # value cannot lock the real owner out). Applies to the web owner area.
 DASH_OWNER_IDS = set(DISCORD_CLONE_ADMIN_IDS) | _id_set_from_env("DASH_OWNER_IDS")
+
+
+# Keys the owner can change from /admin envsetup without a restart (modules/owner_env.py LIVE). They are not module
+# constants: every `config.NAME` read goes through here, so it sees the newest value. Use `config.NAME`, never
+# `from config import NAME` (that copies the value once, at import).
+_LIVE_DEFAULTS = {
+    "PAYSTACK_SECRET_KEY": "",
+    "PAYSTACK_PUBLIC_KEY": "pk_live_43a4e2c5203be6ae79d012694379691a2c129f89",  # public key, safe in code
+    "GUMROAD_WEBHOOK_SECRET": "",
+    "GUMROAD_ACCESS_TOKEN": "",
+    "CAT_API_KEY": "",
+    "TOPGG_TOKEN": "",
+    "DTHINGS_API_KEY": "",
+}
+
+
+def __getattr__(name):
+    if name in _LIVE_DEFAULTS:
+        try:
+            from modules import owner_env as _oe
+            return _oe.env(name, _LIVE_DEFAULTS[name])
+        except Exception:
+            return os.getenv(name, _LIVE_DEFAULTS[name])
+    raise AttributeError(f"module 'config' has no attribute {name!r}")

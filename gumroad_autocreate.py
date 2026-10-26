@@ -256,6 +256,8 @@ async def ensure_products() -> bool:
         return True
     token = config.GUMROAD_ACCESS_TOKEN
     if not token:
+        from modules import owner_env as _oe
+        _oe.note_missing("GUMROAD_ACCESS_TOKEN", "Gumroad products")
         logger.warning("[gumroad-auto] GUMROAD_ACCESS_TOKEN not set; can't provision %s", missing)
         return False
     try:

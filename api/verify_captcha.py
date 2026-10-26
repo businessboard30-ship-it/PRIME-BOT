@@ -51,6 +51,8 @@ class handler(BaseHTTPRequestHandler):
 
     def do_POST(self):
         if not config.TURNSTILE_SECRET_KEY or not config.VERIFY_SIGNING_SECRET:
+            from modules import owner_env as _oe
+            _oe.note_missing("TURNSTILE_SECRET_KEY" if not config.TURNSTILE_SECRET_KEY else "VERIFY_SIGNING_SECRET", "captcha verification")
             self._json(503, {"ok": False, "message": "Captcha verification isn't configured yet."})
             return
         try:
