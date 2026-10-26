@@ -301,3 +301,36 @@ def test_discord_outage_leaves_the_link_alone():
     guild = MagicMock(); guild.id = 5
     url, status, _ = asyncio.run(bl.ensure_listing_link(bot, guild, "https://discord.gg/abc"))
     assert (url, status) == ("https://discord.gg/abc", "unchecked")
+
+
+# ------------------------------------------------------------------ speed
+
+def test_enqueue_is_one_round_trip_not_one_insert_per_target(monkeypatch):
+    import asyncio
+    import database
+
+    calls = {"execute": 0, "executemany": []}
+
+    class Conn:
+        async def execute(self, *a, **k):
+            calls["execute"] += 1
+
+        async def executemany(self, sql, rows):
+            calls["executemany"].append(list(rows))
+
+    class Acquire:
+        async def __aenter__(self): return Conn()
+        async def __aexit__(self, *a): return False
+
+    class Pool:
+        def acquire(self): return Acquire()
+
+    async def fake_get_pool(): return Pool()
+    monkeypatch.setattr(database, "get_pool", fake_get_pool)
+    targets = [dict(guild_id=i, bump_channel_id=i + 100) for i in range(50)] + [dict(guild_id=999, bump_channel_id=1, clone_id=4)]
+    n = asyncio.run(database.db.bump_enqueue(7, None, targets, 30))
+    assert n == 51 and calls["execute"] == 0 and len(calls["executemany"]) == 1
+    rows = calls["executemany"][0]
+    assert rows[0][3] is None and rows[-1][3] == 4            # shared-network target keeps its own clone
+    assert (rows[1][4] - rows[0][4]).total_seconds() == 30    # still staggered
+    assert asyncio.run(database.db.bump_enqueue(7, None, [], 30)) == 0

@@ -81,13 +81,13 @@ def test_registry_is_well_formed():
 
 def test_registry_and_the_one_screen_pitch_never_disagree():
     """_PERKS (the pitch text, also what older callers show) and the registry must list the same perks."""
-    pitch = (ROOT / "discord_bot/cogs/_views_premium.py").read_text(encoding="utf-8")
-    pitch = pitch.split("_PERKS = (")[1].split("\n)\n")[0]
+    from discord_bot.cogs import _views_premium as vp
+    pitch = vp._perks_text()
     pitch_titles = set(re.findall(r"\*\*(.+?)\*\*", pitch))
     in_pitch = {p.title for p in pp.perks() if p.in_pitch}
     assert in_pitch == pitch_titles, (in_pitch ^ pitch_titles)
     # ...and the perks that are Premium-gated in code but were never in the pitch are marked as such.
-    assert {p.key for p in pp.perks() if not p.in_pitch} == {"honeypot", "auto_bump", "goodbye"}
+    assert {p.key for p in pp.perks() if not p.in_pitch} == {"honeypot", "goodbye"}
 
 
 def test_numbers_are_read_live_not_retyped(monkeypatch):
@@ -454,3 +454,14 @@ def test_timed_out_menu_retires_itself_instead_of_leaving_dead_buttons():
         v.message.edit = AsyncMock(side_effect=discord.HTTPException(MagicMock(status=404), "gone"))
         await v.on_timeout()
     run(go())
+
+
+def test_pitch_text_is_generated_fits_a_message_and_has_the_new_perks():
+    from discord_bot.cogs import _views_premium as vp
+    worst = ("✅ **Premium is active** on this server until <t:1793014574:D> (<t:1793014574:R>).\n"
+             "✨ **Premium Plus is active** until <t:1793014574:D> (<t:1793014574:R>).")
+    text = vp._pitch_text(5, worst)
+    assert len(text) <= 1990, len(text)          # sent as a plain message: Discord's limit is 2000
+    for title in ("Cats", "Birthdays", "Anime Feed", "Verification Pro", "Server Level Card", "Notification Feeds", "Auto Bump" if False else "Welcome Cards"):
+        assert f"**{title}**" in text, title
+    assert "5x" not in text                       # the old hard-coded "5x daily limit (30/day)" is gone

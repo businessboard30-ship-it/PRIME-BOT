@@ -488,8 +488,8 @@ def test_missing_manage_roles_reported_for_quarantine(ar):
 # ── perks + schema wiring ─────────────────────────────────────────────────
 
 def test_premium_perks_list_mentions_anti_raid_pro():
-    text = (ROOT / "discord_bot/cogs/_views_premium.py").read_text(encoding="utf-8")
-    assert "Anti-raid Pro" in text.split("_PERKS = (")[1].split(")\n")[0]
+    from discord_bot.cogs import _views_premium as vp
+    assert "Anti-raid Pro" in vp._perks_text()
 
 
 def test_database_schema_covers_filter_columns():

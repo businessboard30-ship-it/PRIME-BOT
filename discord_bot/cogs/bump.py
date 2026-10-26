@@ -146,6 +146,10 @@ def _suggest_perks(guild: discord.Guild) -> list[str]:
     return perks[:4]
 
 
+async def _zero() -> int:
+    return 0
+
+
 async def _live_counts(bot: commands.Bot, listing: dict) -> tuple[int | None, int | None, str | None]:
     """Best-effort (online, members, icon_url) for a SERVER listing.
 
@@ -1699,6 +1703,13 @@ class BumpCog(commands.Cog):
             )
         )
 
+    def _background(self, coro) -> None:
+        """Run a best-effort coroutine without making the person wait for it."""
+        tasks = self.__dict__.setdefault("_bg_tasks", set())
+        task = asyncio.ensure_future(coro)
+        tasks.add(task)
+        task.add_done_callback(tasks.discard)
+
     async def _post_bump_card(self, config: dict, embed: discord.Embed, view: discord.ui.View):
         """Posts the bumped listing's ad card publicly in the bumping server's
         own bump channel. Returns the channel id on success, None if it
@@ -1734,16 +1745,16 @@ class BumpCog(commands.Cog):
             button_id = f"bump:prompt:{listing['id']}"
             if perms.read_message_history:
                 try:
+                    stale = []
                     async for old in channel.history(limit=30):
                         if old.author.id != self.bot.user.id:
                             continue
                         ids = [getattr(c, "custom_id", None) for row in old.components
                                for c in getattr(row, "children", [])]
                         if button_id in ids:
-                            try:
-                                await old.delete()
-                            except discord.HTTPException:
-                                pass
+                            stale.append(old)
+                    # all the old prompts at once, not one request after another
+                    await asyncio.gather(*(m.delete() for m in stale), return_exceptions=True)
                 except discord.HTTPException:
                     pass
             next_ts = int(time.time()) + cooldown_seconds
@@ -1767,11 +1778,22 @@ class BumpCog(commands.Cog):
         post the ad card in the server's own bump channel. Shared by the buttons/commands (_do_bump) and the
         Auto Bump worker, so both behave identically. The caller has already checked the cooldown."""
         from config import BUMP_SHARED_NETWORK
-        candidates = await db.bump_find_targets(
-            exclude_guild_id=owner_guild_id, clone_id=clone_id,
-            language=config.get("language", "any"), include_nsfw=bool(config.get("nsfw_opt_in")),
-            shared=BUMP_SHARED_NETWORK,
-        )
+        # The live member/online counts are a Discord call and don't depend on the database work, so they run
+        # while the targets are being looked up.
+        is_bot_listing = listing.get("listing_type") == "bot"
+        if is_bot_listing:
+            live_task = asyncio.ensure_future(_live_bot_info(self.bot, listing.get("invite_url") or ""))
+        else:
+            live_task = asyncio.ensure_future(_live_counts(self.bot, listing))
+        try:
+            candidates = await db.bump_find_targets(
+                exclude_guild_id=owner_guild_id, clone_id=clone_id,
+                language=config.get("language", "any"), include_nsfw=bool(config.get("nsfw_opt_in")),
+                shared=BUMP_SHARED_NETWORK,
+            )
+        except BaseException:
+            live_task.cancel()
+            raise
         if BUMP_SHARED_NETWORK:
             # Shared network: each target is queued under the clone that is
             # actually in that server, and THAT bot's worker delivers it
@@ -1785,8 +1807,15 @@ class BumpCog(commands.Cog):
             # never want to post into a server the bot no longer belongs to.
             targets = [t for t in candidates if self.bot.get_guild(t["guild_id"]) is not None]
 
-        streak = await db.bump_record(listing["id"], STREAK_WINDOW_SECONDS)
-        queued = await db.bump_enqueue(listing["id"], clone_id, targets, DRIP_SECONDS) if targets else 0
+        # Recording the bump and queueing the sends don't depend on each other: do both at once.
+        try:
+            streak, queued = await asyncio.gather(
+                db.bump_record(listing["id"], STREAK_WINDOW_SECONDS),
+                db.bump_enqueue(listing["id"], clone_id, targets, DRIP_SECONDS) if targets else _zero(),
+            )
+        except BaseException:
+            live_task.cancel()
+            raise
 
         # Re-fetch: bump_record just incremented total_bumps/streak in the
         # DB, and the listing dict we're holding predates that write.
@@ -1794,9 +1823,9 @@ class BumpCog(commands.Cog):
         server_icon_url = None
         if refreshed["listing_type"] == "bot":
             online, members = None, None
-            bot_info = await _live_bot_info(self.bot, refreshed.get("invite_url") or "")
+            bot_info = await live_task
         else:
-            online, members, server_icon_url = await _live_counts(self.bot, refreshed)
+            online, members, server_icon_url = await live_task
             bot_info = None
 
         card_embed = _bump_embed(refreshed, streak, online, members, bot_info, server_icon_url)
@@ -1829,27 +1858,41 @@ class BumpCog(commands.Cog):
             # A server listing with no invite link goes out with no Join
             # button. Reuse the server's own vanity/permanent invite if it has
             # one; otherwise hold the bump and tell them why + how to fix it.
-            if listing.get("listing_type", "server") == "server":
+            async def _cooldown_check():
+                seconds = await self._cooldown_seconds()
+                return seconds, await _bump_access(interaction.user.id, listing["id"], seconds)
+
+            async def _link_check():
+                """(listing, held): fixes or checks the invite link; held=True means the bump must stop."""
+                nonlocal listing
+                if listing.get("listing_type", "server") != "server":
+                    return False
                 owner_guild = self.bot.get_guild(owner_guild_id)
-                if owner_guild is not None:
-                    had_link = has_link(listing)
-                    # An admin pressing bump in their own server may get a never-expiring invite made for them;
-                    # anyone else only gets an existing one reused.
-                    can_make = bool(interaction.guild_id == owner_guild_id and interaction.permissions.manage_guild)
-                    listing, status, notes = await ensure_for_listing(
-                        self.bot, owner_guild, listing, config, create=can_make,
-                        reason=f"Bump listing link, bump pressed by {interaction.user} ({interaction.user.id})")
-                    if status == "missing":
-                        embed, view = build_flag(owner_guild, listing["id"], listing.get("name"), config.get("bump_channel_id"))
-                        head = ("⛔ I've held this bump — your invite link doesn't work and I couldn't replace it, "
-                                "so the Join button would be dead." if had_link else
-                                "⛔ I've held this bump — your listing has no server link, so the ad would go out with no Join button.")
-                        await interaction.followup.send(content=head, embed=embed, view=view, ephemeral=True)
-                        return
-                    if status in ("replaced", "created") and had_link:
-                        await interaction.followup.send(f"🔗 Your invite link was broken, so I switched it to {listing.get('invite_url')}", ephemeral=True)
-            cooldown_seconds = await self._cooldown_seconds()
-            can_bump, remaining, voted = await _bump_access(interaction.user.id, listing["id"], cooldown_seconds)
+                if owner_guild is None:
+                    return False
+                had_link = has_link(listing)
+                # An admin pressing bump in their own server may get a never-expiring invite made for them;
+                # anyone else only gets an existing one reused.
+                can_make = bool(interaction.guild_id == owner_guild_id and interaction.permissions.manage_guild)
+                listing, status, notes = await ensure_for_listing(
+                    self.bot, owner_guild, listing, config, create=can_make,
+                    reason=f"Bump listing link, bump pressed by {interaction.user} ({interaction.user.id})")
+                if status == "missing":
+                    embed, view = build_flag(owner_guild, listing["id"], listing.get("name"), config.get("bump_channel_id"))
+                    head = ("⛔ I've held this bump — your invite link doesn't work and I couldn't replace it, "
+                            "so the Join button would be dead." if had_link else
+                            "⛔ I've held this bump — your listing has no server link, so the ad would go out with no Join button.")
+                    await interaction.followup.send(content=head, embed=embed, view=view, ephemeral=True)
+                    return True
+                if status in ("replaced", "created") and had_link:
+                    await interaction.followup.send(f"🔗 Your invite link was broken, so I switched it to {listing.get('invite_url')}", ephemeral=True)
+                return False
+
+            # The link check (a Discord call the first time) and the cooldown lookups (database) don't depend on
+            # each other, so they run together instead of one after the other.
+            held, (cooldown_seconds, (can_bump, remaining, voted)) = await asyncio.gather(_link_check(), _cooldown_check())
+            if held:
+                return
             if not can_bump:
                 minutes = remaining // 60
                 vote_view = _vote_view()
@@ -1878,7 +1921,9 @@ class BumpCog(commands.Cog):
                 # Couldn't post publicly (channel gone / missing perms) — fall
                 # back to showing the card to the bumper rather than losing it.
                 await interaction.followup.send(embed=card_embed, view=card_view, content=summary, ephemeral=True)
-            await self._post_bump_prompt(owner_guild_id, config, refreshed, interaction.user, cooldown_seconds)
+            # The "bump again" message is housekeeping (it scans the channel for the old one and deletes it), so it
+            # runs in the background: the person already has their answer.
+            self._background(self._post_bump_prompt(owner_guild_id, config, refreshed, interaction.user, cooldown_seconds))
         except Exception:
             logger.exception("_do_bump failed for listing %s", listing.get("id"))
             # interaction.response was already used (deferred) by the

@@ -1278,7 +1278,8 @@ def test_server_panel_shows_main_and_backup_limits_and_premium_perk_is_listed():
     assert "up to **20**" in "\n".join(v._ai_lines()) and "Backup AI" not in "\n".join(v._ai_lines())
     from pathlib import Path
     root = Path(__file__).resolve().parents[2]
-    perks = (root / "discord_bot/cogs/_views_premium.py").read_text(encoding="utf-8").split("_PERKS = (")[1].split("def _yearly")[0]
+    from discord_bot.cogs import _views_premium as _vp
+    perks = _vp._perks_text()
     assert "Scam Shield AI" in perks and "20 AI image scam checks" in perks
     assert "Scam Shield AI" in (root / "website/premium/index.html").read_text(encoding="utf-8")
 

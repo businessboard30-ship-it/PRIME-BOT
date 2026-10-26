@@ -19152,17 +19152,22 @@ class Database:
         pool = await get_pool()
         async with pool.acquire() as conn:
             now = datetime.now(timezone.utc)
-            for i, target in enumerate(targets):
-                await conn.execute(
+            # One round trip for all targets (this used to be up to 200 inserts awaited one after another, which
+            # was most of the wait after pressing Bump). executemany runs them in a single transaction.
+            rows = [(
+                listing_id, target["guild_id"], target["bump_channel_id"],
+                # Shared-network targets carry their own clone_id so the bot
+                # that is actually in that guild delivers it.
+                target["clone_id"] if "clone_id" in target else clone_id,
+                now + timedelta(seconds=i * drip_seconds),
+            ) for i, target in enumerate(targets)]
+            if rows:
+                await conn.executemany(
                     """
                     INSERT INTO bump_queue (listing_id, target_guild_id, target_channel_id, clone_id, scheduled_at)
                     VALUES ($1, $2, $3, $4, $5)
                     """,
-                    listing_id, target["guild_id"], target["bump_channel_id"],
-                    # Shared-network targets carry their own clone_id so the bot
-                    # that is actually in that guild delivers it.
-                    target["clone_id"] if "clone_id" in target else clone_id,
-                    now + timedelta(seconds=i * drip_seconds),
+                    rows,
                 )
             return len(targets)
 

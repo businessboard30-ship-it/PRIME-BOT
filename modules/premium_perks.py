@@ -12,9 +12,9 @@ the feature does not actually apply.
 Pure: no Discord, no database. perks() / limit_rows() build their values at call time so a changed
 config value (or a test's monkeypatch) is picked up.
 
-Adding a perk: add one Perk() below (pick a category), and if it belongs in the one-screen pitch also
-add its **Title** to _PERKS in _views_premium.py (tests/unit/test_premium_wizard_v2.py fails if the
-two lists disagree, in either direction).
+Adding a perk: add one Perk() below (pick a category). The one-screen pitch text (_views_premium.py) is
+generated from this list by pitch_lines(), so it can never fall behind; set in_pitch=False to keep a perk out
+of that short text (it still shows in the wizard), and `pitch=` to give it a shorter pitch line.
 """
 
 from dataclasses import dataclass
@@ -35,6 +35,7 @@ class Category:
 CATEGORIES: Tuple[Category, ...] = (
     Category("mod", "🛡️", "Moderation & safety"),
     Category("community", "🎉", "Community"),
+    Category("fun", "🎮", "Fun & games"),
     Category("ai", "🤖", "AI"),
     Category("style", "🎨", "Style & cards"),
     Category("music", "🎵", "Music"),
@@ -53,7 +54,8 @@ class Perk:
     free: str = ""             # what a Free server gets ("" = not included)
     premium: str = ""          # Premium-specific detail ("" = simply included)
     plus: str = ""             # Plus-specific detail ("" = same as Premium)
-    in_pitch: bool = True      # also listed in _views_premium._PERKS (the one-screen text)
+    in_pitch: bool = True      # also listed in the one-screen pitch text (pitch_lines())
+    pitch: str = ""            # shorter text for that pitch line ("" = the blurb, lower-cased, no full stop)
 
 
 def perks() -> Tuple[Perk, ...]:
@@ -62,10 +64,15 @@ def perks() -> Tuple[Perk, ...]:
     from modules import ai_features as ai
     from modules import applications as apps
     from modules import scam_vision as sv
+    from modules import birthdays as bd
+    from modules import cat_setup as cs
+    from modules.anime_feed import FREE_FOLLOW_LIMIT as anime_free
+    from modules.anime_plus import PLUS_FOLLOW_LIMIT as anime_plus
 
     free_colours = sum(1 for c in apps.COLORS if not c[3])
     all_colours = len(apps.COLORS)
     plus_ai = config.PREMIUM_PLUS_SCAM_VISION_DAILY
+    cat_free, cat_prem = cs.FREE, cs.PREMIUM
 
     return (
         # ── Moderation & safety ───────────────────────────────────────────
@@ -77,7 +84,13 @@ def perks() -> Tuple[Perk, ...]:
              "AI image scam checks, Strict mode (look-alike links) and 30-day deep reports.",
              free=f"{sv.FREE_GUILD_DAILY} AI checks a day · core shield",
              premium=f"{sv.PREMIUM_GUILD_DAILY} AI checks a day · Strict mode · deep reports",
-             plus=f"{plus_ai} AI checks a day"),
+             plus=f"{plus_ai} AI checks a day",
+             pitch=f"{sv.PREMIUM_GUILD_DAILY} AI image scam checks a day (free: {sv.FREE_GUILD_DAILY}), Strict mode & deep reports"),
+        Perk("verification", "mod", "✅", "Verification Pro",
+             "Custom verify panel, log channel, auto-kick for no-shows, minimum account age and a post-verify welcome.",
+             free="Captcha or button check, roles and lockdown",
+             premium="Panel, log channel, auto-kick, account age, welcome message",
+             pitch="custom panel, log channel, auto-kick & minimum account age"),
         Perk("honeypot", "mod", "🍯", "Honeypot extras",
              "Choose ban, kick or a 28-day timeout, how much history is wiped, and a dedicated log channel.",
              free="Ban + wipe the last 24h (the trap itself is free)",
@@ -100,28 +113,53 @@ def perks() -> Tuple[Perk, ...]:
                      f"{all_colours} colours · auto-role"),
         Perk("custom_roles", "community", "🎨", "Custom Roles",
              "Every member styles their own role."),
-        Perk("roast", "community", "💀", "Hardcore Roast",
-             "Unfiltered roast battles.",
-             free="Standard roasts"),
-        Perk("roblox", "community", "🎮", "Roblox Alerts",
-             "Automatic game update posts."),
+        Perk("feeds", "community", "🔔", "Notification Feeds",
+             "YouTube uploads and Roblox game updates posted in your channels, with an optional ping role.",
+             pitch="YouTube & Roblox game feeds in your channels"),
         Perk("auto_bump", "community", "📣", "Auto Bump",
              "Bumps your server listing for you, automatically.",
              free="Manual bump",
-             in_pitch=False),
+             pitch="bumps your server listing for you, automatically"),
+        # ── Fun & games ───────────────────────────────────────────────────
+        Perk("roast", "fun", "💀", "Hardcore Roast",
+             "Unfiltered roast battles.",
+             free="Standard roasts"),
+        Perk("cats", "fun", "🐱", "Cats",
+             f"Up to {cat_prem.max_channels} spawn channels, {cat_prem.daily_min}-{cat_prem.daily_max} cats a day "
+             "and trading with anyone by ID.",
+             free=f"{cat_free.max_channels} channel · {cat_free.daily_min}-{cat_free.daily_max} cats a day",
+             premium=f"{cat_prem.max_channels} channels · {cat_prem.daily_min}-{cat_prem.daily_max} cats a day · trade by ID",
+             pitch=f"{cat_prem.max_channels} spawn channels and {cat_prem.daily_min}-{cat_prem.daily_max} cats a day "
+                   f"(free: {cat_free.max_channels} channel, {cat_free.daily_min}-{cat_free.daily_max}), trade by ID"),
+        Perk("birthdays", "fun", "🎂", "Birthdays",
+             f"Styled announcements, a birthday role and up to {bd.MAX_EXTRA_MESSAGES} random extra messages.",
+             free="Plain announcement, one message",
+             premium=f"Styled look · birthday role · {bd.MAX_EXTRA_MESSAGES} extra messages",
+             pitch="styled announcement, birthday role & extra messages"),
+        Perk("anime", "fun", "📺", "Anime Feed",
+             f"{anime_plus} follows per person, DM alerts and quiet hours for everyone in the server.",
+             free=f"{anime_free} follows per person",
+             premium=f"{anime_plus} follows · DM alerts · quiet hours",
+             pitch=f"{anime_plus} follows (free: {anime_free}), DM alerts & quiet hours for everyone"),
         # ── AI ────────────────────────────────────────────────────────────
         Perk("ai_chat", "ai", "🤖", "AI Chat",
              "A much higher daily AI chat limit for every person in the server.",
              free=f"{ai.REPLY_CAP_NORMAL} a day per person",
              premium=f"{ai.REPLY_CAP_PREMIUM} a day per person",
-             plus=f"{config.PREMIUM_PLUS_REPLY_CAP} a day per person"),
+             plus=f"{config.PREMIUM_PLUS_REPLY_CAP} a day per person",
+             pitch=f"{ai.REPLY_CAP_PREMIUM} a day per person (free: {ai.REPLY_CAP_NORMAL})"),
         # ── Style & cards ─────────────────────────────────────────────────
         Perk("welcome_cards", "style", "🎴", "Welcome Cards",
-             "Premium themes plus your own background.",
-             free="The original theme"),
+             "Premium themes, your own background and Welcome Studio (gallery, effects, frames, saved designs).",
+             free="The original theme",
+             pitch="premium themes, your own background & Welcome Studio"),
         Perk("fonts", "style", "🔤", "Fonts & Designs",
              "20+ fonts, frames and emoji tags.",
              free="Starter fonts and frames"),
+        Perk("level_card", "style", "🏅", "Server Level Card",
+             "Every member of your server uses your custom level-up card, no Level Pass needed.",
+             free="Members need their own Level Pass",
+             pitch="members use your custom level-up card, no Level Pass needed"),
         Perk("goodbye", "style", "👋", "Goodbye styling",
              "Custom title, embed colour, banner, footer and avatar on your goodbye post.",
              free="Plain goodbye (text, channel, on/off)",
@@ -136,7 +174,8 @@ def perks() -> Tuple[Perk, ...]:
         Perk("branding", "brand", "🖼️", "Bot Branding",
              "Your own bot name, avatar and banner."),
         Perk("future", "brand", "🆕", "Every future feature",
-             "Free, automatically — new Premium features unlock without paying again."),
+             "Free, automatically — new Premium features unlock without paying again.",
+             pitch="free, automatically"),
     )
 
 
@@ -151,6 +190,10 @@ def limit_rows() -> Tuple[Tuple[str, str, str, str], ...]:
     from modules import applications as apps
     from modules import scam_vision as sv
 
+    from modules import cat_setup as cs
+    from modules.anime_feed import FREE_FOLLOW_LIMIT as anime_free
+    from modules.anime_plus import PLUS_FOLLOW_LIMIT as anime_plus
+
     free_colours = sum(1 for c in apps.COLORS if not c[3])
     all_colours = len(apps.COLORS)
     return (
@@ -160,6 +203,8 @@ def limit_rows() -> Tuple[Tuple[str, str, str, str], ...]:
         ("Application forms",   str(apps.MAX_FORMS_FREE), str(apps.MAX_FORMS_PREMIUM), str(apps.MAX_FORMS_PREMIUM)),
         ("Questions per form",  str(apps.MAX_QUESTIONS_FREE), str(apps.MAX_QUESTIONS_PREMIUM), str(apps.MAX_QUESTIONS_PREMIUM)),
         ("Form colours",        str(free_colours), str(all_colours), str(all_colours)),
+        ("Cat channels",        str(cs.FREE.max_channels), str(cs.PREMIUM.max_channels), str(cs.PREMIUM.max_channels)),
+        ("Anime follows",       str(anime_free), str(anime_plus), str(anime_plus)),
         ("Music plays/day",     str(config.MUSIC_FREE_DAILY_LISTENS), INFINITY, INFINITY),
         ("Music uploads/day",   str(config.MUSIC_FREE_DAILY_UPLOADS), INFINITY, INFINITY),
         ("Music downloads/day", str(config.MUSIC_FREE_DAILY_DOWNLOADS), INFINITY, INFINITY),
@@ -172,6 +217,17 @@ def plus_extras() -> str:
     from modules import scam_vision as sv
     return (f"AI chat {config.PREMIUM_PLUS_REPLY_CAP}/day (Premium {ai.REPLY_CAP_PREMIUM}) and "
             f"{config.PREMIUM_PLUS_SCAM_VISION_DAILY} AI scam checks a day (Premium {sv.PREMIUM_GUILD_DAILY})")
+
+
+def pitch_lines() -> Tuple[str, ...]:
+    """One line per pitch perk, generated here so the pitch text can't fall behind the registry."""
+    out = []
+    for p in perks():
+        if not p.in_pitch:
+            continue
+        text = p.pitch or (p.blurb[:1].lower() + p.blurb[1:]).rstrip(".")
+        out.append(f"{p.emoji} **{p.title}** — {text}")
+    return tuple(out)
 
 
 def premium_only_titles() -> Tuple[str, ...]:
