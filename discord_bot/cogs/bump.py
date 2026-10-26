@@ -47,7 +47,7 @@ from database import db
 from discord_bot.cogs._admin_mount import mount_admin_group
 from discord_bot.cogs._adaptive_skip import AdaptiveSkip
 from discord_bot.cogs._views_bump_link import (
-    DYNAMIC_ITEMS as BUMP_LINK_DYNAMIC_ITEMS, has_link, build_flag, find_existing_invite,
+    DYNAMIC_ITEMS as BUMP_LINK_DYNAMIC_ITEMS, has_link, build_flag, find_existing_invite, ensure_for_listing,
     list_server_listings_missing_link, post_flag_in_channel, set_listing_invite,
 )
 
@@ -210,58 +210,60 @@ async def _live_bot_info(bot: commands.Bot, invite_url: str) -> dict:
     }
 
 
+def _big(url: str | None) -> str | None:
+    """Ask Discord for the 512px version of an avatar/icon so the image is sharp when shown large."""
+    if not url:
+        return None
+    base = url.split("?")[0]
+    return f"{base}?size=512"
+
+
 def _bump_embed(listing: dict, streak: int, online: int | None = None, members: int | None = None,
                  bot_info: dict | None = None, server_icon_url: str | None = None) -> discord.Embed:
+    """Compact ad card: the avatar / server icon is the big image, the text is kept short. The invite and support
+    links live on the buttons under the card, so they are not repeated in the text."""
     kind = listing.get("listing_type", "server")
     name = listing.get("name") or "Unnamed"
     bot_info = bot_info or {}
-    # Verified bots get the checkmark folded into the title itself (next to
-    # the name), matching the reference layout, instead of a separate stats
-    # line — Discord embeds have no true inline-icon slot, so the title is
-    # the closest equivalent to "badge beside the name".
     verified_badge = " ✅" if (kind == "bot" and bot_info.get("verified")) else ""
-    embed = discord.Embed(
-        title=f"{'🤖' if kind == 'bot' else '📣'} {name}{verified_badge}",
-        description=(listing.get("description") or "No description set.")[:500],
-        color=discord.Color.from_str("#22b3a4"),
-    )
 
+    desc = (listing.get("description") or "No description set.").strip()
+    if len(desc) > 180:
+        desc = desc[:177].rstrip() + "..."
+    lines = [desc]
+
+    stats = []
     if kind == "server":
-        if server_icon_url:
-            embed.set_thumbnail(url=server_icon_url)
-        stats = []
         if members is not None:
-            online_part = f"🟢 {online:,} Online  •  " if online is not None else ""
-            stats.append(f"{online_part}⚪ {members:,} Members")
+            online_part = f"🟢 {online:,} online · " if online is not None else ""
+            stats.append(f"{online_part}⚪ {members:,} members")
         created = listing.get("created_at") or listing.get("listing_created_at")
         if created:
-            stats.append(f"📅 Est. {created.strftime('%b %Y')}")
-        if stats:
-            embed.add_field(name="Stats", value="\n".join(stats), inline=False)
+            stats.append(f"📅 {created.strftime('%b %Y')}")
     else:
-        stats = []
-        if bot_info.get("avatar_url"):
-            embed.set_thumbnail(url=bot_info["avatar_url"])
         if "verified" in bot_info and not bot_info["verified"]:
-            stats.append("🤖 Unverified bot")
+            stats.append("🤖 unverified")
         if bot_info.get("created_at"):
-            stats.append(f"📅 Joined Discord {bot_info['created_at'].strftime('%b %Y')}")
-        if stats:
-            embed.add_field(name="Stats", value="\n".join(stats), inline=False)
+            stats.append(f"📅 {bot_info['created_at'].strftime('%b %Y')}")
+    if stats:
+        lines.append("  ·  ".join(stats))
 
     tags = listing.get("tags") or []
     if tags:
-        embed.add_field(name="Tags", value=" · ".join(tags), inline=False)
+        lines.append(" · ".join(f"`{t}`" for t in tags[:5]))
 
     perks = listing.get("perks") or []
     if perks:
-        embed.add_field(name="What we offer", value="\n".join(f"• {p}" for p in perks[:6]), inline=False)
+        lines.append("  ".join(f"• {p}" for p in perks[:3]))
 
-    if listing.get("invite_url"):
-        embed.add_field(name="Link", value=listing["invite_url"], inline=False)
-
-    if listing.get("support_url"):
-        embed.add_field(name="Support", value=listing["support_url"], inline=False)
+    embed = discord.Embed(
+        title=f"{'🤖' if kind == 'bot' else '📣'} {name}{verified_badge}",
+        description="\n".join(lines)[:1000],
+        color=discord.Color.from_str("#22b3a4"),
+    )
+    image = _big(bot_info.get("avatar_url")) if kind == "bot" else _big(server_icon_url)
+    if image:
+        embed.set_image(url=image)
 
     rating_count = listing.get("rating_count") or 0
     rating_sum = listing.get("rating_sum") or 0
@@ -269,11 +271,11 @@ def _bump_embed(listing: dict, streak: int, online: int | None = None, members: 
         avg = rating_sum / rating_count
         rounded = round(avg)
         stars = "★" * rounded + "☆" * (5 - rounded)
-        rating_text = f"{stars} ({avg:.1f}, {rating_count})"
+        rating_text = f"{stars} {avg:.1f} ({rating_count})"
     else:
-        rating_text = "☆☆☆☆☆ (not yet rated)"
+        rating_text = "☆☆☆☆☆ not yet rated"
     total_bumps = listing.get("total_bumps") or 0
-    embed.set_footer(text=f"{rating_text}  •  Total bumps: {total_bumps}  •  Streak: {streak} 🔥")
+    embed.set_footer(text=f"{rating_text}  •  {total_bumps} bumps  •  streak {streak} 🔥")
     return embed
 
 
@@ -290,7 +292,7 @@ class DynamicRateOpenButton(
     def __init__(self, listing_id: int):
         self.listing_id = listing_id
         super().__init__(
-            discord.ui.Button(label="★ Rate", style=discord.ButtonStyle.secondary, custom_id=f"bump:rateopen:{listing_id}")
+            discord.ui.Button(label="★ Rate", style=discord.ButtonStyle.primary, custom_id=f"bump:rateopen:{listing_id}")
         )
 
     @classmethod
@@ -317,7 +319,7 @@ class DynamicRateStarButton(
         self.listing_id = listing_id
         self.stars = stars
         super().__init__(
-            discord.ui.Button(label=f"{stars}★", style=discord.ButtonStyle.secondary, custom_id=f"bump:rate:{listing_id}:{stars}")
+            discord.ui.Button(label=f"{stars}★", style=discord.ButtonStyle.primary, custom_id=f"bump:rate:{listing_id}:{stars}")
         )
 
     @classmethod
@@ -350,7 +352,7 @@ class DynamicAddMineButton(
                                       pick/create the channel, Save = first bump)"""
 
     def __init__(self):
-        super().__init__(discord.ui.Button(label="+ Add my server", style=discord.ButtonStyle.secondary, custom_id="bump:addmine"))
+        super().__init__(discord.ui.Button(label="+ Add my server", style=discord.ButtonStyle.success, custom_id="bump:addmine"))
 
     @classmethod
     async def from_custom_id(cls, interaction: discord.Interaction, item: discord.ui.Item, match: "re.Match[str]", /):
@@ -860,15 +862,28 @@ class BumpEditModal(discord.ui.Modal, title="Edit bump listing"):
             listing_id=self.listing_id,
         )
         await interaction.followup.send("✅ Listing saved.", ephemeral=True)
-        if self.listing_type == "server" and not has_link(saved):
-            url = await find_existing_invite(interaction.guild)
-            if url:
-                await set_listing_invite(saved["id"], url)
-                await interaction.followup.send(f"🔗 No link was set, so I reused your existing invite: {url}", ephemeral=True)
-            else:
-                config = await db.bump_get_guild_config(interaction.guild_id, clone_id) or {}
+        if self.listing_type == "server":
+            had_link = has_link(saved)
+            config = await db.bump_get_guild_config(interaction.guild_id, clone_id) or {}
+            # The admin is saving this listing, so checking the link and making a never-expiring one is fine.
+            saved, status, notes = await ensure_for_listing(
+                interaction.client, interaction.guild, saved, config, create=True,
+                reason=f"Bump listing link, saved by {interaction.user} ({interaction.user.id})")
+            url = saved.get("invite_url")
+            if status in ("replaced", "created"):
+                why = (" ".join(notes) + " ") if notes else ""
+                if had_link:
+                    await interaction.followup.send(f"🔗 {why}Your link now points to a never-expiring invite: {url}", ephemeral=True)
+                else:
+                    await interaction.followup.send(f"🔗 No link was set, so I {'reused or made'} a never-expiring invite: {url}", ephemeral=True)
+            elif status == "missing":
+                why = ("\n".join(f"• {n}" for n in notes) + "\n") if notes else ""
                 embed, view = build_flag(interaction.guild, saved["id"], saved.get("name"), config.get("bump_channel_id"))
-                await interaction.followup.send(embed=embed, view=view, ephemeral=True)
+                await interaction.followup.send(
+                    content=f"❌ I couldn't use that link and couldn't make a new one.\n{why}Pick one below.",
+                    embed=embed, view=view, ephemeral=True)
+            elif notes:
+                await interaction.followup.send("\n".join(notes), ephemeral=True)
 
 
 class BumpSetupView(discord.ui.View):
@@ -908,8 +923,13 @@ class BumpSetupView(discord.ui.View):
             content=f"✅ Saved.\n**Description:** {self.suggested_desc}\n**Tags:** {', '.join(self.suggested_tags)}",
             view=None,
         )
-        if not has_link(saved):
-            config = await db.bump_get_guild_config(interaction.guild_id, clone_id) or {}
+        config = await db.bump_get_guild_config(interaction.guild_id, clone_id) or {}
+        saved, status, notes = await ensure_for_listing(
+            interaction.client, interaction.guild, saved, config, create=True,
+            reason=f"Bump listing link, set up by {interaction.user} ({interaction.user.id})")
+        if status in ("replaced", "created"):
+            await interaction.followup.send(f"🔗 Your listing link is a never-expiring invite: {saved.get('invite_url')}", ephemeral=True)
+        elif status == "missing":
             embed, view = build_flag(interaction.guild, saved["id"], saved.get("name"), config.get("bump_channel_id"))
             await interaction.followup.send(embed=embed, view=view, ephemeral=True)
 
@@ -1809,20 +1829,25 @@ class BumpCog(commands.Cog):
             # A server listing with no invite link goes out with no Join
             # button. Reuse the server's own vanity/permanent invite if it has
             # one; otherwise hold the bump and tell them why + how to fix it.
-            if listing.get("listing_type", "server") == "server" and not has_link(listing):
+            if listing.get("listing_type", "server") == "server":
                 owner_guild = self.bot.get_guild(owner_guild_id)
                 if owner_guild is not None:
-                    url = await find_existing_invite(owner_guild)
-                    if url:
-                        await set_listing_invite(listing["id"], url)
-                        listing = {**listing, "invite_url": url}
-                    else:
+                    had_link = has_link(listing)
+                    # An admin pressing bump in their own server may get a never-expiring invite made for them;
+                    # anyone else only gets an existing one reused.
+                    can_make = bool(interaction.guild_id == owner_guild_id and interaction.permissions.manage_guild)
+                    listing, status, notes = await ensure_for_listing(
+                        self.bot, owner_guild, listing, config, create=can_make,
+                        reason=f"Bump listing link, bump pressed by {interaction.user} ({interaction.user.id})")
+                    if status == "missing":
                         embed, view = build_flag(owner_guild, listing["id"], listing.get("name"), config.get("bump_channel_id"))
-                        await interaction.followup.send(
-                            content="⛔ I've held this bump — your listing has no server link, so the ad would go out with no Join button.",
-                            embed=embed, view=view, ephemeral=True,
-                        )
+                        head = ("⛔ I've held this bump — your invite link doesn't work and I couldn't replace it, "
+                                "so the Join button would be dead." if had_link else
+                                "⛔ I've held this bump — your listing has no server link, so the ad would go out with no Join button.")
+                        await interaction.followup.send(content=head, embed=embed, view=view, ephemeral=True)
                         return
+                    if status in ("replaced", "created") and had_link:
+                        await interaction.followup.send(f"🔗 Your invite link was broken, so I switched it to {listing.get('invite_url')}", ephemeral=True)
             cooldown_seconds = await self._cooldown_seconds()
             can_bump, remaining, voted = await _bump_access(interaction.user.id, listing["id"], cooldown_seconds)
             if not can_bump:
@@ -1895,12 +1920,18 @@ class BumpCog(commands.Cog):
                 config, "⏹️ **Auto Bump turned off** because this server's Premium has ended. "
                         "Renew Premium and press **Auto Bump** to turn it back on. You can still bump by hand.")
             return "premium_ended"
-        if listing.get("listing_type", "server") == "server" and not has_link(listing):
-            url = await find_existing_invite(guild)
-            if not url:
-                return "skipped"                    # same rule as a manual bump: no Join link, no bump
-            await set_listing_invite(listing["id"], url)
-            listing = {**listing, "invite_url": url}
+        if listing.get("listing_type", "server") == "server":
+            # Unattended: reuse an existing never-expiring invite, never make one. Otherwise no bump, and ask the
+            # admins once (the flag is not posted twice).
+            listing, link_status, _notes = await ensure_for_listing(self.bot, guild, listing, config, create=False)
+            if link_status == "missing":
+                try:
+                    await post_flag_in_channel(self.bot, guild, {
+                        "listing_id": listing["id"], "guild_id": guild.id, "name": listing.get("name"),
+                        "bump_channel_id": config["bump_channel_id"], "configured_by": config.get("configured_by")})
+                except Exception:
+                    logger.exception("[bump] couldn't post the link flag for listing %s", listing["id"])
+                return "skipped"                    # same rule as a manual bump: no working Join link, no bump
         cooldown_seconds = await self._cooldown_seconds()
         can_bump, _remaining = await db.bump_check_cooldown(listing["id"], cooldown_seconds)
         if not can_bump:
