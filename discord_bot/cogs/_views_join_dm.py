@@ -1564,13 +1564,8 @@ async def _enable_tickets(interaction: discord.Interaction, guild: discord.Guild
     except discord.Forbidden:
         return False, "I don't have permission to create channels here — create one and try `/ticket setup`."
 
-    from discord_bot.cogs.ticket import TicketPanelView
-    cog = interaction.client.get_cog("TicketCog")
-    embed = discord.Embed(
-        title="🎫 Need help?", description="Click below to open a private ticket with our support team.",
-        color=discord.Color.blurple(),
-    )
-    panel_message = await channel.send(embed=embed, view=TicketPanelView(cog))
+    from discord_bot.cogs._views_ticket_panel import build_panel_view
+    panel_message = await channel.send(view=build_panel_view(guild, existing, False), allowed_mentions=discord.AllowedMentions.none())
     await db.set_ticket_config(
         guild.id, clone_id=clone_id, panel_channel_id=channel.id, panel_message_id=panel_message.id,
     )
