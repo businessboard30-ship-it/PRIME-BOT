@@ -31,6 +31,7 @@ deliberate:
 
 import asyncio
 import io
+import json
 import logging
 import re
 import secrets
@@ -351,6 +352,7 @@ def build_wizard_view(guild_id: int, clone_id, invoker_id, config: dict, *, gree
         look_row.add_item(WelcomeCardLookSelect(guild_id, clone_id, invoker_id, config))
         items.append(look_row)
         items.append(shape_row)
+        items.append(_finish_row(guild_id, clone_id, invoker_id, config))
     else:
         theme_row = discord.ui.ActionRow()
         theme_row.add_item(WelcomeThemeSelect(guild_id, clone_id, invoker_id, config))
@@ -1633,6 +1635,164 @@ class WelcomeGoodbyeButton(discord.ui.DynamicItem[discord.ui.Button], template=_
             view=view, ephemeral=True)
 
 
+# -- card finish: border, border colour, no avatar, no text --------------------------------------------------
+# Four buttons under the look / shape menus. They are stored in ultra_card_json (keys border, border_color,
+# show_avatar, show_text) next to the Customize Card options, so one setting drives both the wolf / theme cards and
+# the custom-background cards. Free for every server.
+
+async def _card_opts(guild_id: int, clone_id) -> dict:
+    from modules.welcome_card import parse_ultra_options
+    config = await db.get_welcome_config(guild_id, clone_id=clone_id)
+    return parse_ultra_options(config.get("ultra_card_json"))
+
+
+async def _save_card_opts(guild_id: int, clone_id, **changes) -> None:
+    """Merge into the stored JSON (only the keys that changed are added), so nothing else about the look is touched."""
+    config = await db.get_welcome_config(guild_id, clone_id=clone_id)
+    raw = config.get("ultra_card_json")
+    try:
+        cur = json.loads(raw) if isinstance(raw, str) else dict(raw or {})
+    except Exception:
+        cur = {}
+    if not isinstance(cur, dict):
+        cur = {}
+    cur.update(changes)
+    await db.set_welcome_config(guild_id, clone_id=clone_id, ultra_card_json=json.dumps(cur))
+
+
+_BORDER_LABELS = {"none": "None", "thin": "Thin", "medium": "Medium", "thick": "Thick", "double": "Double"}
+
+
+def _border_color_label(value: str) -> str:
+    return "Default" if value == "default" else (value.title() if not value.startswith("#") else value)
+
+
+class _FinishButton:
+    """Shared plumbing for the four card-finish buttons."""
+    FIELD = ""
+
+    async def _guard(self, interaction: discord.Interaction) -> bool:
+        if not await _check_access(interaction, self.invoker_id, self.guild_id):
+            return False
+        if interaction.response.is_done():
+            return False
+        return True
+
+
+class WelcomeBorderButton(_FinishButton, discord.ui.DynamicItem[discord.ui.Button], template=_id_pattern("wborder")):
+    FIELD = "wborder"
+
+    def __init__(self, guild_id: int, clone_id, invoker_id, border: str = "none"):
+        self.guild_id, self.clone_id, self.invoker_id = guild_id, clone_id, invoker_id
+        super().__init__(discord.ui.Button(
+            label=f"Border: {_BORDER_LABELS.get(border, 'None')}",
+            style=discord.ButtonStyle.primary if border != "none" else discord.ButtonStyle.secondary,
+            emoji="\N{FRAME WITH PICTURE}", custom_id=_encode("wborder", guild_id, clone_id, invoker_id)))
+
+    @classmethod
+    async def from_custom_id(cls, interaction: discord.Interaction, item, match: re.Match):
+        return cls(*_decode(match))
+
+    async def callback(self, interaction: discord.Interaction):
+        if not await self._guard(interaction):
+            return
+        await interaction.response.defer()
+        from modules.welcome_card import BORDER_STYLES
+        cur = (await _card_opts(self.guild_id, self.clone_id))["border"]
+        nxt = BORDER_STYLES[(BORDER_STYLES.index(cur) + 1) % len(BORDER_STYLES)]
+        await _save_card_opts(self.guild_id, self.clone_id, border=nxt)
+        await _rerender(interaction, self.guild_id, self.clone_id, self.invoker_id)
+
+
+class WelcomeBorderColorModal(discord.ui.Modal, title="Border colour"):
+    def __init__(self, guild_id: int, clone_id, invoker_id, current: str = "default"):
+        super().__init__()
+        self.guild_id, self.clone_id, self.invoker_id = guild_id, clone_id, invoker_id
+        self.color = discord.ui.TextInput(
+            label="default, a colour name, or #RRGGBB", default=current, min_length=1, max_length=9, required=True,
+            placeholder="default  ·  gold  ·  #FF8800")
+        self.add_item(self.color)
+
+    async def on_submit(self, interaction: discord.Interaction):
+        from modules.welcome_card import ULTRA_TEXT_COLORS, parse_ultra_options
+        value = self.color.value.strip()
+        parsed = parse_ultra_options({"border_color": value})["border_color"]
+        if parsed == "default" and value.lower() != "default":
+            names = ", ".join(ULTRA_TEXT_COLORS)
+            await interaction.response.send_message(
+                f"I couldn't read **{discord.utils.escape_markdown(value)}**. Use `default`, a name ({names}), "
+                "or a hex colour like `#FF8800`.", ephemeral=True)
+            return
+        await interaction.response.defer()
+        await _save_card_opts(self.guild_id, self.clone_id, border_color=parsed)
+        await _rerender(interaction, self.guild_id, self.clone_id, self.invoker_id)
+
+
+class WelcomeBorderColorButton(_FinishButton, discord.ui.DynamicItem[discord.ui.Button], template=_id_pattern("wbcolor")):
+    FIELD = "wbcolor"
+
+    def __init__(self, guild_id: int, clone_id, invoker_id, color: str = "default"):
+        self.guild_id, self.clone_id, self.invoker_id = guild_id, clone_id, invoker_id
+        super().__init__(discord.ui.Button(
+            label=f"Border colour: {_border_color_label(color)}", style=discord.ButtonStyle.secondary,
+            emoji="\N{ARTIST PALETTE}", custom_id=_encode("wbcolor", guild_id, clone_id, invoker_id)))
+
+    @classmethod
+    async def from_custom_id(cls, interaction: discord.Interaction, item, match: re.Match):
+        return cls(*_decode(match))
+
+    async def callback(self, interaction: discord.Interaction):
+        if not await self._guard(interaction):
+            return
+        cur = (await _card_opts(self.guild_id, self.clone_id))["border_color"]
+        await interaction.response.send_modal(WelcomeBorderColorModal(self.guild_id, self.clone_id, self.invoker_id, cur))
+
+
+class _FlagButton(_FinishButton):
+    KEY = ""
+    LABEL = ""
+    EMOJI = ""
+
+    def __init__(self, guild_id: int, clone_id, invoker_id, on: bool = True):
+        self.guild_id, self.clone_id, self.invoker_id = guild_id, clone_id, invoker_id
+        super().__init__(discord.ui.Button(
+            label=f"{self.LABEL}: {'On' if on else 'Off'}",
+            style=discord.ButtonStyle.success if on else discord.ButtonStyle.danger,
+            emoji=self.EMOJI, custom_id=_encode(self.FIELD, guild_id, clone_id, invoker_id)))
+
+    @classmethod
+    async def from_custom_id(cls, interaction: discord.Interaction, item, match: re.Match):
+        return cls(*_decode(match))
+
+    async def callback(self, interaction: discord.Interaction):
+        if not await self._guard(interaction):
+            return
+        await interaction.response.defer()
+        cur = (await _card_opts(self.guild_id, self.clone_id))[self.KEY]
+        await _save_card_opts(self.guild_id, self.clone_id, **{self.KEY: not cur})
+        await _rerender(interaction, self.guild_id, self.clone_id, self.invoker_id)
+
+
+class WelcomeShowAvatarButton(_FlagButton, discord.ui.DynamicItem[discord.ui.Button], template=_id_pattern("wavatar")):
+    FIELD, KEY, LABEL, EMOJI = "wavatar", "show_avatar", "Avatar", "\N{BUST IN SILHOUETTE}"
+
+
+class WelcomeShowTextButton(_FlagButton, discord.ui.DynamicItem[discord.ui.Button], template=_id_pattern("wtext")):
+    FIELD, KEY, LABEL, EMOJI = "wtext", "show_text", "Text", "\N{MEMO}"
+
+
+def _finish_row(guild_id: int, clone_id, invoker_id, config: dict):
+    """The card-finish row, built from the saved options (a bad / empty value just shows the defaults)."""
+    from modules.welcome_card import parse_ultra_options
+    o = parse_ultra_options(config.get("ultra_card_json"))
+    row = discord.ui.ActionRow()
+    row.add_item(WelcomeBorderButton(guild_id, clone_id, invoker_id, o["border"]))
+    row.add_item(WelcomeBorderColorButton(guild_id, clone_id, invoker_id, o["border_color"]))
+    row.add_item(WelcomeShowAvatarButton(guild_id, clone_id, invoker_id, o["show_avatar"]))
+    row.add_item(WelcomeShowTextButton(guild_id, clone_id, invoker_id, o["show_text"]))
+    return row
+
+
 # Registered once in discord_bot/bot.py's setup_hook via
 # bot.add_dynamic_items(*DYNAMIC_ITEMS) — same mechanism as
 # _views_join_dm.py's DYNAMIC_ITEMS, so these keep working after a
@@ -1642,4 +1802,5 @@ DYNAMIC_ITEMS = (
     WelcomeCardStyleSelect, WelcomeAvatarShapeSelect, WelcomeStickerPresetSelect,
     WelcomeEditMessageButton, WelcomeToggleButton, WelcomePreviewButton, WelcomeModeToggleButton,
     WelcomeUltraPackButton, WelcomeGoodbyeButton, WelcomeDmFallbackButton, WelcomeDmTextButton,
+    WelcomeBorderButton, WelcomeBorderColorButton, WelcomeShowAvatarButton, WelcomeShowTextButton,
 )
