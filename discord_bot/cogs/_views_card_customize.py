@@ -799,6 +799,25 @@ async def _gallery_preview_bytes(session, client, guild_id: int, clone_id, slot=
     return (await _gallery_preview_pick(session, client, guild_id, clone_id, slot=slot))[0]
 
 
+class _LazySession:
+    """Looks like an aiohttp session for `.get`, but only opens the real one when a download is actually needed.
+    A tap whose avatar and picture are already cached used to still build a whole connection pool and tear it down."""
+    def __init__(self):
+        self._real = None
+
+    def get(self, *a, **k):
+        if self._real is None:
+            self._real = aiohttp.ClientSession()
+        return self._real.get(*a, **k)
+
+    async def __aenter__(self):
+        return self
+
+    async def __aexit__(self, *exc):
+        if self._real is not None:
+            await self._real.close()
+
+
 _RENDER_CFG: contextvars.ContextVar = contextvars.ContextVar("cardwz_render_cfg", default=None)
 
 
@@ -822,7 +841,7 @@ async def _render_tv(client, guild, guild_id: int, clone_id, user, full: bool = 
         cfg = _effective_config(real_cfg, guild_id, clone_id, user.id)
     pv = _PREVIEW_AS.get((guild_id, clone_id, user.id)) or {}   # studio 8b
     pic_tweak = {}   # studio 8c: the shown picture's own crop / text color (Premium/Plus gallery pictures only)
-    async with aiohttp.ClientSession() as session:
+    async with _LazySession() as session:
         avatar = await _avatar_bytes(session, user)
         if unlocked:
             bg_bytes, pic_tweak = await _gallery_preview_pick(session, client, guild_id, clone_id, slot=pv.get("slot"))
