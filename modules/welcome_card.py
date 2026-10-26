@@ -178,6 +178,11 @@ STICKER_Y = (CARD_HEIGHT - STICKER_SIZE) // 2
 MAX_STICKER_FRAMES = 40
 
 
+# PNG zlib level for rendered cards. Pillow's default (6) spends ~90% of a render squeezing the file; level 3 is ~3x faster
+# for a modestly bigger file. The editor preview passes 0 (nothing is sent at that size, it is shrunk right after).
+PNG_COMPRESS_LEVEL = 3
+
+
 def _load_font(size: int):
     if FONT_PATH:
         try:
@@ -928,6 +933,31 @@ def _region_brightness(img: Image.Image, box: tuple) -> float:
         return 0.0
 
 
+def _blur_rgba(layer: Image.Image, radius: float, shrink: int = 1) -> Image.Image:
+    """Same soft blur as layer.filter(GaussianBlur(radius)), but only over the part of the layer that has something
+    drawn on it (plus the blur's reach). Glow / shadow layers are mostly empty, so blurring all of it was the slowest
+    step of a render. `shrink` > 1 blurs a smaller copy and scales it back up (for big soft halos around the whole card)."""
+    try:
+        box = layer.getbbox()
+        if box is None:
+            return layer
+        pad = int(radius * 4) + 2
+        box = (max(0, box[0] - pad), max(0, box[1] - pad), min(layer.width, box[2] + pad), min(layer.height, box[3] + pad))
+        part = layer.crop(box)
+        if shrink > 1:
+            w, h = part.size
+            small = part.resize((max(1, w // shrink), max(1, h // shrink)), Image.Resampling.BILINEAR)
+            part = small.filter(ImageFilter.GaussianBlur(radius / shrink)).resize((w, h), Image.Resampling.BILINEAR)
+        else:
+            part = part.filter(ImageFilter.GaussianBlur(radius))
+        out = Image.new(layer.mode, layer.size, (0, 0, 0, 0) if layer.mode == "RGBA" else 0)
+        out.paste(part, box[:2])
+        return out
+    except Exception:
+        logger.debug("swallowed exception in _blur_rgba", exc_info=True)
+        return layer.filter(ImageFilter.GaussianBlur(radius))
+
+
 def _draw_frame(img: Image.Image, frame: str, color) -> Image.Image:
     """Studio 3b: a border around the whole card. Sizes are for the 1536 px wide card. Never changes the card size."""
     if frame == "none" or frame not in ULTRA_FRAMES:
@@ -947,7 +977,7 @@ def _draw_frame(img: Image.Image, frame: str, color) -> Image.Image:
     elif frame == "glow":   # studio 4f (owner approved): soft, muted glow along the edge plus a thin line
         halo = Image.new("RGBA", (W, H), (0, 0, 0, 0))
         ImageDraw.Draw(halo).rectangle((0, 0, W - 1, H - 1), outline=tuple(color) + (170,), width=26)
-        img = Image.alpha_composite(img, halo.filter(ImageFilter.GaussianBlur(16)))
+        img = Image.alpha_composite(img, _blur_rgba(halo, 16, shrink=4))
         ImageDraw.Draw(img).rectangle((0, 0, W - 1, H - 1), outline=col, width=4)
     elif frame == "rounded":
         border, radius = 16, 48
@@ -1314,13 +1344,13 @@ def _draw_custom_bg_card(username: str, subtitle: str, avatar_bytes: bytes,
     if opts["shadow"]:
         layer = Image.new("RGBA", bg.size, (0, 0, 0, 0))
         _draw_texts(ImageDraw.Draw(layer), (0, 0, 0, 235), True, off=(3, 4))
-        layer = layer.filter(ImageFilter.GaussianBlur(4))
+        layer = _blur_rgba(layer, 4)
         bg = Image.alpha_composite(bg, layer)
         draw = ImageDraw.Draw(bg)
     if opts["text_outline"] == "glow":   # studio 4f (owner approved): soft glow in the text color behind the text
         glow = Image.new("RGBA", bg.size, (0, 0, 0, 0))
         _draw_texts(ImageDraw.Draw(glow), tuple(color[:3]) + (200,), True, st=3)
-        bg = Image.alpha_composite(bg, glow.filter(ImageFilter.GaussianBlur(9)))
+        bg = Image.alpha_composite(bg, _blur_rgba(glow, 9))
         draw = ImageDraw.Draw(bg)
     _draw_texts(draw, color, False, st=stroke)
 
@@ -1354,7 +1384,8 @@ def render_welcome_card(avatar_bytes: bytes, username: str, subtitle: str,
                          use_template: bool = True,
                          theme: str = "wolf",
                          custom_background_bytes: Optional[bytes] = None,
-                         ultra_options=None) -> tuple[bytes, str]:
+                         ultra_options=None,
+                         png_level: int = PNG_COMPRESS_LEVEL) -> tuple[bytes, str]:
     """Returns (image_bytes, image_format) where image_format is 'GIF' or
     'PNG'. subtitle is typically 'Member #N' or similar.
 
@@ -1412,9 +1443,8 @@ def render_welcome_card(avatar_bytes: bytes, username: str, subtitle: str,
                                              theme=theme)
         if templated is not None:
             out = io.BytesIO()
-            templated.convert("RGB").save(out, format="PNG")
-            out.seek(0)
-            return out.read(), "PNG"
+            templated.convert("RGB").save(out, format="PNG", compress_level=png_level)
+            return out.getvalue(), "PNG"
         # Falls through to the flat-color card below if the template
         # background couldn't be loaded.
 
@@ -1455,6 +1485,5 @@ def render_welcome_card(avatar_bytes: bytes, username: str, subtitle: str,
         final = base.copy()
         final.paste(sticker_frames[0], (STICKER_X, STICKER_Y), sticker_frames[0])
     out = io.BytesIO()
-    final.convert("RGB").save(out, format="PNG")
-    out.seek(0)
-    return out.read(), "PNG"
+    final.convert("RGB").save(out, format="PNG", compress_level=png_level)
+    return out.getvalue(), "PNG"
