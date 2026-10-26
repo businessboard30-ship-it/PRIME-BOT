@@ -45,6 +45,7 @@ _views_welcome imports THIS module only lazily inside a callback.
 """
 
 import asyncio
+import contextvars
 import io
 import secrets
 import json
@@ -223,17 +224,37 @@ def _set_draft_bg(guild_id: int, clone_id, user_id, small: bytes) -> None:
         logger.exception("[cardwz] draft picture budget failed")
 
 
+_WM_LAYER_CACHE: dict = {}   # (w, h) -> the PREVIEW stripe layer; the stripes never change, so draw them once per size
+
+
+def _watermark_layer(size: tuple):
+    layer = _WM_LAYER_CACHE.get(size)
+    if layer is None:
+        layer = Image.new("RGBA", size, (0, 0, 0, 0))
+        d = ImageDraw.Draw(layer)
+        step = max(90, size[0] // 6)
+        for y in range(-step, size[1] + step, step):
+            for x in range(-step, size[0] + step, step * 2):
+                d.text((x + (y // step % 2) * step, y), "PREVIEW", fill=(255, 255, 255, 70))
+        _trim(_WM_LAYER_CACHE, 8)
+        _WM_LAYER_CACHE[size] = layer
+    return layer
+
+
+def _watermark_image(img: Image.Image) -> Image.Image:
+    """Stamp PREVIEW on a PIL image (no PNG round trip). Returns the image unchanged on any error."""
+    try:
+        return Image.alpha_composite(img.convert("RGBA"), _watermark_layer(img.size)).convert("RGB")
+    except Exception:
+        logger.debug("swallowed exception in _watermark_image", exc_info=True)
+        return img
+
+
 def _watermark(card_bytes: bytes) -> bytes:
     try:
-        img = Image.open(io.BytesIO(card_bytes)).convert("RGBA")
-        layer = Image.new("RGBA", img.size, (0, 0, 0, 0))
-        d = ImageDraw.Draw(layer)
-        step = max(90, img.size[0] // 6)
-        for y in range(-step, img.size[1] + step, step):
-            for x in range(-step, img.size[0] + step, step * 2):
-                d.text((x + (y // step % 2) * step, y), "PREVIEW", fill=(255, 255, 255, 70))
+        img = _watermark_image(Image.open(io.BytesIO(card_bytes)).convert("RGB"))
         out = io.BytesIO()
-        Image.alpha_composite(img, layer).convert("RGB").save(out, format="PNG")
+        img.save(out, format="PNG", compress_level=1)
         return out.getvalue()
     except Exception:
         logger.debug("swallowed exception in _watermark", exc_info=True)
@@ -417,7 +438,7 @@ _TV_STATE: dict = {}         # same key -> filename of the picture now on the ed
 _TV_NOTES: dict = {}         # same key -> caption note from the last render
 _GEN: dict = {}              # same key -> latest redraw request number (batches quick taps)
 _LOCKS: dict = {}            # same key -> asyncio.Lock (one render at a time per editor)
-_REDRAW_DELAY = 0.35         # taps inside this window collapse into ONE redraw
+_REDRAW_DELAY = 0.15         # taps inside this window collapse into ONE redraw
 _TV_WIDTH = 960              # the TV is a downscaled copy; the real card is untouched
 _AVATAR_CACHE: dict = {}     # (user_id, avatar key) -> bytes
 _BG_CACHE: dict = {}         # custom background url -> (monotonic ts, bytes)
@@ -710,14 +731,17 @@ def build_customize_view(guild_id: int, clone_id, invoker_id, config: dict, tab:
 
 
 def _tv_finish(card_bytes: bytes, watermark: bool, full: bool = False) -> bytes:
-    """Downscaled PNG copy for the TV (the card the bot posts on joins is never touched). `full` keeps the real size."""
+    """Downscaled PNG copy for the TV (the card the bot posts on joins is never touched). `full` keeps the real size.
+    One decode, one resize, the watermark drawn on the same picture, ONE PNG encode (this used to be encode, decode,
+    encode, decode, encode)."""
     img = Image.open(io.BytesIO(card_bytes)).convert("RGB")
     if img.width > _TV_WIDTH and not full:
-        img.thumbnail((_TV_WIDTH, _TV_WIDTH * 4))
+        img.thumbnail((_TV_WIDTH, _TV_WIDTH * 4), Image.Resampling.BILINEAR, reducing_gap=2.0)
+    if watermark:
+        img = _watermark_image(img)
     out = io.BytesIO()
-    img.save(out, format="PNG")
-    data = out.getvalue()
-    return _watermark(data) if watermark else data
+    img.save(out, format="PNG", compress_level=1)
+    return out.getvalue()
 
 
 async def _avatar_bytes(session: aiohttp.ClientSession, user) -> bytes:
@@ -775,6 +799,9 @@ async def _gallery_preview_bytes(session, client, guild_id: int, clone_id, slot=
     return (await _gallery_preview_pick(session, client, guild_id, clone_id, slot=slot))[0]
 
 
+_RENDER_CFG: contextvars.ContextVar = contextvars.ContextVar("cardwz_render_cfg", default=None)
+
+
 async def _render_tv(client, guild, guild_id: int, clone_id, user, full: bool = False, live: bool = False):
     """Draw the real card for the editor. Returns (png_bytes, caption_note). Raises on failure.
     No rate limit: unpaid servers get the same watermarked draft preview, as often as they like.
@@ -783,7 +810,9 @@ async def _render_tv(client, guild, guild_id: int, clone_id, user, full: bool = 
     from discord_bot.cogs.welcome import _custom_bg_bytes_for_render
     if guild is None:
         raise RuntimeError("the server isn't available to this bot")
-    real_cfg = await db.get_welcome_config(guild_id, clone_id=clone_id)
+    real_cfg = _RENDER_CFG.get()   # _rerender just loaded it: skip a second database read
+    if real_cfg is None:
+        real_cfg = await db.get_welcome_config(guild_id, clone_id=clone_id)
     unlocked = bool(real_cfg.get("ultra_pack_unlocked"))
     if live:
         from modules.welcome_studio import options_for_render, avatar_shape_for_render
@@ -822,6 +851,7 @@ async def _render_tv(client, guild, guild_id: int, clone_id, user, full: bool = 
         custom_background_bytes=bg_bytes,
         ultra_options=({**parse_ultra_options(cfg.get("ultra_card_json")), **pic_tweak} if pic_tweak
                        else cfg.get("ultra_card_json")),
+        png_level=0,   # only an intermediate: _tv_finish shrinks and re-encodes it right away
     )
     png = await asyncio.to_thread(_tv_finish, card_bytes, not unlocked, full)
     note = "Sample backdrop \u2014 tap Upload image to use your own" if using_sample else "Your background"
@@ -926,11 +956,16 @@ async def _rerender(interaction: discord.Interaction, guild_id: int, clone_id, i
     async with lock:
         if _GEN.get(key) != gen:
             return
-        config = await _with_studio(await db.get_welcome_config(guild_id, clone_id=clone_id), guild_id, clone_id, interaction.user.id)
+        raw_cfg = await db.get_welcome_config(guild_id, clone_id=clone_id)
+        config = await _with_studio(raw_cfg, guild_id, clone_id, interaction.user.id)
         tv = None
         try:
-            tv = await _render_tv(interaction.client, interaction.guild or interaction.client.get_guild(guild_id),
-                                  guild_id, clone_id, interaction.user)
+            _tok = _RENDER_CFG.set(raw_cfg)
+            try:
+                tv = await _render_tv(interaction.client, interaction.guild or interaction.client.get_guild(guild_id),
+                                      guild_id, clone_id, interaction.user)
+            finally:
+                _RENDER_CFG.reset(_tok)
         except Exception as e:
             logger.warning(f"[cardwz] preview failed for guild {guild_id}: {type(e).__name__}: {e}", exc_info=True)
         tab = _get_tab(key)
