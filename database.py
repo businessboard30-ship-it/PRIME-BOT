@@ -157,7 +157,8 @@ _pool_loop = None  # the asyncio event loop _pool's connections belong to
 # Do NOT bump it for unrelated changes — an unnecessary bump forces every
 # bot/clone's next cold start to run the full DDL pass again, which is
 # exactly the schema-reload storm this version check exists to avoid.
-SCHEMA_VERSION = "134"
+SCHEMA_VERSION = "135"
+# "134" -> "135" adds 086_ticket_v2.sql (panel_title/panel_text/panel_color on discord_ticket_config, category/topic on discord_tickets). ADD COLUMN IF NOT EXISTS only. Bump-or-it-never-runs trap: tests/unit/test_schema_version_guard.py
 # "133" -> "134" adds 085_anime_feed_nudge.sql (anime_feed_nudge: one setup reminder per server). CREATE TABLE IF NOT EXISTS only. Bump-or-it-never-runs trap: tests/unit/test_schema_version_guard.py
 # "132" -> "133" adds 084_anime_spawn.sql (anime_feed_config.spawn_interval_minutes + last_spawn_at, anime_feed_spawned). ADD COLUMN / CREATE TABLE IF NOT EXISTS only. Bump-or-it-never-runs trap: tests/unit/test_schema_version_guard.py
 # "131" -> "132" adds 083_welcome_design_schedule.sql (sched_* on discord_welcome_designs + design_schedule_on on discord_welcome_config: Welcome Card Studio Phase 7a). ADD COLUMN IF NOT EXISTS only.
@@ -5862,6 +5863,11 @@ class Database:
         if anime_spawn_migration.exists():
             await conn.execute(anime_spawn_migration.read_text())
 
+        # Ticket system V2: panel look + per-ticket category/topic. Additive/idempotent.
+        ticket_v2_migration = pathlib.Path(__file__).parent / "database" / "migrations" / "086_ticket_v2.sql"
+        if ticket_v2_migration.exists():
+            await conn.execute(ticket_v2_migration.read_text())
+
         # Anime setup nudge: one mod-log reminder per server that never set the feed up. Additive/idempotent.
         anime_nudge_migration = pathlib.Path(__file__).parent / "database" / "migrations" / "085_anime_feed_nudge.sql"
         if anime_nudge_migration.exists():
@@ -11429,6 +11435,13 @@ class Database:
         await anime_feed.save_config(cfg)          # turns on only with a channel, stamps enabled_at
         return await self.get_anime_feed_config(guild_id, clone_id)
 
+    _TICKET_COLS = (
+        "support_role_id", "category_id", "panel_channel_id", "panel_message_id", "welcome_message",
+        "wizard_channel_id", "wizard_message_id", "wizard_invoker_id",
+        "categories_json", "custom_buttons_json", "auto_close_hours", "transcript_channel_id", "custom_close_message",
+        "panel_title", "panel_text", "panel_color",
+    )
+
     async def get_ticket_config(self, guild_id: int, clone_id: Optional[int] = None) -> Dict:
         pool = await get_pool()
         async with pool.acquire() as conn:
@@ -11437,43 +11450,35 @@ class Database:
                 guild_id, clone_id
             )
             if row:
-                return dict(row)
-            return {
-                "guild_id": guild_id, "clone_id": clone_id, "support_role_id": None,
-                "category_id": None, "panel_channel_id": None, "panel_message_id": None,
-                "welcome_message": None,
-                "wizard_channel_id": None, "wizard_message_id": None, "wizard_invoker_id": None,
-            }
+                d = dict(row)
+                for c in self._TICKET_COLS:
+                    d.setdefault(c, None)
+                return d
+            d = {"guild_id": guild_id, "clone_id": clone_id}
+            d.update({c: None for c in self._TICKET_COLS})
+            return d
 
     async def set_ticket_config(self, guild_id: int, clone_id: Optional[int] = None, **fields) -> Dict:
-        """fields may include support_role_id, category_id, panel_channel_id,
-        panel_message_id, welcome_message, wizard_channel_id,
-        wizard_message_id, wizard_invoker_id — any key omitted keeps its
-        current value (upsert-merge), same convention as set_automod_config."""
+        """fields may include any of _TICKET_COLS (the free setup, the wizard pointers and the premium extras: categories,
+        custom buttons, auto-close, transcript channel, close message, panel look). A key that is left out keeps its
+        current value (upsert-merge); pass None to clear one."""
         current = await self.get_ticket_config(guild_id, clone_id=clone_id)
-        support_role_id = fields.get("support_role_id", current["support_role_id"])
-        category_id = fields.get("category_id", current["category_id"])
-        panel_channel_id = fields.get("panel_channel_id", current["panel_channel_id"])
-        panel_message_id = fields.get("panel_message_id", current["panel_message_id"])
-        welcome_message = fields.get("welcome_message", current.get("welcome_message"))
-        wizard_channel_id = fields.get("wizard_channel_id", current.get("wizard_channel_id"))
-        wizard_message_id = fields.get("wizard_message_id", current.get("wizard_message_id"))
-        wizard_invoker_id = fields.get("wizard_invoker_id", current.get("wizard_invoker_id"))
+        cols = self._TICKET_COLS
+        values = [fields.get(c, current.get(c)) for c in cols]
+        names = ", ".join(("guild_id", "clone_id") + cols)
+        params = ", ".join(f"${i}" for i in range(1, len(cols) + 3))
+        updates = ", ".join(f"{c} = ${i}" for i, c in enumerate(cols, start=3))
         pool = await get_pool()
         async with pool.acquire() as conn:
             row = await conn.fetchrow(
-                """
-                INSERT INTO discord_ticket_config
-                    (guild_id, clone_id, support_role_id, category_id, panel_channel_id, panel_message_id,
-                     welcome_message, wizard_channel_id, wizard_message_id, wizard_invoker_id)
-                VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
+                f"""
+                INSERT INTO discord_ticket_config ({names})
+                VALUES ({params})
                 ON CONFLICT (guild_id, (COALESCE(clone_id, -1))) DO UPDATE
-                    SET support_role_id = $3, category_id = $4, panel_channel_id = $5, panel_message_id = $6,
-                        welcome_message = $7, wizard_channel_id = $8, wizard_message_id = $9, wizard_invoker_id = $10
+                    SET {updates}
                 RETURNING *
                 """,
-                guild_id, clone_id, support_role_id, category_id, panel_channel_id, panel_message_id,
-                welcome_message, wizard_channel_id, wizard_message_id, wizard_invoker_id
+                guild_id, clone_id, *values
             )
             return dict(row)
 
@@ -11582,18 +11587,28 @@ class Database:
             )
             return [dict(r) for r in rows]
 
-    async def create_ticket(self, guild_id: int, channel_id: int, opener_id: int, clone_id: Optional[int] = None) -> Dict:
+    async def create_ticket(self, guild_id: int, channel_id: int, opener_id: int, clone_id: Optional[int] = None,
+                            category: Optional[str] = None, topic: Optional[str] = None) -> Dict:
         pool = await get_pool()
         async with pool.acquire() as conn:
             row = await conn.fetchrow(
                 """
-                INSERT INTO discord_tickets (guild_id, clone_id, channel_id, opener_id)
-                VALUES ($1, $2, $3, $4)
+                INSERT INTO discord_tickets (guild_id, clone_id, channel_id, opener_id, category, topic)
+                VALUES ($1, $2, $3, $4, $5, $6)
                 RETURNING *
                 """,
-                guild_id, clone_id, channel_id, opener_id
+                guild_id, clone_id, channel_id, opener_id, category, topic
             )
             return dict(row)
+
+    async def list_open_tickets(self, clone_id: Optional[int] = None, limit: int = 500) -> list:
+        """Every open ticket of this bot (main or one clone), for the auto-close pass."""
+        pool = await get_pool()
+        async with pool.acquire() as conn:
+            rows = await conn.fetch(
+                "SELECT * FROM discord_tickets WHERE status = 'open' AND clone_id IS NOT DISTINCT FROM $1 ORDER BY id LIMIT $2",
+                clone_id, limit)
+            return [dict(r) for r in rows]
 
     async def get_ticket(self, channel_id: int) -> Optional[Dict]:
         pool = await get_pool()
