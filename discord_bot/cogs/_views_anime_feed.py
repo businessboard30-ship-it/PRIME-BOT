@@ -194,8 +194,13 @@ def _plus():
     return ap
 
 
+def _nudge():
+    from discord_bot.cogs import _views_anime_nudge
+    return _views_anime_nudge
+
+
 def _all_dynamic_items():
-    return (_FollowButton, _MoreButton) + tuple(_actions().ACTION_ITEMS) + tuple(_browse().BROWSE_ITEMS) + tuple(_plus().PLUS_ITEMS)
+    return (_FollowButton, _MoreButton) + tuple(_nudge().NUDGE_ITEMS) + tuple(_actions().ACTION_ITEMS) + tuple(_browse().BROWSE_ITEMS) + tuple(_plus().PLUS_ITEMS)
 
 
 # -- old buttons ------------------------------------------------------------------------------
@@ -205,7 +210,7 @@ def _all_dynamic_items():
 # Families are the text before the first ':'. When a feature is ever REMOVED, move its family into RETIRED_FAMILIES so its old cards
 # still get this message. Only these families are answered, never another module's ids.
 LIVE_FAMILIES = frozenset({"anime_follow", "anime_more", "anime_alert", "anime_amode", "anime_atz", "anime_aq", "anime_mute", "anime_pg",
-                           "anime_search", "anime_cats", "anime_catsel", "anime_plus", "anime_plus_pay", "anime_plus_verify"})
+                           "anime_search", "anime_cats", "anime_catsel", "anime_plus", "anime_plus_pay", "anime_plus_verify", "anime_nudge"})
 RETIRED_FAMILIES: frozenset = frozenset()
 STALE_TEXT = "🔄 That button is from an older version of this card and doesn't work any more. Tap a button on the **newest anime post** instead."
 
@@ -277,13 +282,15 @@ def _info_box(text: str, rows=()) -> discord.ui.Container:
     return box
 
 
+AUTO_CHANNEL_NAME = "anime-spawns"
+AUTO_ROLE_NAME = "Anime Pings"
 KIND_LABELS = {"both": "Anime and donghua", "anime": "Anime only", "donghua": "Donghua only (Chinese animation)"}
 
 
 def setup_text(cfg: af.FeedConfig, note: Optional[str] = None) -> str:
     parts = [note, ""] if note else []
     parts += ["## 🎌 Anime spawns",
-              "Pick a channel and how often an anime should spawn there. Each spawn is a random popular title from AniList with every button on it "
+              "Pick a channel (or let me create one), choose how often an anime should spawn there, and turn it on. **Quick setup** does all of it in one tap. Each spawn is a random popular title from AniList with every button on it "
               "(Read more, Follow, Alerts, Search, Categories). Adult titles are never shown. Until you set this up, I do nothing in your server.", "",
               f"**Channel:** {f'<#{cfg.channel_id}>' if cfg.channel_id else 'not picked yet'}",
               f"**Spawns:** {af.interval_label(cfg.spawn_interval_minutes)}",
@@ -337,6 +344,9 @@ class AnimeSetupView(discord.ui.LayoutView):
                                  options=[_interval_option(m, self.cfg.spawn_interval_minutes) for m in af.SPAWN_INTERVALS])
         pace.callback = self._on_interval
         rows = [discord.ui.ActionRow(sel), discord.ui.ActionRow(pace), discord.ui.ActionRow(role), discord.ui.ActionRow(kinds), discord.ui.ActionRow(
+            _btn("Quick setup", self._on_quick, discord.ButtonStyle.success, "⚡"),
+            _btn("Create channel", self._on_create_channel, emoji="➕"),
+            _btn("Create ping role", self._on_create_role, emoji="🎭")), discord.ui.ActionRow(
             _btn("Preview", self._on_preview, discord.ButtonStyle.primary, "👀"),
             _btn("Post a test", self._on_test, emoji="🧪", disabled=not ready),
             _btn("Turn off" if self.cfg.enabled else "Turn on", self._on_toggle,
@@ -420,6 +430,83 @@ class AnimeSetupView(discord.ui.LayoutView):
             self.note = OOPS
         await self._push(interaction)
 
+
+    # ── auto-create (channel, role) and one-tap quick setup ──
+    async def _make_channel(self) -> Optional[discord.TextChannel]:
+        """The #anime-spawns channel: reuse one that already exists and I can write in, otherwise create it. Sets self.note on failure."""
+        me = self.guild.me
+        existing = discord.utils.get(self.guild.text_channels, name=AUTO_CHANNEL_NAME)
+        if existing is not None and existing.permissions_for(me).send_messages:
+            return existing
+        if not me.guild_permissions.manage_channels:
+            self.note = "🚫 I need the **Manage Channels** permission to create the channel. Give it to me, or pick a channel yourself."
+            return None
+        try:
+            return await self.guild.create_text_channel(
+                AUTO_CHANNEL_NAME, topic="A random anime or donghua spawns here. Tap Follow on one to get pinged for new episodes.",
+                overwrites={me: discord.PermissionOverwrite(view_channel=True, send_messages=True, embed_links=True, read_message_history=True)},
+                reason="Anime spawns setup (requested by a server manager)")
+        except (discord.Forbidden, discord.HTTPException):
+            logger.warning("[anime-feed] couldn't create the anime channel in guild %s", self.guild.id, exc_info=True)
+            self.note = "🚫 I couldn't create the channel. Check my **Manage Channels** permission, or pick a channel yourself."
+            return None
+
+    async def _on_create_channel(self, interaction: discord.Interaction):
+        await interaction.response.defer()
+        channel = await self._make_channel()
+        if channel is not None:
+            self.cfg.channel_id = channel.id
+            try:
+                await af.save_config(self.cfg, interaction.user.id)
+                self.note = f"✅ Channel ready: {channel.mention}."
+            except Exception:
+                logger.exception("[anime-feed] couldn't save the created channel")
+                self.note = OOPS
+        await self._push(interaction)
+
+    async def _on_create_role(self, interaction: discord.Interaction):
+        await interaction.response.defer()
+        me = self.guild.me
+        role = discord.utils.get(self.guild.roles, name=AUTO_ROLE_NAME)
+        if role is None or role.managed or role.is_default():
+            if not me.guild_permissions.manage_roles:
+                self.note = "🚫 I need the **Manage Roles** permission to create the role. Give it to me, or pick a role yourself."
+                await self._push(interaction)
+                return
+            try:
+                role = await self.guild.create_role(name=AUTO_ROLE_NAME, mentionable=True, reason="Anime spawns setup (requested by a server manager)")
+            except (discord.Forbidden, discord.HTTPException):
+                logger.warning("[anime-feed] couldn't create the ping role in guild %s", self.guild.id, exc_info=True)
+                self.note = "🚫 I couldn't create the role. Check my **Manage Roles** permission, or pick a role yourself."
+                await self._push(interaction)
+                return
+        self.cfg.ping_role_id = role.id
+        try:
+            await af.save_config(self.cfg, interaction.user.id)
+            self.note = f"✅ I'll ping {role.mention} on every spawn. Members can take the role from your self-roles or you can give it out."
+        except Exception:
+            logger.exception("[anime-feed] couldn't save the created role")
+            self.note = OOPS
+        await self._push(interaction)
+
+    async def _on_quick(self, interaction: discord.Interaction):
+        """Channel (kept if already picked, otherwise created) + the interval already shown + switched on, in one tap."""
+        await interaction.response.defer()
+        channel = self.guild.get_channel(self.cfg.channel_id) if self.cfg.channel_id else None
+        if channel is None or not channel.permissions_for(self.guild.me).send_messages:
+            channel = await self._make_channel()
+        if channel is not None:
+            self.cfg.channel_id, self.cfg.enabled = channel.id, True
+            try:
+                await af.save_config(self.cfg, interaction.user.id)
+                self.note = (f"⚡ All set. Anime spawns are ON in {channel.mention}, {af.interval_label(self.cfg.spawn_interval_minutes)}. "
+                             "The first one comes after one interval. Change anything below any time.")
+            except Exception:
+                logger.exception("[anime-feed] quick setup couldn't save")
+                self.cfg.enabled = False
+                self.note = OOPS
+        await self._push(interaction)
+
     async def _on_preview(self, interaction: discord.Interaction):
         await interaction.response.defer()
         items, ok = await spawn.sample(self.cfg.content_kinds)
@@ -496,3 +583,14 @@ async def open_setup(bot, guild: discord.Guild, clone_id, owner_id: int, channel
     msg = await channel.send(view=view, allowed_mentions=discord.AllowedMentions.none())
     view.message = msg
     return msg
+
+
+async def open_setup_ephemeral(interaction: discord.Interaction, guild: discord.Guild, clone_id) -> None:
+    """Opens the wizard privately for the person who tapped a button (used by the mod-log reminder)."""
+    cfg = await af.get_config(guild.id, clone_id)
+    view = AnimeSetupView(guild, clone_id, interaction.user.id, cfg)
+    await interaction.response.send_message(view=view, ephemeral=True, allowed_mentions=discord.AllowedMentions.none())
+    try:
+        view.message = await interaction.original_response()
+    except discord.HTTPException:
+        pass
