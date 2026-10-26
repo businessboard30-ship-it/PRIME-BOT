@@ -29,22 +29,11 @@ logger = logging.getLogger(__name__)
 _SUB_RE = re.compile(r"^premium_sub:(\d+):(-|\d+)$")
 
 
-_PERKS = (
-    "🎉 **Giveaways** — bonus entries, auto-reroll, scheduling & custom colors\n"
-    "🎫 **Tickets** — categories, custom buttons, transcripts & auto-close\n"
-    "🎵 **Music Pro** — unlimited plays, uploads & downloads\n"
-    "🎴 **Welcome Cards** — premium themes + your own background\n"
-    "🔤 **Fonts & Designs** — 20+ fonts, frames & emoji tags\n"
-    "🎨 **Custom Roles** — every member styles their own\n"
-    "💀 **Hardcore Roast** — unfiltered roast battles\n"
-    "🤖 **AI Chat** — 5x daily limit (30/day)\n"
-    "🖼️ **Bot Branding** — your own bot name, avatar & banner\n"
-    "🎮 **Roblox Alerts** — auto game update posts\n"
-    "🛡️ **Anti-raid Pro** — join-profile filter, raid reports & quarantine-and-review\n"
-    "🔍 **Scam Shield AI** — 20 AI image scam checks a day (free: 5), plus backup checks\n"
-    "📝 **Application Forms** — 10 live forms, 5 questions, 10 colours & auto-role on accept\n"
-    "🆕 **Every future feature** — free, automatically"
-)
+def _perks_text() -> str:
+    """The perk lines of the pitch, generated from modules/premium_perks.py (numbers come from the code that enforces them)."""
+    return "\n".join(pp.pitch_lines())
+
+
 _PLUS_SWITCH_NOTE = ("-# Switching from Premium? Cancel the old Premium membership on Gumroad after you subscribe to Plus, "
                      "so you aren't billed for both.")
 
@@ -67,7 +56,7 @@ def _pitch_text(fee: float, status_line: str) -> str:
         f"## 💎 Go Premium — ${fee:g}/month for your whole server\n"
         f"-# Or ${config.PREMIUM_YEARLY_FEE_USD:g}/year (save {_yearly_savings_pct()}%) · "
         f"${config.PREMIUM_LIFETIME_FEE_USD:g} lifetime, one-time\n"
-        f"{status_line}\n\n{_PERKS}\n\n"
+        f"{status_line}\n\n{_perks_text()}\n\n"
         f"✨ **Premium Plus** — ${config.PREMIUM_PLUS_FEE_USD:g}/month or ${config.PREMIUM_PLUS_YEARLY_FEE_USD:g}/year: "
         f"AI chat {config.PREMIUM_PLUS_REPLY_CAP}/day and {config.PREMIUM_PLUS_SCAM_VISION_DAILY} AI scam checks a day\n\n"
         "🌍 Global: Gumroad, cancel anytime · 🇬🇭 Ghana: Paystack, 30 days per payment\n"
