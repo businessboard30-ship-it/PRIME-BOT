@@ -63,7 +63,7 @@ def no_images(monkeypatch):
 
 def test_persistent_buttons_in_a_v2_row_keep_their_ids_and_match_their_templates():
     view = v.spawn_post(31, "Cat", PIC, NEXT)
-    assert _ids(view) == ["cat_adopt:31", "cat_mine", "cat_market", "cat_help", "cat_menu"]
+    assert _ids(view) == ["cat_adopt:31", "cat_mine", "cat_market", "cat_help", "cat_menu", "cat_home"]
     classes = {c.__discord_ui_compiled_template__.pattern: c for c in v.DYNAMIC_ITEMS}
     for cid in _ids(view):
         hits = [(pat, cls) for pat, cls in classes.items() if re.fullmatch(pat, cid)]
@@ -82,14 +82,14 @@ def test_a_dynamic_item_is_rebuilt_from_a_v2_message_button_id():
 
 def test_the_registered_dynamic_items_cover_every_id_on_the_new_posts():
     names = {c.__name__ for c in v.DYNAMIC_ITEMS}
-    assert {"AdoptButton", "MyCatsButton", "HelpButton", "MenuButton"} <= names
+    assert {"AdoptButton", "MyCatsButton", "HelpButton", "MenuButton", "HomeSpawnButton"} <= names
 
 
 # ── spawn post ─────────────────────────────────────────────────────────────────────────────────────────────────────
 
 def test_spawn_post_budget_and_content():
     view = v.spawn_post(31, "A cat", PIC, NEXT)
-    assert 8 <= _count(view) <= 40 and _count(view) == 10      # container, text, picture, separator, row, 5 buttons
+    assert 8 <= _count(view) <= 40 and _count(view) == 12      # container, text, picture, separator, 2 rows, 6 buttons
     text = v.view_text(view)
     assert text.startswith("## A cat") and "Next cat" in text and "<t:" in text
     assert any(isinstance(c, discord.ui.MediaGallery) for c in view.walk_children())

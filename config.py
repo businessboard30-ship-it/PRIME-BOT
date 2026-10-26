@@ -661,6 +661,11 @@ DISCORD_OWNER_BROADCAST_IDS = {1534574875274903562} or DISCORD_CLONE_ADMIN_IDS
 # Hardcoded (was DISCORD_OWNER_BRAND_NAME env var) — static branding text.
 DISCORD_OWNER_BRAND_NAME = "the bot owner"
 
+# Temporary switch: True stops every background check of the Disguild (GuildAtlas) site -- the health poll, the
+# knowledge refresh, presence/stats/member reports, invite and web-log polling. Set to False to turn them back on.
+# (Gumroad payment forwarding for Disguild orders is not a check and is left alone.)
+GUILDATLAS_POLLING_PAUSED = True
+
 # Invite link to your own support server, shown as a link button on the
 # owner join DM wizard (discord_bot/cogs/_views_join_dm.py). Empty string
 # means the button is simply omitted rather than sent broken.

@@ -158,6 +158,7 @@ def spawn_layout(spawn_id: Optional[int], heading: str, body: str = "", image=No
         box.add_item(discord.ui.Separator())
         box.add_item(discord.ui.ActionRow(AdoptButton(spawn_id, adopted=adopted, gone=gone), MyCatsButton(),
                                           _market.MarketButton(), HelpButton(), MenuButton()))
+        box.add_item(discord.ui.ActionRow(HomeSpawnButton()))   # a row of its own: the first row is already full (5)
     view.add_item(box)
     return view
 
@@ -220,6 +221,7 @@ def spawn_view(spawn_id: int, adopted: bool = False, gone: bool = False) -> disc
     view.add_item(_market.MarketButton())
     view.add_item(HelpButton())
     view.add_item(MenuButton())
+    view.add_item(HomeSpawnButton())
     return view
 
 
@@ -237,6 +239,22 @@ class MenuButton(discord.ui.DynamicItem[discord.ui.Button], template=r"^cat_menu
     async def callback(self, interaction: discord.Interaction):
         from discord_bot.cogs._views_cat_hub import open_hub
         await open_hub(interaction)
+
+
+class HomeSpawnButton(discord.ui.DynamicItem[discord.ui.Button], template=r"^cat_home$"):
+    """Opens the player's cat Home (buy a home, vault) straight from a spawn, the same screen as Home in the /cat menu."""
+
+    def __init__(self):
+        super().__init__(discord.ui.Button(label="Home", emoji="🏡", style=discord.ButtonStyle.primary,
+                                           custom_id="cat_home"))
+
+    @classmethod
+    async def from_custom_id(cls, interaction: discord.Interaction, item, match: re.Match):
+        return cls()
+
+    async def callback(self, interaction: discord.Interaction):
+        from discord_bot.cogs._views_cat_home import HomeButton
+        await HomeButton().callback(interaction)
 
 
 class HelpButton(discord.ui.DynamicItem[discord.ui.Button], template=r"^cat_help$"):
@@ -1143,7 +1161,7 @@ from discord_bot.cogs import _views_cat_arena as _arena  # noqa: E402
 
 from discord_bot.cogs import _views_market_voice as _mvoice  # noqa: E402
 
-DYNAMIC_ITEMS = (AdoptButton, MyCatsButton, HelpButton, MenuButton) + _market.DYNAMIC_ITEMS + _arena.DYNAMIC_ITEMS + _mvoice.DYNAMIC_ITEMS
+DYNAMIC_ITEMS = (AdoptButton, MyCatsButton, HelpButton, MenuButton, HomeSpawnButton) + _market.DYNAMIC_ITEMS + _arena.DYNAMIC_ITEMS + _mvoice.DYNAMIC_ITEMS
 
 
 # ── My cats: search, filters, sorting ──────────────────────────────────────
