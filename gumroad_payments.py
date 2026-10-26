@@ -159,6 +159,8 @@ def _matches_product(payment_type: str, fields: dict) -> bool:
 async def _sale_is_valid(sale_id: str, payment_type: str) -> bool:
     token = config.GUMROAD_ACCESS_TOKEN
     if not token:
+        from modules import owner_env as _oe
+        _oe.note_missing("GUMROAD_ACCESS_TOKEN", "Gumroad sale checks")
         logger.warning("[gumroad] GUMROAD_ACCESS_TOKEN not set — skipping API sale verification")
         return True
     try:

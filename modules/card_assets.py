@@ -137,6 +137,8 @@ async def _post_moderation(png: bytes) -> dict:
     import httpx
     key = os.getenv("OPENAI_API_KEY")
     if not key:
+        from modules import owner_env as _oe
+        _oe.note_missing("OPENAI_API_KEY", "card art")
         raise RuntimeError("OPENAI_API_KEY is not set")
     async with httpx.AsyncClient(timeout=30.0) as client:
         resp = await client.post(

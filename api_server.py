@@ -282,4 +282,9 @@ if __name__ == "__main__":
     server = ThreadingHTTPServer(("0.0.0.0", port), Dispatcher)
     logger.info("Dashboard/webhook server listening on 0.0.0.0:%d", port)
     logger.info("Routes: %s", ", ".join(ROUTES.keys()))
+    try:   # exits this process when the owner presses Restart in /admin envsetup, and keeps live keys fresh
+        from modules import owner_env as _oe
+        asyncio.run_coroutine_threadsafe(_oe.restart_watcher(), _shared_loop)
+    except Exception:
+        logger.exception("owner_env watcher not started")
     server.serve_forever()

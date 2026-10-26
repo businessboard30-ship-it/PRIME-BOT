@@ -254,3 +254,84 @@ def test_alert_missing_skips_when_set_or_unknown(monkeypatch):
     monkeypatch.setenv("PAYSTACK_SECRET_KEY", "sk")
     assert asyncio.run(oe.alert_missing("PAYSTACK_SECRET_KEY", "x")) is False
     assert asyncio.run(oe.alert_missing("NOT_A_KEY", "x")) is False
+
+
+# ── v2: live config, feature map, missing keys, tests, undo ─────────────
+
+def test_live_and_feature_keys_are_all_managed():
+    assert oe.LIVE <= set(oe.BY_NAME)
+    assert set(oe.FEATURE) <= set(oe.BY_NAME)
+    assert oe.TESTABLE <= set(oe.BY_NAME)
+
+
+def test_config_reads_live_keys_at_call_time(monkeypatch):
+    import config
+    # other tests monkeypatch these names, which can leave a plain attribute behind; clear it so __getattr__ is used
+    for n in ("CAT_API_KEY", "PAYSTACK_PUBLIC_KEY"):
+        config.__dict__.pop(n, None)
+    monkeypatch.setenv("CAT_API_KEY", "one")
+    assert config.CAT_API_KEY == "one"
+    monkeypatch.setenv("CAT_API_KEY", "two")
+    assert config.CAT_API_KEY == "two"
+    monkeypatch.delenv("PAYSTACK_PUBLIC_KEY", raising=False)
+    assert config.PAYSTACK_PUBLIC_KEY.startswith("pk_")
+
+
+def test_paystack_follows_the_environment(monkeypatch):
+    import config, payments
+    config.__dict__.pop("PAYSTACK_SECRET_KEY", None)
+    monkeypatch.setenv("PAYSTACK_SECRET_KEY", "sk_a")
+    assert payments.paystack.secret_key == "sk_a"
+    assert payments.paystack.headers["Authorization"] == "Bearer sk_a"
+    monkeypatch.setenv("PAYSTACK_SECRET_KEY", "sk_b")
+    assert payments.paystack.headers["Authorization"] == "Bearer sk_b"
+
+
+def test_missing_keys_uses_saved_then_environment(monkeypatch):
+    for n in oe.FEATURE:
+        monkeypatch.delenv(n, raising=False)
+    assert set(oe.missing_keys({})) == set(oe.FEATURE)
+    monkeypatch.setenv("GROQ_API_KEY", "x")
+    assert "GROQ_API_KEY" not in oe.missing_keys({})
+    assert "GROQ_API_KEY" not in oe.missing_keys({"GROQ_API_KEY": "saved"})
+    assert "GROQ_API_KEY" in oe.missing_keys({"GROQ_API_KEY": None})   # reset in the form: empty after restart
+
+
+def test_test_key_unknown_provider_never_raises():
+    import asyncio
+    assert asyncio.run(oe.test_key("WEBSITE_URL", "x"))[0] == "unknown"
+
+
+def test_save_reset_undo_roundtrip(monkeypatch):
+    import asyncio
+    store = {}
+
+    class FakeDB:
+        async def get_global_setting(self, k): return store.get(k)
+        async def set_global_setting(self, k, v): store[k] = v
+
+    async def fake_drop(k): store.pop(k, None)
+
+    import database
+    monkeypatch.setattr(database, "db", FakeDB(), raising=False)
+    monkeypatch.setattr(oe, "_drop", fake_drop)
+    monkeypatch.setattr(oe, "pack", lambda spec, v: v)
+    monkeypatch.setattr(oe, "unpack", lambda spec, v: v)
+
+    async def run():
+        await oe.save("WEBSITE_URL", "https://a.example")
+        await oe.save("WEBSITE_URL", "https://b.example")
+        assert store["env:WEBSITE_URL"] == "https://b.example"
+        assert store["envprev:WEBSITE_URL"] == "https://a.example"
+        assert await oe.undo("WEBSITE_URL") is True
+        assert store["env:WEBSITE_URL"] == "https://a.example"
+        assert store["envprev:WEBSITE_URL"] == "https://b.example"
+        await oe.reset("WEBSITE_URL")
+        assert "env:WEBSITE_URL" not in store
+        assert await oe.undo("WEBSITE_URL") is True
+        assert store["env:WEBSITE_URL"] == "https://a.example"
+        assert await oe.undo("OTHER") is False
+        hist = await oe.history()
+        assert hist and all("value" not in e and "https" not in str(e) for e in hist)
+
+    asyncio.run(run())

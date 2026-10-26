@@ -73,8 +73,9 @@ class GroupSelect(discord.ui.Select):
 
 
 class RestartButton(discord.ui.Button):
-    def __init__(self):
-        super().__init__(label="Restart bots", style=discord.ButtonStyle.secondary,
+    def __init__(self, needed: bool = True):
+        super().__init__(label="Restart bots", style=discord.ButtonStyle.primary if needed else discord.ButtonStyle.secondary,
+                         disabled=not needed,
                          emoji="\N{CLOCKWISE RIGHTWARDS AND LEFTWARDS OPEN CIRCLE ARROWS}")
 
     async def callback(self, interaction: discord.Interaction):
@@ -127,6 +128,64 @@ def build_confirm() -> discord.ui.LayoutView:
     c.add_item(row)
     view.add_item(c)
     return view
+
+
+class MissingButton(discord.ui.Button):
+    def __init__(self):
+        super().__init__(label="Missing keys", style=discord.ButtonStyle.secondary,
+                         emoji="\N{LEFT-POINTING MAGNIFYING GLASS}")
+
+    async def callback(self, interaction: discord.Interaction):
+        await interaction.response.defer()
+        await interaction.edit_original_response(view=build_missing(await oe.load_all()))
+
+
+class HistoryButton(discord.ui.Button):
+    def __init__(self):
+        super().__init__(label="History", style=discord.ButtonStyle.secondary, emoji="\N{SCROLL}")
+
+    async def callback(self, interaction: discord.Interaction):
+        await interaction.response.defer()
+        await interaction.edit_original_response(view=build_history(await oe.history()))
+
+
+class TestSelect(discord.ui.Select):
+    def __init__(self, group: str, saved: Dict[str, Optional[str]]):
+        opts = [discord.SelectOption(label=s.label[:100], value=s.name, description=s.name)
+                for s in oe.group_specs(group)
+                if s.name in oe.TESTABLE and (saved.get(s.name) or (s.name not in saved and os.environ.get(s.name)))]
+        super().__init__(placeholder="Test a key (one quick call)", options=opts[:25], min_values=1, max_values=1)
+        self.group = group
+
+    async def callback(self, interaction: discord.Interaction):
+        await interaction.response.defer()
+        name = self.values[0]
+        saved = await oe.load_all()
+        value = saved.get(name) if name in saved else os.environ.get(name)
+        state, text = await oe.test_key(name, value or "")
+        mark = {"ok": "works", "bad": "REJECTED", "unknown": "unclear"}[state]
+        await interaction.edit_original_response(
+            view=build_group(self.group, saved, notice=f"**{oe.BY_NAME[name].label}**: {mark}, {text}."))
+
+
+class UndoSelect(discord.ui.Select):
+    def __init__(self, group: str):
+        opts = [discord.SelectOption(label=s.label[:100], value=s.name, description=s.name)
+                for s in oe.group_specs(group) if s.name in oe.PREV_NAMES]
+        super().__init__(placeholder="Undo: bring back the previous value", options=opts[:25], min_values=1, max_values=1)
+        self.group = group
+
+    async def callback(self, interaction: discord.Interaction):
+        await interaction.response.defer()
+        name = self.values[0]
+        ok = await oe.undo(name)
+        if ok:
+            await oe.refresh_live(force=True)
+            logger.info("[owner_env] %s restored to its previous value by owner", name)
+        saved = await oe.load_all()
+        await interaction.edit_original_response(view=build_group(
+            self.group, saved,
+            notice=f"Restored the previous **{oe.BY_NAME[name].label}**." if ok else "No previous value to bring back."))
 
 
 class BackButton(discord.ui.Button):
@@ -188,7 +247,9 @@ def build_home(saved: Dict[str, Optional[str]], notice: Optional[str] = None) ->
     row.add_item(GroupSelect(saved))
     c.add_item(row)
     rrow = discord.ui.ActionRow()
-    rrow.add_item(RestartButton())
+    rrow.add_item(RestartButton(_needs_restart(saved)))
+    rrow.add_item(MissingButton())
+    rrow.add_item(HistoryButton())
     c.add_item(rrow)
     view.add_item(c)
     return view
@@ -221,6 +282,61 @@ def build_group(group: str, saved: Dict[str, Optional[str]], notice: Optional[st
         rrow = discord.ui.ActionRow()
         rrow.add_item(ResetSelect(group, saved))
         c.add_item(rrow)
+    if any(s.name in oe.TESTABLE and (saved.get(s.name) or (s.name not in saved and os.environ.get(s.name)))
+           for s in oe.group_specs(group)):
+        trow = discord.ui.ActionRow()
+        trow.add_item(TestSelect(group, saved))
+        c.add_item(trow)
+    if any(s.name in oe.PREV_NAMES for s in oe.group_specs(group)):
+        urow = discord.ui.ActionRow()
+        urow.add_item(UndoSelect(group))
+        c.add_item(urow)
+    view.add_item(c)
+    return view
+
+
+def build_missing(saved: Dict[str, Optional[str]]) -> discord.ui.LayoutView:
+    view = _OwnerView()
+    c = discord.ui.Container(accent_colour=ACCENT)
+    c.add_item(discord.ui.TextDisplay("## Missing keys"))
+    c.add_item(discord.ui.Separator())
+    miss = oe.missing_keys(saved)
+    if not miss:
+        c.add_item(discord.ui.TextDisplay("Every key a feature needs is set."))
+    else:
+        by_group: Dict[str, list] = {}
+        for n in miss:
+            by_group.setdefault(oe.BY_NAME[n].group, []).append(n)
+        lines = []
+        for g, names in by_group.items():
+            lines.append(f"**{g}**")
+            lines += [f"- {oe.BY_NAME[n].label}: needed for {oe.FEATURE[n]}" for n in names]
+        c.add_item(discord.ui.TextDisplay("\n".join(lines)[:3800]))
+        c.add_item(discord.ui.TextDisplay("-# Open the group from the home screen to fill them in."))
+    row = discord.ui.ActionRow()
+    row.add_item(BackButton())
+    c.add_item(row)
+    view.add_item(c)
+    return view
+
+
+def build_history(entries: list) -> discord.ui.LayoutView:
+    view = _OwnerView()
+    c = discord.ui.Container(accent_colour=ACCENT)
+    c.add_item(discord.ui.TextDisplay("## Recent changes"))
+    c.add_item(discord.ui.Separator())
+    if not entries:
+        c.add_item(discord.ui.TextDisplay("Nothing changed yet."))
+    else:
+        lines = []
+        for e in entries:
+            spec = oe.BY_NAME.get(e.get("n"))
+            lines.append(f"<t:{int(e.get('t', 0))}:R> · **{spec.label if spec else e.get('n')}** · {e.get('a')}")
+        c.add_item(discord.ui.TextDisplay("\n".join(lines)[:3800]))
+        c.add_item(discord.ui.TextDisplay("-# Names only. Values are never logged."))
+    row = discord.ui.ActionRow()
+    row.add_item(BackButton())
+    c.add_item(row)
     view.add_item(c)
     return view
 
@@ -279,6 +395,16 @@ class FillModal(discord.ui.Modal):
             logger.info("[owner_env] %s saved by owner", s.name)   # the name only, never the value
         if saved_n or reset_n:
             await oe.refresh_live(force=True)   # Groq keys go live right here
+        checks = []
+        if saved_n:
+            fresh = await oe.load_all()
+            tests = [(s, fresh.get(s.name)) for s in self.specs
+                     if s.name in oe.TESTABLE and fresh.get(s.name) and self.inputs[s.name].value.strip() not in ("", "-")]
+            if tests:
+                results = await asyncio.gather(*(oe.test_key(s.name, v) for s, v in tests))
+                for (s, _), (state, text) in zip(tests, results):
+                    mark = {"ok": "works", "bad": "REJECTED", "unknown": "unclear"}[state]
+                    checks.append(f"{s.label}: {mark}, {text}")
         notes = []
         if saved_n:
             notes.append(f"Saved {saved_n}.")
@@ -287,6 +413,8 @@ class FillModal(discord.ui.Modal):
         if not notes and not problems:
             notes.append("Nothing changed.")
         text = " ".join(notes)
+        if checks:
+            text += ("\n" if text else "") + "Check:\n" + "\n".join(f"- {c}" for c in checks)
         if problems:
             text += ("\n" if text else "") + "Not saved:\n" + "\n".join(f"- {p}" for p in problems)
         await interaction.edit_original_response(view=build_group(self.group, await oe.load_all(), notice=text))
@@ -305,6 +433,7 @@ class OwnerEnvCog(commands.Cog):
 
     async def cog_load(self):
         self._watch = asyncio.create_task(oe.restart_watcher())
+        self._summary = asyncio.create_task(self._summary_later())
         mount_admin_command(
             self.bot, self.envsetup, name="envsetup",
             description="[Bot owner] DM me the form for settings all bots share",
@@ -312,6 +441,19 @@ class OwnerEnvCog(commands.Cog):
 
     async def cog_unload(self):
         self._watch.cancel()
+        self._summary.cancel()
+
+    async def _summary_later(self):
+        """Once a day at most, DM the owner every empty key a feature needs (main bot only)."""
+        try:
+            await self.bot.wait_until_ready()
+            await asyncio.sleep(60)
+            if getattr(self.bot, "clone_id", None) is None:
+                await oe.alert_summary()
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            logger.exception("[owner_env] startup summary failed")
 
     # Mounted as /admin envsetup (see cog_load).
     async def envsetup(self, interaction: discord.Interaction):

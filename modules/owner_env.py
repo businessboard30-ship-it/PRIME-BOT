@@ -28,6 +28,9 @@ from typing import Dict, List, Optional, Tuple
 logger = logging.getLogger("owner_env")
 
 PREFIX = "env:"
+PREV = "envprev:"      # the value a key had before its last change (one step of undo)
+LOG_KEY = "envlog"     # last changes, names only, never values
+PREV_NAMES: set = set()  # names that currently have a previous value, filled by load_all()
 ENC = "enc:"
 MAX_LEN = 400
 PAGE = 5   # a Discord modal holds at most 5 fields
@@ -301,9 +304,13 @@ async def load_all() -> Dict[str, Optional[str]]:
     from database import get_pool
     pool = await get_pool()
     async with pool.acquire() as conn:
-        rows = await conn.fetch("SELECT key, value FROM bot_global_settings WHERE key LIKE 'env:%'")
+        rows = await conn.fetch("SELECT key, value FROM bot_global_settings WHERE key LIKE 'env:%' OR key LIKE 'envprev:%'")
     out: Dict[str, Optional[str]] = {}
+    PREV_NAMES.clear()
     for r in rows:
+        if r["key"].startswith(PREV):
+            PREV_NAMES.add(r["key"][len(PREV):])
+            continue
         name = r["key"][len(PREFIX):]
         spec = BY_NAME.get(name)
         if spec is None:
@@ -315,17 +322,124 @@ async def load_all() -> Dict[str, Optional[str]]:
     return out
 
 
-async def save(name: str, value: str) -> None:
-    spec = BY_NAME[name]
+async def _raw(key: str) -> Optional[str]:
     from database import db
-    await db.set_global_setting(PREFIX + name, pack(spec, value))
+    return await db.get_global_setting(key)
 
 
-async def reset(name: str) -> None:
+async def _drop(key: str) -> None:
     from database import get_pool
     pool = await get_pool()
     async with pool.acquire() as conn:
-        await conn.execute("DELETE FROM bot_global_settings WHERE key = $1", PREFIX + name)
+        await conn.execute("DELETE FROM bot_global_settings WHERE key = $1", key)
+
+
+async def log_change(name: str, action: str) -> None:
+    """Keep the last 40 changes (key name and what happened, never a value). Best effort."""
+    try:
+        import json
+        from database import db
+        raw = await db.get_global_setting(LOG_KEY)
+        entries = json.loads(raw) if raw else []
+        entries.append({"t": int(time.time()), "n": name, "a": action})
+        await db.set_global_setting(LOG_KEY, json.dumps(entries[-40:]))
+    except Exception:
+        logger.warning("[owner_env] couldn't write the change log", exc_info=True)
+
+
+async def history(limit: int = 15) -> List[dict]:
+    try:
+        import json
+        raw = await _raw(LOG_KEY)
+        return list(reversed(json.loads(raw)))[:limit] if raw else []
+    except Exception:
+        return []
+
+
+async def save(name: str, value: str) -> None:
+    spec = BY_NAME[name]
+    from database import db
+    old = await _raw(PREFIX + name)
+    if old:
+        await db.set_global_setting(PREV + name, old)
+    await db.set_global_setting(PREFIX + name, pack(spec, value))
+    await log_change(name, "saved")
+
+
+async def reset(name: str) -> None:
+    from database import db
+    old = await _raw(PREFIX + name)
+    if old:
+        await db.set_global_setting(PREV + name, old)
+    await _drop(PREFIX + name)
+    await log_change(name, "reset")
+
+
+async def undo(name: str) -> bool:
+    """Swap the current value with the previous one. False when there is no previous value."""
+    from database import db
+    prev = await _raw(PREV + name)
+    if not prev:
+        return False
+    cur = await _raw(PREFIX + name)
+    await db.set_global_setting(PREFIX + name, prev)
+    if cur:
+        await db.set_global_setting(PREV + name, cur)
+    else:
+        await _drop(PREV + name)
+    await log_change(name, "restored the previous value")
+    return True
+
+
+# ── "does this key work": one cheap call per provider ───────────────────
+
+TESTABLE = frozenset({
+    "GROQ_API_KEY", "GROQ_API_KEY_BACKUP", "GROQ_API_KEY_BACKUP2", "OPENAI_API_KEY", "GEMINI_API_KEY",
+    "ANTHROPIC_API_KEY", "YOUTUBE_API_KEY", "CAT_API_KEY", "PAYSTACK_SECRET_KEY", "GUMROAD_ACCESS_TOKEN",
+    "TURNSTILE_SECRET_KEY",
+})
+
+
+async def test_key(name: str, value: str) -> Tuple[str, str]:
+    """("ok" | "bad" | "unknown", short text). Never raises, never returns the key."""
+    import aiohttp
+    bearer = {"Authorization": f"Bearer {value}"}
+    method, url, kw = "GET", "", {}
+    if name.startswith("GROQ_API_KEY"):
+        url, kw = "https://api.groq.com/openai/v1/models", {"headers": bearer}
+    elif name == "OPENAI_API_KEY":
+        url, kw = "https://api.openai.com/v1/models", {"headers": bearer}
+    elif name == "GEMINI_API_KEY":
+        url, kw = "https://generativelanguage.googleapis.com/v1beta/models", {"headers": {"x-goog-api-key": value}}
+    elif name == "ANTHROPIC_API_KEY":
+        url, kw = "https://api.anthropic.com/v1/models", {"headers": {"x-api-key": value, "anthropic-version": "2023-06-01"}}
+    elif name == "YOUTUBE_API_KEY":
+        url, kw = "https://www.googleapis.com/youtube/v3/videos", {"params": {"part": "id", "id": "dQw4w9WgXcQ", "key": value}}
+    elif name == "CAT_API_KEY":
+        url, kw = "https://api.thecatapi.com/v1/images/search", {"headers": {"x-api-key": value}, "params": {"limit": "1"}}
+    elif name == "PAYSTACK_SECRET_KEY":
+        url, kw = "https://api.paystack.co/balance", {"headers": bearer}
+    elif name == "GUMROAD_ACCESS_TOKEN":
+        url, kw = "https://api.gumroad.com/v2/user", {"params": {"access_token": value}}
+    elif name == "TURNSTILE_SECRET_KEY":
+        method, url, kw = "POST", "https://challenges.cloudflare.com/turnstile/v0/siteverify", {"data": {"secret": value, "response": "x"}}
+    else:
+        return "unknown", "no quick test for this one"
+    try:
+        async with aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=10)) as sess:
+            async with sess.request(method, url, **kw) as r:
+                if name == "TURNSTILE_SECRET_KEY":
+                    data = await r.json(content_type=None)
+                    return ("bad", "rejected") if "invalid-input-secret" in (data.get("error-codes") or []) else ("ok", "accepted")
+                if r.status == 200:
+                    return "ok", "works"
+                if r.status in (400, 401, 403) and name != "YOUTUBE_API_KEY":
+                    return "bad", f"rejected (HTTP {r.status})"
+                if name == "YOUTUBE_API_KEY" and r.status in (400, 403):
+                    return "bad", f"rejected (HTTP {r.status})"
+                return "unknown", f"couldn't tell (HTTP {r.status})"
+    except Exception as e:
+        return "unknown", f"couldn't reach the service ({type(e).__name__})"
 
 
 def status(name: str, saved: Dict[str, Optional[str]]) -> Tuple[str, bool]:
@@ -350,7 +464,12 @@ def status(name: str, saved: Dict[str, Optional[str]]) -> Tuple[str, bool]:
 
 # Keys that are re-read from the database while the bot runs. Anything that reads them must read os.environ at call
 # time (modules/groq_keys.py does). Everything else needs a restart (the Restart button in the form).
-LIVE = frozenset({"GROQ_API_KEY", "GROQ_API_KEY_BACKUP", "GROQ_API_KEY_BACKUP2"})
+LIVE = frozenset({
+    "GROQ_API_KEY", "GROQ_API_KEY_BACKUP", "GROQ_API_KEY_BACKUP2",
+    "OPENAI_API_KEY", "GEMINI_API_KEY", "ANTHROPIC_API_KEY", "FAL_API_KEY", "YOUTUBE_API_KEY", "CAT_API_KEY",
+    "TOPGG_TOKEN", "DTHINGS_API_KEY",
+    "PAYSTACK_SECRET_KEY", "PAYSTACK_PUBLIC_KEY", "GUMROAD_ACCESS_TOKEN", "GUMROAD_WEBHOOK_SECRET",
+})
 LIVE_TTL = 30
 _live_at = 0.0
 _live_task: Optional["asyncio.Task"] = None
@@ -395,7 +514,68 @@ def kick_refresh() -> None:
         pass
 
 
+def env(name: str, default: str = "") -> str:
+    """The value of a live key right now (call-time read). Starts a throttled refresh from the database."""
+    kick_refresh()
+    return os.environ.get(name, default) or default
+
+
 # ── DM the owner when a needed key is empty ─────────────────────────────
+
+# What breaks when a key is empty. Used by the DM alerts and the "Missing keys" screen. Keys that have another way to
+# be filled in (top.gg and Discord Things tokens can come from the DM modal) are left out on purpose.
+FEATURE: Dict[str, str] = {
+    "GROQ_API_KEY": "AI chat and the roast battles",
+    "GEMINI_API_KEY": "Scam Shield's image check and cat pictures check",
+    "OPENAI_API_KEY": "the AI store's OpenAI models and card art",
+    "ANTHROPIC_API_KEY": "the AI store's Claude models",
+    "YOUTUBE_API_KEY": "the YouTube connection",
+    "PAYSTACK_SECRET_KEY": "Paystack payments",
+    "GUMROAD_ACCESS_TOKEN": "Gumroad products and sale checks",
+    "GUMROAD_WEBHOOK_SECRET": "Gumroad sale alerts",
+    "TURNSTILE_SECRET_KEY": "captcha verification",
+    "VERIFY_SIGNING_SECRET": "verification links",
+    "DISCORD_OAUTH_CLIENT_SECRET": "dashboard login with Discord",
+}
+
+
+def missing_keys(saved: Dict[str, Optional[str]]) -> List[str]:
+    return [n for n in FEATURE if n in BY_NAME and not (saved.get(n) or (n not in saved and os.environ.get(n)))]
+
+
+SUMMARY_EVERY = 24 * 3600
+
+
+async def alert_summary() -> bool:
+    """One DM listing every empty key a feature needs. At most once a day, never raises."""
+    try:
+        if os.getenv("OWNER_ENV_ALERTS_OFF"):
+            return False
+        token = os.getenv("DISCORD_BOT_TOKEN", "")
+        try:
+            owner = int(os.getenv("ADMIN_ID", "0") or 0)
+        except ValueError:
+            owner = 0
+        if not token or not owner:
+            return False
+        miss = missing_keys(await load_all())
+        if not miss:
+            return False
+        from database import db
+        now = time.time()
+        last = await db.get_global_setting("envalert:summary")
+        if last and now - float(last) < SUMMARY_EVERY:
+            return False
+        await db.set_global_setting("envalert:summary", str(now))
+        lines = "\n".join(f"- **{BY_NAME[n].label}**: {FEATURE[n]}" for n in miss[:15])
+        more = f"\n...and {len(miss) - 15} more" if len(miss) > 15 else ""
+        from discord_bot.dm_send import dm_user
+        return await dm_user(
+            owner, f"{len(miss)} key(s) a feature needs are empty:\n{lines}{more}\nRun `/admin envsetup` to fill them in.", token)
+    except Exception:
+        logger.exception("[owner_env] summary alert failed")
+        return False
+
 
 ALERT_EVERY = 6 * 3600     # per key, across all processes (stored in the database)
 _alerted: Dict[str, float] = {}

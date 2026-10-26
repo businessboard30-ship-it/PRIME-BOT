@@ -43,6 +43,9 @@ class handler(BaseHTTPRequestHandler):
         import config
         qs = parse_qs(urlparse(self.path).query)
         given = (qs.get("secret") or [""])[0]
+        if not config.GUMROAD_WEBHOOK_SECRET:
+            from modules import owner_env as _oe
+            _oe.note_missing("GUMROAD_WEBHOOK_SECRET", "Gumroad sale alerts")
         if not config.GUMROAD_WEBHOOK_SECRET or not hmac.compare_digest(given, config.GUMROAD_WEBHOOK_SECRET):
             logger.warning("[gumroad] ping rejected: missing/wrong secret in Ping URL")
             global _last_forbidden_alert

@@ -135,6 +135,8 @@ class ProviderCallError(Exception):
 async def call_anthropic(messages: List[Dict], api_model: str, max_tokens: int = 1024) -> Tuple[str, int, int]:
     api_key = os.getenv("ANTHROPIC_API_KEY")
     if not api_key:
+        from modules import owner_env as _oe
+        _oe.note_missing("ANTHROPIC_API_KEY", "the AI store's Claude models")
         raise ProviderCallError("ANTHROPIC_API_KEY is not set")
     async with httpx.AsyncClient(timeout=60.0) as client:
         resp = await client.post(
@@ -160,6 +162,8 @@ async def call_anthropic(messages: List[Dict], api_model: str, max_tokens: int =
 async def call_openai(messages: List[Dict], api_model: str, max_tokens: int = 1024) -> Tuple[str, int, int]:
     api_key = os.getenv("OPENAI_API_KEY")
     if not api_key:
+        from modules import owner_env as _oe
+        _oe.note_missing("OPENAI_API_KEY", "the AI store's OpenAI models")
         raise ProviderCallError("OPENAI_API_KEY is not set")
     async with httpx.AsyncClient(timeout=60.0) as client:
         resp = await client.post(
@@ -181,6 +185,8 @@ async def call_openai(messages: List[Dict], api_model: str, max_tokens: int = 10
 async def call_gemini(messages: List[Dict], api_model: str, max_tokens: int = 1024) -> Tuple[str, int, int]:
     api_key = os.getenv("GEMINI_API_KEY")
     if not api_key:
+        from modules import owner_env as _oe
+        _oe.note_missing("GEMINI_API_KEY", "the AI store's Gemini models")
         raise ProviderCallError("GEMINI_API_KEY is not set")
     contents = [
         {"role": "model" if m["role"] == "assistant" else "user", "parts": [{"text": m["content"]}]}
