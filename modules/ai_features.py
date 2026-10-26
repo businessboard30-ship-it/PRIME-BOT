@@ -25,7 +25,7 @@ GROQ_API_KEY_BACKUP = os.getenv("GROQ_API_KEY_BACKUP", "")
 GROQ_API_KEY_BACKUP2 = os.getenv("GROQ_API_KEY_BACKUP2", "")      # third failover key (optional)
 # Any number of extra keys: GROQ_API_KEYS="key1,key2,..." (see modules/groq_keys.py).
 from modules import groq_keys as _groq_keys
-GROQ_API_KEYS = _groq_keys.load_keys()
+GROQ_API_KEYS = _groq_keys.live_keys()
 FAL_API_KEY = os.getenv("FAL_API_KEY", "")
 # GEMINI_API_KEY: free Google AI Studio key (aistudio.google.com/apikey) — no
 # credit card, no billing setup. gemini-2.5-flash-image ("Nano Banana") has a

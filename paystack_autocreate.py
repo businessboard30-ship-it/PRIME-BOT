@@ -125,6 +125,8 @@ async def ensure_plans() -> bool:
     if not missing:
         return True
     if not config.PAYSTACK_SECRET_KEY:
+        from modules import owner_env as _oe
+        _oe.note_missing("PAYSTACK_SECRET_KEY", "Paystack payments")
         logger.warning("[paystack-auto] PAYSTACK_SECRET_KEY not set; can't provision %s", missing)
         return False
     try:

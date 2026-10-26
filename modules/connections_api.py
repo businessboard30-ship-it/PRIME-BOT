@@ -61,6 +61,8 @@ def youtube_configured() -> bool:
 
 async def _yt_get(path: str, **params) -> dict:
     if not YOUTUBE_API_KEY:
+        from modules import owner_env as _oe
+        _oe.note_missing("YOUTUBE_API_KEY", "the YouTube connection")
         raise ConnectError("YouTube isn't configured yet — the bot owner needs to set `YOUTUBE_API_KEY`.")
     params["key"] = YOUTUBE_API_KEY
     try:

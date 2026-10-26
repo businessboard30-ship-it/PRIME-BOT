@@ -381,6 +381,11 @@ async def main():
     _kill_orphaned_clone_processes()
     managed: Dict[int, ManagedClone] = {}
     try:
+        from modules import owner_env as _oe   # exits this process when the owner presses Restart in /admin envsetup
+        _watch = asyncio.create_task(_oe.restart_watcher())
+    except Exception:
+        logger.exception("owner_env watcher not started")
+    try:
         while True:
             await _reconcile(managed)
             await asyncio.sleep(POLL_INTERVAL_SECONDS)

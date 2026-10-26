@@ -14,7 +14,7 @@ GROQ_API_KEY = os.getenv("GROQ_API_KEY")
 GROQ_API_KEY_BACKUP = os.getenv("GROQ_API_KEY_BACKUP")
 GROQ_API_KEY_BACKUP2 = os.getenv("GROQ_API_KEY_BACKUP2")          # third failover key (optional)
 from modules import groq_keys as _groq_keys
-GROQ_API_KEYS = _groq_keys.load_keys()   # also reads GROQ_API_KEYS="a,b,c" for extra keys
+GROQ_API_KEYS = _groq_keys.live_keys()   # also reads GROQ_API_KEYS="a,b,c" for extra keys
 GROQ_ENDPOINT = "https://api.groq.com/openai/v1/chat/completions"
 
 # Status codes worth retrying with the backup key — auth problems (this key
