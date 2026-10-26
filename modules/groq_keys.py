@@ -50,3 +50,37 @@ def mark_failed(key: str, status: Optional[int]) -> None:
 
 def mark_ok(key: str) -> None:
     _cooling.pop(key, None)
+
+
+class LiveKeys(list):
+    """A list of Groq keys that follows the environment. Every module that did `from ... import GROQ_API_KEYS` keeps
+    working, but truthiness and iteration re-read the keys at call time, so a key saved in the owner form (or changed in
+    Railway) is used without a restart. An empty pool also DMs the owner (modules/owner_env.py)."""
+
+    def _sync(self) -> None:
+        fresh = load_keys()
+        if fresh != list(self):
+            self[:] = fresh
+        try:
+            from modules import owner_env as oe
+            oe.kick_refresh()
+            if not fresh:
+                oe.note_missing("GROQ_API_KEY", "AI chat")
+        except Exception:
+            pass
+
+    def __bool__(self):
+        self._sync()
+        return list.__len__(self) > 0
+
+    def __iter__(self):
+        self._sync()
+        return list.__iter__(self)
+
+    def __len__(self):
+        self._sync()
+        return list.__len__(self)
+
+
+def live_keys() -> LiveKeys:
+    return LiveKeys(load_keys())

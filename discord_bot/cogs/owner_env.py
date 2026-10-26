@@ -5,6 +5,7 @@ its next start. Owner only, main bot only, and secrets are never shown back: the
 """
 from __future__ import annotations
 
+import asyncio
 import logging
 import os
 from typing import Dict, Optional
@@ -71,6 +72,63 @@ class GroupSelect(discord.ui.Select):
         await interaction.edit_original_response(view=build_group(self.values[0], saved))
 
 
+class RestartButton(discord.ui.Button):
+    def __init__(self):
+        super().__init__(label="Restart bots", style=discord.ButtonStyle.secondary,
+                         emoji="\N{CLOCKWISE RIGHTWARDS AND LEFTWARDS OPEN CIRCLE ARROWS}")
+
+    async def callback(self, interaction: discord.Interaction):
+        await interaction.response.defer()
+        await interaction.edit_original_response(view=build_confirm())
+
+
+class ConfirmRestartButton(discord.ui.Button):
+    def __init__(self):
+        super().__init__(label="Restart now", style=discord.ButtonStyle.danger,
+                         emoji="\N{HIGH VOLTAGE SIGN}")
+
+    async def callback(self, interaction: discord.Interaction):
+        await interaction.response.defer()
+        try:
+            await oe.request_restart()
+        except Exception:
+            logger.exception("[owner_env] restart request failed")
+            return await interaction.edit_original_response(
+                view=build_home(await oe.load_all(), notice="Couldn't ask for a restart, try again."))
+        v = _OwnerView()
+        c = discord.ui.Container(accent_colour=ACCENT)
+        c.add_item(discord.ui.TextDisplay("## Restarting\nThe bots are coming back in about a minute. "
+                                          "Saved values are live after that."))
+        v.add_item(c)
+        await interaction.edit_original_response(view=v)
+        logger.warning("[owner_env] restart requested by owner %s", interaction.user.id)
+        await asyncio.sleep(1.5)
+        os._exit(1)   # non-zero exit: Railway starts the service again
+
+
+class CancelButton(discord.ui.Button):
+    def __init__(self):
+        super().__init__(label="Cancel", style=discord.ButtonStyle.secondary)
+
+    async def callback(self, interaction: discord.Interaction):
+        await interaction.response.defer()
+        await interaction.edit_original_response(view=build_home(await oe.load_all()))
+
+
+def build_confirm() -> discord.ui.LayoutView:
+    view = _OwnerView()
+    c = discord.ui.Container(accent_colour=ACCENT)
+    c.add_item(discord.ui.TextDisplay(
+        "## Restart the bots?\nThe main bot, the clone manager and the API restart so saved values go live. "
+        "Everything is back in about a minute."))
+    row = discord.ui.ActionRow()
+    row.add_item(ConfirmRestartButton())
+    row.add_item(CancelButton())
+    c.add_item(row)
+    view.add_item(c)
+    return view
+
+
 class BackButton(discord.ui.Button):
     def __init__(self):
         super().__init__(label="Back", style=discord.ButtonStyle.secondary, emoji="\N{LEFTWARDS ARROW WITH HOOK}")
@@ -103,6 +161,7 @@ class ResetSelect(discord.ui.Select):
         name = self.values[0]
         await oe.reset(name)
         logger.info("[owner_env] %s reset by owner", name)
+        await oe.refresh_live(force=True)
         saved = await oe.load_all()
         await interaction.edit_original_response(
             view=build_group(self.group, saved, notice=f"Reset **{oe.BY_NAME[name].label}**."))
@@ -124,10 +183,13 @@ def build_home(saved: Dict[str, Optional[str]], notice: Optional[str] = None) ->
     if notice:
         c.add_item(discord.ui.TextDisplay(notice))
     if _needs_restart(saved):
-        c.add_item(discord.ui.TextDisplay("-# Some saved changes aren't live yet. Restart the bots (Railway redeploy) to apply them."))
+        c.add_item(discord.ui.TextDisplay("-# Some saved changes aren't live yet. Press Restart bots to apply them."))
     row = discord.ui.ActionRow()
     row.add_item(GroupSelect(saved))
     c.add_item(row)
+    rrow = discord.ui.ActionRow()
+    rrow.add_item(RestartButton())
+    c.add_item(rrow)
     view.add_item(c)
     return view
 
@@ -215,6 +277,8 @@ class FillModal(discord.ui.Modal):
                 continue
             saved_n += 1
             logger.info("[owner_env] %s saved by owner", s.name)   # the name only, never the value
+        if saved_n or reset_n:
+            await oe.refresh_live(force=True)   # Groq keys go live right here
         notes = []
         if saved_n:
             notes.append(f"Saved {saved_n}.")
@@ -240,10 +304,14 @@ class OwnerEnvCog(commands.Cog):
         self.bot = bot
 
     async def cog_load(self):
+        self._watch = asyncio.create_task(oe.restart_watcher())
         mount_admin_command(
             self.bot, self.envsetup, name="envsetup",
             description="[Bot owner] DM me the form for settings all bots share",
         )
+
+    async def cog_unload(self):
+        self._watch.cancel()
 
     # Mounted as /admin envsetup (see cog_load).
     async def envsetup(self, interaction: discord.Interaction):

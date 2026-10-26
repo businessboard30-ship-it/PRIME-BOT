@@ -227,3 +227,30 @@ def test_command_is_owner_only_and_main_bot_only(monkeypatch):
         await c.envsetup(owner)
         assert sent.get("view") is not None and owner.followups[0][0][0] == "Sent to your DMs."
     _run(go())
+
+
+# ── live keys, owner alert, restart ─────────────────────────────────────
+
+def test_groq_pool_follows_environment(monkeypatch):
+    from modules import groq_keys
+    for k in ("GROQ_API_KEY", "GROQ_API_KEY_BACKUP", "GROQ_API_KEY_BACKUP2", "GROQ_API_KEYS"):
+        monkeypatch.delenv(k, raising=False)
+    pool = groq_keys.live_keys()
+    assert not pool
+    monkeypatch.setenv("GROQ_API_KEY", "abc")
+    assert bool(pool) and list(pool) == ["abc"]
+    monkeypatch.setenv("GROQ_API_KEY", "xyz")
+    assert list(pool) == ["xyz"]
+
+
+def test_live_keys_need_no_restart():
+    assert "GROQ_API_KEY" in oe.LIVE
+    state, restart = oe.status("GROQ_API_KEY", {"GROQ_API_KEY": "new"})
+    assert restart is False
+
+
+def test_alert_missing_skips_when_set_or_unknown(monkeypatch):
+    import asyncio
+    monkeypatch.setenv("PAYSTACK_SECRET_KEY", "sk")
+    assert asyncio.run(oe.alert_missing("PAYSTACK_SECRET_KEY", "x")) is False
+    assert asyncio.run(oe.alert_missing("NOT_A_KEY", "x")) is False

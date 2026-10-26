@@ -22,6 +22,7 @@ import asyncio
 import logging
 import os
 import threading
+import time
 from typing import Dict, List, Optional, Tuple
 
 logger = logging.getLogger("owner_env")
@@ -229,6 +230,7 @@ def unpack(spec: Spec, stored: Optional[str]) -> Optional[str]:
 # ── early boot (sync, before config reads the environment) ──────────────
 
 APPLIED: Dict[str, str] = {}      # name -> value this process started with, for values that came from the database
+RAILWAY_VALUE: Dict[str, str] = {}   # the Railway value of each key, kept so a live reset can put it back
 RAILWAY_HAD = set()               # names that were already set in the environment before the database values went in
 _done = False
 
@@ -257,6 +259,7 @@ def bootstrap() -> int:
     for name in BY_NAME:
         if os.environ.get(name):
             RAILWAY_HAD.add(name)
+            RAILWAY_VALUE[name] = os.environ[name]
     box: Dict[str, object] = {}
 
     def run():   # its own thread + loop: config can be imported while another loop is already running
@@ -331,11 +334,148 @@ def status(name: str, saved: Dict[str, Optional[str]]) -> Tuple[str, bool]:
     running = os.environ.get(name) or None
     in_db = name in saved and saved[name]
     if in_db:
-        restart = running != saved[name]
+        restart = running != saved[name] and name not in LIVE
         src = "saved here" + (" (overrides Railway)" if name in RAILWAY_HAD else "")
         return f"{src}: {shown(spec, saved[name])}", restart
     if name in APPLIED:                       # was applied at start, deleted since
+        if name in LIVE:
+            return "reset", False
         return "reset, Railway value applies after restart" if name in RAILWAY_HAD else "reset, empty after restart", True
     if running:
         return f"Railway: {shown(spec, running)}", False
     return "empty", False
+
+
+# ── live keys: read at call time, no restart ────────────────────────────
+
+# Keys that are re-read from the database while the bot runs. Anything that reads them must read os.environ at call
+# time (modules/groq_keys.py does). Everything else needs a restart (the Restart button in the form).
+LIVE = frozenset({"GROQ_API_KEY", "GROQ_API_KEY_BACKUP", "GROQ_API_KEY_BACKUP2"})
+LIVE_TTL = 30
+_live_at = 0.0
+_live_task: Optional["asyncio.Task"] = None
+
+
+def _enabled() -> bool:
+    return bool(os.getenv("DATABASE_URL")) and os.getenv("OWNER_ENV_DISABLE", "").strip().lower() not in ("1", "true", "yes")
+
+
+async def refresh_live(force: bool = False) -> None:
+    """Pull the live keys from the database into os.environ. Throttled; never raises."""
+    global _live_at
+    now = time.monotonic()
+    if not _enabled() or (not force and now - _live_at < LIVE_TTL):
+        return
+    _live_at = now
+    try:
+        saved = await load_all()
+    except Exception:
+        return
+    for name in LIVE:
+        v = saved.get(name)
+        if v:
+            os.environ[name] = v
+            APPLIED[name] = v
+        elif name in APPLIED:        # reset since: put the Railway value back, or clear it
+            APPLIED.pop(name, None)
+            if name in RAILWAY_VALUE:
+                os.environ[name] = RAILWAY_VALUE[name]
+            else:
+                os.environ.pop(name, None)
+
+
+def kick_refresh() -> None:
+    """Sync-safe: start a throttled background refresh if an event loop is running."""
+    global _live_task
+    if time.monotonic() - _live_at < LIVE_TTL or (_live_task is not None and not _live_task.done()):
+        return
+    try:
+        _live_task = asyncio.get_running_loop().create_task(refresh_live())
+    except RuntimeError:
+        pass
+
+
+# ── DM the owner when a needed key is empty ─────────────────────────────
+
+ALERT_EVERY = 6 * 3600     # per key, across all processes (stored in the database)
+_alerted: Dict[str, float] = {}
+_alert_tasks: set = set()
+
+
+async def alert_missing(name: str, feature: str) -> bool:
+    """DM the owner once per ALERT_EVERY that `name` is empty and `feature` needs it. Never raises."""
+    try:
+        spec = BY_NAME.get(name)
+        if spec is None or os.environ.get(name) or os.getenv("OWNER_ENV_ALERTS_OFF"):
+            return False
+        now = time.time()
+        if now - _alerted.get(name, 0) < ALERT_EVERY:
+            return False
+        _alerted[name] = now
+        token = os.getenv("DISCORD_BOT_TOKEN", "")
+        try:
+            owner = int(os.getenv("ADMIN_ID", "0") or 0)
+        except ValueError:
+            owner = 0
+        if not token or not owner:
+            return False
+        key = f"envalert:{name}"
+        try:
+            from database import db
+            last = await db.get_global_setting(key)
+            if last and now - float(last) < ALERT_EVERY:
+                _alerted[name] = float(last)
+                return False
+            await db.set_global_setting(key, str(now))
+        except Exception:
+            pass   # database down: the in-memory throttle still applies
+        from discord_bot.dm_send import dm_user
+        return await dm_user(
+            owner,
+            f"**{spec.label}** is empty and {feature} needs it.\n"
+            f"Run `/admin envsetup`, open **{spec.group}** and fill it in. It goes live on its own"
+            f"{'' if name in LIVE else ' after you press Restart in that form'}.",
+            token)
+    except Exception:
+        logger.exception("[owner_env] alert for %s failed", name)
+        return False
+
+
+def note_missing(name: str, feature: str) -> None:
+    """Sync-safe fire and forget version of alert_missing, for `if not KEY:` branches."""
+    if os.environ.get(name) or time.time() - _alerted.get(name, 0) < ALERT_EVERY:
+        return
+    try:
+        t = asyncio.get_running_loop().create_task(alert_missing(name, feature))
+    except RuntimeError:
+        return
+    _alert_tasks.add(t)
+    t.add_done_callback(_alert_tasks.discard)
+
+
+# ── restart from the form ───────────────────────────────────────────────
+
+RESTART_KEY = "envrestart:at"
+_started = time.time()
+
+
+async def request_restart() -> None:
+    """Ask every process that runs the watcher to restart. The caller restarts its own process afterwards."""
+    from database import db
+    await db.set_global_setting(RESTART_KEY, str(time.time()))
+
+
+async def restart_watcher(poll: int = 20) -> None:
+    """Run forever in a process: exit (so Railway starts it again) once a restart was requested after it started.
+    Also keeps the live keys fresh."""
+    while True:
+        await asyncio.sleep(poll)
+        try:
+            await refresh_live()
+            from database import db
+            at = await db.get_global_setting(RESTART_KEY)
+            if at and float(at) > _started + 1:
+                logger.warning("[owner_env] restart requested from the owner form, exiting")
+                os._exit(1)
+        except Exception:
+            pass
