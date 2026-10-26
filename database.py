@@ -7978,6 +7978,22 @@ class Database:
             )
             return [dict(r) for r in rows]
 
+    async def get_clone_health_rows(self) -> List[Dict]:
+        """Read-only feed for the support-server clone health board (modules/clone_health.py): every clone's status,
+        last heartbeat and how many servers/members it is currently in. One query, no tokens or custom_data."""
+        pool = await get_pool()
+        async with pool.acquire() as conn:
+            rows = await conn.fetch(
+                "SELECT c.clone_id, c.bot_username, c.status, c.last_heartbeat, c.created_at, "
+                "       COALESCE(g.servers, 0) AS servers, COALESCE(g.members, 0) AS members "
+                "FROM discord_cloned_bots c "
+                "LEFT JOIN (SELECT clone_id, COUNT(*) AS servers, COALESCE(SUM(member_count), 0) AS members "
+                "           FROM discord_guilds WHERE left_at IS NULL AND clone_id IS NOT NULL "
+                "           GROUP BY clone_id) g ON g.clone_id = c.clone_id "
+                "ORDER BY c.clone_id ASC"
+            )
+            return [dict(r) for r in rows]
+
     async def get_discord_clone_owner_ids(self) -> List[int]:
         """Distinct owner_id of every currently-active clone — the "admins"
         pool for /admin broadcast send's target option (clone operators, not
