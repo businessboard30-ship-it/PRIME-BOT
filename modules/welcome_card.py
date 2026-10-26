@@ -368,7 +368,7 @@ def _extract_member_number(subtitle: str) -> str:
 def _draw_template_card(username: str, subtitle: str, avatar_bytes: bytes,
                          guild_name: Optional[str] = None,
                          avatar_shape: str = DEFAULT_AVATAR_SHAPE,
-                         theme: str = "wolf") -> Optional[Image.Image]:
+                         theme: str = "wolf", ultra_options=None) -> Optional[Image.Image]:
     """Renders the designed-background welcome card (avatar + live member
     count/name composited over the theme's background image, with the
     server name optionally redrawn too). Returns None if the background
@@ -381,6 +381,7 @@ def _draw_template_card(username: str, subtitle: str, avatar_bytes: bytes,
     is the one look-customization that IS supported in template mode (see
     render_welcome_card's use_template docstring) — colors/sticker/style
     aren't, since they'd clash with the fixed artwork."""
+    opts = parse_ultra_options(ultra_options)    # only the border / hide-avatar / hide-text keys matter on a themed card
     background_path = THEME_BACKGROUNDS.get(theme, TEMPLATE_BACKGROUND_PATH)
     if not background_path or not os.path.isfile(background_path):
         return None
@@ -409,7 +410,8 @@ def _draw_template_card(username: str, subtitle: str, avatar_bytes: bytes,
     mask = Image.new("L", avatar_size, 0)
     shape_fn = AVATAR_SHAPES.get(avatar_shape, _mask_circle)
     shape_fn(ImageDraw.Draw(mask), (0, 0, avatar_size[0], avatar_size[1]), 255)
-    bg.paste(avatar, (ax0, ay0), mask)
+    if opts["show_avatar"]:
+        bg.paste(avatar, (ax0, ay0), mask)
 
     # Live "MEMBER #N" + display name, replacing the placeholder text baked
     # into the artwork.
@@ -417,16 +419,18 @@ def _draw_template_card(username: str, subtitle: str, avatar_bytes: bytes,
     draw.rectangle(member_box, fill=TEMPLATE_MEMBER_TEXT_BG)
     mx, my = member_box[0], member_box[1]
     member_box_width = member_box[2] - member_box[0] - 20  # minus left/right padding
-    draw.text((mx + 10, my + 7), _extract_member_number(subtitle), font=_load_font(26), fill=(160, 160, 160))
-    # Username: shrink-to-fit / truncate so long Discord usernames can't
-    # spill out of the clear-box and over the character artwork.
-    username_size, username_text = _fit_text_fallback(draw, username, member_box_width, max_font_size=56, min_font_size=22)
-    _draw_text_fb(draw, (mx + 10, my + 45), username_text, username_size, (255, 255, 255))
+    show_text = opts["show_text"]      # "no text": the clear boxes are still painted (they hide the artwork's own placeholder words)
+    if show_text:
+        draw.text((mx + 10, my + 7), _extract_member_number(subtitle), font=_load_font(26), fill=(160, 160, 160))
+        # Username: shrink-to-fit / truncate so long Discord usernames can't
+        # spill out of the clear-box and over the character artwork.
+        username_size, username_text = _fit_text_fallback(draw, username, member_box_width, max_font_size=56, min_font_size=22)
+        _draw_text_fb(draw, (mx + 10, my + 45), username_text, username_size, (255, 255, 255))
 
     # Static two-line greeting under the member box, themes that have room
     # for it (see THEME_GREETING_BOX above).
     greeting_box = THEME_GREETING_BOX.get(theme)
-    if greeting_box:
+    if greeting_box and show_text:
         gx0, gy0, gx1, gy1 = greeting_box
         greeting_width = gx1 - gx0
         line1_font, line1_text = _fit_text_to_box(draw, TEMPLATE_GREETING_LINES[0], greeting_width, max_font_size=32, min_font_size=18)
@@ -438,7 +442,7 @@ def _draw_template_card(username: str, subtitle: str, avatar_bytes: bytes,
     # its definition above); other themes have this baked into their own
     # artwork already and are left untouched.
     title_box = THEME_TITLE_BOX.get(theme)
-    if title_box:
+    if title_box and show_text:
         tx0, ty0, tx1, ty1 = title_box
         title_font, title_text = _fit_text_to_box(draw, "WELCOME", tx1 - tx0, max_font_size=150, min_font_size=60)
         draw.text((tx0, ty0), title_text, font=title_font, fill=(225, 240, 255))
@@ -452,14 +456,18 @@ def _draw_template_card(username: str, subtitle: str, avatar_bytes: bytes,
         subtitle_box_width = subtitle_box[2] - subtitle_box[0]
 
         draw.rectangle(header_box, fill=TEMPLATE_TEXT_BG)
-        header_size, header_text = _fit_text_fallback(draw, guild_name.upper(), header_box_width, max_font_size=22, min_font_size=12)
-        _draw_text_fb(draw, (header_box[0], header_box[1]), header_text, header_size, (255, 255, 255))
+        if show_text:
+            header_size, header_text = _fit_text_fallback(draw, guild_name.upper(), header_box_width, max_font_size=22, min_font_size=12)
+            _draw_text_fb(draw, (header_box[0], header_box[1]), header_text, header_size, (255, 255, 255))
 
         draw.rectangle(subtitle_box, fill=TEMPLATE_TEXT_BG)
-        subtitle_text = f"TO {guild_name.upper()}!"
-        subtitle_size, subtitle_text = _fit_text_fallback(draw, subtitle_text, subtitle_box_width, max_font_size=34, min_font_size=16)
-        _draw_text_fb(draw, (subtitle_box[0], subtitle_box[1]), subtitle_text, subtitle_size, (160, 160, 160))
+        if show_text:
+            subtitle_text = f"TO {guild_name.upper()}!"
+            subtitle_size, subtitle_text = _fit_text_fallback(draw, subtitle_text, subtitle_box_width, max_font_size=34, min_font_size=16)
+            _draw_text_fb(draw, (subtitle_box[0], subtitle_box[1]), subtitle_text, subtitle_size, (160, 160, 160))
 
+    if opts["border"] != "none":
+        bg = _draw_border(bg, opts["border"], border_color_rgb(opts["border_color"], avatar))
     return bg
 
 
@@ -508,6 +516,11 @@ ULTRA_DEFAULTS = {
     "text_dy": 0,              # -300 (up) .. 300 (down)
     # Welcome Card Studio phase 3d (Premium/Plus only): which cell of a 3x3 grid the text block sits in; the nudge adds on top.
     "text_pos": "auto",        # key of ULTRA_TEXT_POS; "auto" = wherever the layout puts it (the classic look)
+    # Border + hide options. Open to every server (not Studio keys), and honoured by the wolf / theme cards too.
+    "border": "none",          # key of BORDER_STYLES: a plain border around the whole card image
+    "border_color": "default", # "default" (matches the member's avatar), a key of ULTRA_TEXT_COLORS, or "#RRGGBB"
+    "show_avatar": True,       # False = the card has no avatar
+    "show_text": True,         # False = the card has no name / member number / greeting text
 }
 ULTRA_BOOL_KEYS = ("ring", "soft_edge", "shadow", "big_name", "glass", "auto_contrast", "avatar_glow")
 ULTRA_LAYOUTS = ("banner", "centered")
@@ -529,6 +542,10 @@ ULTRA_TEXT_POS_PAD = 60      # how far from the card edge a grid cell puts the t
 ULTRA_NUDGE_MARGIN = 24      # the text block never gets closer than this to the card edge
 ULTRA_TEXT_SIZES = {"small": 0.8, "medium": 1.0, "large": 1.2, "xl": 1.4}   # multiplies the name and heading size
 ULTRA_FRAMES = ("none", "thin", "medium", "thick", "double", "rounded", "glow", "polaroid", "film")   # soft glow added in 4f with the owner's OK; polaroid / film strip: later
+BORDER_STYLES = ("none", "thin", "medium", "thick", "double")
+BORDER_BASE_WIDTH = {"thin": 6, "medium": 13, "thick": 22, "double": 8}   # px on the 1536 px wide card
+BORDER_DEFAULT = "default"
+_BORDER_HEX = re.compile(r"^#?[0-9a-fA-F]{6}$")
 ULTRA_FOCUS = ("center", "top", "bottom", "left", "right", "auto")   # "auto" = smart crop (keeps the busiest part)
 # Bundled OFL fonts (assets/fonts). "classic" = the card's normal font.
 ULTRA_FONTS = {
@@ -701,6 +718,18 @@ def parse_ultra_options(raw) -> dict:
             opts[k] = max(-ULTRA_NUDGE_LIMIT, min(ULTRA_NUDGE_LIMIT, v))
     if raw.get("text_pos") in ULTRA_TEXT_POS:
         opts["text_pos"] = raw["text_pos"]
+    if raw.get("border") in BORDER_STYLES:
+        opts["border"] = raw["border"]
+    bc = raw.get("border_color")
+    if isinstance(bc, str):
+        c = bc.strip().lower()
+        if c == BORDER_DEFAULT or c in ULTRA_TEXT_COLORS:
+            opts["border_color"] = c
+        elif _BORDER_HEX.match(c):
+            opts["border_color"] = "#" + c.lstrip("#").upper()
+    for k in ("show_avatar", "show_text"):
+        if isinstance(raw.get(k), bool):
+            opts[k] = raw[k]
     return opts
 
 
@@ -958,6 +987,43 @@ def _blur_rgba(layer: Image.Image, radius: float, shrink: int = 1) -> Image.Imag
         return layer.filter(ImageFilter.GaussianBlur(radius))
 
 
+def border_color_rgb(value, avatar: Optional[Image.Image] = None) -> tuple:
+    """The colour of the plain border: a named colour, a #RRGGBB, or "default" = the avatar's own main colour
+    (white when there is no avatar to look at). Never raises."""
+    try:
+        v = (value or BORDER_DEFAULT).strip().lower() if isinstance(value, str) else BORDER_DEFAULT
+        if v in ULTRA_TEXT_COLORS:
+            return ULTRA_TEXT_COLORS[v]
+        if _BORDER_HEX.match(v):
+            return _hex_to_rgb(v)
+        if avatar is not None:
+            return _avatar_dominant_color(avatar)
+    except Exception:
+        logger.debug("swallowed exception in border_color_rgb", exc_info=True)
+    return (255, 255, 255)
+
+
+def _draw_border(img: Image.Image, style: str, color) -> Image.Image:
+    """A plain border around the whole card (free for every server). Same size out as in; widths scale with the card."""
+    if style not in BORDER_STYLES or style == "none":
+        return img
+    try:
+        img = img.convert("RGBA")
+        W, H = img.size
+        k = W / float(TEMPLATE_WIDTH)
+        w = max(2, int(round(BORDER_BASE_WIDTH[style] * k)))
+        col = tuple(color)[:3] + (255,)
+        d = ImageDraw.Draw(img)
+        d.rectangle((0, 0, W - 1, H - 1), outline=col, width=w)
+        if style == "double":
+            gap = max(3, int(round(10 * k)))
+            d.rectangle((w + gap, w + gap, W - 1 - w - gap, H - 1 - w - gap), outline=col, width=w)
+        return img
+    except Exception:
+        logger.exception("[welcome-card] border failed")
+        return img
+
+
 def _draw_frame(img: Image.Image, frame: str, color) -> Image.Image:
     """Studio 3b: a border around the whole card. Sizes are for the 1536 px wide card. Never changes the card size."""
     if frame == "none" or frame not in ULTRA_FRAMES:
@@ -1202,6 +1268,8 @@ def _draw_custom_bg_card(username: str, subtitle: str, avatar_bytes: bytes,
         color = ULTRA_TEXT_COLORS[opts["text_color"]]
 
     def _paste_avatar(canvas, ax, ay):
+        if not opts["show_avatar"]:
+            return
         if opts["avatar_glow"]:   # studio 8a: a soft halo in the text color, drawn under the avatar
             try:
                 pad = 44
@@ -1330,6 +1398,8 @@ def _draw_custom_bg_card(username: str, subtitle: str, avatar_bytes: bytes,
             tdx, tdy = _clamp_text_nudge(boxes, want_dx, want_dy, W, H, **guard)
 
     def _draw_texts(d, col, scol, off=(0, 0), st=0):
+        if not opts["show_text"]:
+            return
         ox, oy = off[0] + tdx, off[1] + tdy
         if number_text:
             nx = _x_for(d, number_text, 26, False)
@@ -1373,6 +1443,8 @@ def _draw_custom_bg_card(username: str, subtitle: str, avatar_bytes: bytes,
 
     if opts["frame"] != "none":
         bg = _draw_frame(bg.convert("RGBA"), opts["frame"], ULTRA_TEXT_COLORS[opts["frame_color"]])
+    if opts["border"] != "none":
+        bg = _draw_border(bg, opts["border"], border_color_rgb(opts["border_color"], avatar))
     return bg
 
 
@@ -1440,7 +1512,7 @@ def render_welcome_card(avatar_bytes: bytes, username: str, subtitle: str,
         if templated is None:
             templated = _draw_template_card(username, subtitle, avatar_bytes,
                                              guild_name=guild_name, avatar_shape=avatar_shape,
-                                             theme=theme)
+                                             theme=theme, ultra_options=ultra_options)
         if templated is not None:
             out = io.BytesIO()
             templated.convert("RGB").save(out, format="PNG", compress_level=png_level)
