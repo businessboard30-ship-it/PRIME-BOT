@@ -149,7 +149,7 @@ Every phase: tests first, a PR against `main`, not merged until you approve, no 
 
 ## 6. Gating and plans (decided)
 
-**How Premium works today (from `config.py`):** Premium is $5.99/month per server (also yearly $16 and lifetime $99.99) and already
+**How Premium works today (from `config.py`):** Premium is $2.99/month per server (also yearly $16 and lifetime $99.99) and already
 unlocks "every current and future package", including the Ultra welcome pack. Premium Plus ($6.99/month, $59/year) includes everything in
 Premium. Buying Plus also keeps Premium active, so one check covers both: `db.is_guild_premium_active(guild_id, clone_id)`.
 
