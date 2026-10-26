@@ -163,6 +163,10 @@ def cog(env):
     bot.get_guild.return_value = guild
     bot.get_channel.return_value = chan
     bot.clone_id = None
+    # the listing's invite is checked against Discord before each bump: here it is live, permanent and this server's
+    guild.id = LISTING["guild_id"]
+    bot.fetch_invite = AsyncMock(return_value=SimpleNamespace(
+        guild=SimpleNamespace(id=LISTING["guild_id"]), expires_at=None, max_age=None))
     c.bot = bot
     c._cooldown_seconds = AsyncMock(return_value=3600)
     c._send_bump = AsyncMock(return_value={"refreshed": dict(LISTING, auto_bump_enabled=True)})
@@ -231,3 +235,69 @@ def test_one_bad_listing_does_not_stop_the_rest(env, cog):
     cog._auto_bump_one = AsyncMock(side_effect=[RuntimeError("boom"), "bumped"])
     run(cog.auto_bump_worker.coro(cog))
     assert cog._auto_bump_one.await_count == 2
+
+
+# ------------------------------------------------------------------ invite check
+
+def _invite(guild_id, expires=None):
+    return SimpleNamespace(guild=SimpleNamespace(id=guild_id), expires_at=expires, max_age=None)
+
+
+def test_dead_invite_is_replaced_with_a_permanent_one(monkeypatch):
+    import asyncio
+    from discord_bot.cogs import _views_bump_link as bl
+    import discord
+    bot = MagicMock()
+    bot.fetch_invite = AsyncMock(side_effect=discord.NotFound(MagicMock(status=404), "unknown invite"))
+    guild = MagicMock(); guild.id = 5
+    monkeypatch.setattr(bl, "find_or_create_invite", AsyncMock(return_value=("https://discord.gg/new", None)))
+    url, status, notes = asyncio.run(bl.ensure_listing_link(bot, guild, "https://discord.gg/dead", create=True))
+    assert (url, status) == ("https://discord.gg/new", "replaced") and notes
+
+
+def test_dead_invite_unattended_only_reuses_never_creates(monkeypatch):
+    import asyncio
+    from discord_bot.cogs import _views_bump_link as bl
+    import discord
+    bot = MagicMock()
+    bot.fetch_invite = AsyncMock(side_effect=discord.NotFound(MagicMock(status=404), "unknown invite"))
+    guild = MagicMock(); guild.id = 5
+    make = AsyncMock(return_value=("https://discord.gg/made", None))
+    monkeypatch.setattr(bl, "find_or_create_invite", make)
+    monkeypatch.setattr(bl, "find_existing_invite", AsyncMock(return_value=None))
+    url, status, _ = asyncio.run(bl.ensure_listing_link(bot, guild, "https://discord.gg/dead", create=False))
+    assert url is None and status == "missing"
+    make.assert_not_called()
+
+
+def test_other_servers_invite_is_rejected(monkeypatch):
+    import asyncio
+    from discord_bot.cogs import _views_bump_link as bl
+    bot = MagicMock(); bot.fetch_invite = AsyncMock(return_value=_invite(999))
+    guild = MagicMock(); guild.id = 5
+    monkeypatch.setattr(bl, "find_existing_invite", AsyncMock(return_value=None))
+    url, status, notes = asyncio.run(bl.ensure_listing_link(bot, guild, "https://discord.gg/abc", create=False))
+    assert status == "missing" and any("different server" in n for n in notes)
+
+
+def test_good_permanent_invite_is_kept_and_expiring_one_is_swapped(monkeypatch):
+    import asyncio, datetime
+    from discord_bot.cogs import _views_bump_link as bl
+    guild = MagicMock(); guild.id = 5
+    bot = MagicMock(); bot.fetch_invite = AsyncMock(return_value=_invite(5))
+    assert asyncio.run(bl.ensure_listing_link(bot, guild, "https://discord.gg/abc"))[1] == "ok"
+    soon = datetime.datetime.now(datetime.timezone.utc)
+    bot.fetch_invite = AsyncMock(return_value=_invite(5, expires=soon))
+    monkeypatch.setattr(bl, "find_or_create_invite", AsyncMock(return_value=("https://discord.gg/perm", None)))
+    url, status, _ = asyncio.run(bl.ensure_listing_link(bot, guild, "https://discord.gg/abc", create=True))
+    assert (url, status) == ("https://discord.gg/perm", "replaced")
+
+
+def test_discord_outage_leaves_the_link_alone():
+    import asyncio
+    from discord_bot.cogs import _views_bump_link as bl
+    import discord
+    bot = MagicMock(); bot.fetch_invite = AsyncMock(side_effect=discord.HTTPException(MagicMock(status=500), "boom"))
+    guild = MagicMock(); guild.id = 5
+    url, status, _ = asyncio.run(bl.ensure_listing_link(bot, guild, "https://discord.gg/abc"))
+    assert (url, status) == ("https://discord.gg/abc", "unchecked")

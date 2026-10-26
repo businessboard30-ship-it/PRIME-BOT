@@ -25,6 +25,7 @@ detected by looking for the bot's own flag message in the bump channel.
 
 import logging
 import re
+import time
 
 import discord
 
@@ -169,6 +170,74 @@ async def validate_pasted_link(bot, guild_id: int, raw: str) -> tuple:
     return f"https://discord.gg/{code}", None, note
 
 
+# ── keep the link alive: check it, replace it, or ask ────────────────────────
+
+_CHECK_TTL = 900                 # a link that checked out is trusted for 15 minutes
+_checked: dict = {}              # listing_id -> (url, monotonic time it was last confirmed)
+
+
+async def ensure_listing_link(bot, guild: discord.Guild, url, prefer_channel_id=None, create: bool = True, reason: str = ""):
+    """Check the listing's link and fix it when it can be fixed.
+
+    Returns (url_or_None, status, notes) with status:
+      ok         the link is live, belongs to this server, never expires
+      replaced   the link was dead / another server's / expiring and was swapped for a good one
+      created    there was no link and one was found or made
+      unchecked  Discord couldn't be reached, so the link is left alone
+      missing    no usable link and none could be made (the admin has to be asked)
+    `create=True` may mint a never-expiring invite; callers pass it only when an admin is acting
+    (saving the listing, pressing bump), never from unattended jobs, which only reuse an existing one."""
+    url = (url or "").strip()
+    notes: list = []
+    if url:
+        canon, err, note = await validate_pasted_link(bot, guild.id, url)
+        if canon:
+            if not note:
+                return canon, "ok", notes
+            if create:
+                better, _err = await find_or_create_invite(guild, prefer_channel_id, reason=reason)
+            else:
+                better = await find_existing_invite(guild)
+            if better and better != canon:
+                return better, "replaced", ["The old invite expires, so I swapped it for a never-expiring one."]
+            return canon, "ok", [note]
+        if err.startswith("Couldn't check"):
+            return url, "unchecked", notes
+        notes.append(err)
+    last_err = None
+    if create:
+        new, last_err = await find_or_create_invite(guild, prefer_channel_id, reason=reason)
+    else:
+        new = await find_existing_invite(guild)
+    if new:
+        return new, ("replaced" if url else "created"), notes
+    if last_err:
+        notes.append(f"Discord said: {last_err}")
+    return None, "missing", notes
+
+
+async def ensure_for_listing(bot, guild: discord.Guild, listing: dict, config: dict, create: bool, reason: str = ""):
+    """ensure_listing_link for a listing row: saves the fixed link (or clears a dead one) and returns
+    (listing, status, notes). A link that checked out recently is not re-checked."""
+    lid = listing["id"]
+    url = (listing.get("invite_url") or "").strip()
+    seen = _checked.get(lid)
+    if url and seen and seen[0] == url and time.monotonic() - seen[1] < _CHECK_TTL:
+        return listing, "ok", []
+    fixed, status, notes = await ensure_listing_link(
+        bot, guild, url, (config or {}).get("bump_channel_id"), create=create, reason=reason)
+    if status in ("replaced", "created") and fixed and fixed != url:
+        await set_listing_invite(lid, fixed)
+        listing = {**listing, "invite_url": fixed}
+    elif status == "missing" and url:
+        await set_listing_invite(lid, "")          # don't keep advertising a dead link
+        listing = {**listing, "invite_url": ""}
+        _checked.pop(lid, None)
+    if status in ("ok", "replaced", "created") and fixed:
+        _checked[lid] = (fixed, time.monotonic())
+    return listing, status, notes
+
+
 # ── the flag ─────────────────────────────────────────────────────────────────
 
 def build_flag(guild: discord.Guild, listing_id: int, name: str, bump_channel_id=None) -> tuple:
@@ -187,7 +256,8 @@ def build_flag(guild: discord.Guild, listing_id: int, name: str, bump_channel_id
         name="How to fix it",
         value=(
             "Press **Get / create my link** and I'll reuse your vanity URL or a never-expiring invite, or make a "
-            "new never-expiring one. Or press **Paste my own link**. You need **Manage Server** for either."
+            "new never-expiring one. Or press **Paste my own link** (I check that it's live and yours). "
+            "You need **Manage Server** for either."
         ),
         inline=False,
     )
@@ -324,7 +394,7 @@ class DynamicBumpLinkPasteButton(
     def __init__(self, listing_id: int):
         self.listing_id = listing_id
         super().__init__(discord.ui.Button(
-            label="Paste my own link", style=discord.ButtonStyle.secondary, emoji="✏️",
+            label="Paste my own link", style=discord.ButtonStyle.primary, emoji="✏️",
             custom_id=f"bumplink:paste:{listing_id}",
         ))
 
