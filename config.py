@@ -15,7 +15,23 @@ _PUBLIC_BASE = PUBLIC_BASE_URL
 # Stable, host-independent address = the GitHub Pages redirector (redirector/).
 # Set STABLE_BASE_URL (e.g. https://<user>.github.io/PRIME-BOT) once you've registered
 # the /oauth/... URLs with Discord/Google; blank keeps the old backend-host behaviour.
-STABLE_BASE_URL = os.getenv("STABLE_BASE_URL", "").strip().rstrip("/")
+def _clean_base_url(raw: str, name: str = "STABLE_BASE_URL") -> str:
+    """Trim whitespace/quotes/trailing slashes; return "" (and say so once) unless the result is a plain
+    https://host[/path] URL. A pasted value with a missing scheme, a stray quote or a space is exactly what makes
+    Discord answer "not a well formed URL", so it is dropped here instead of being sent to Discord."""
+    value = (raw or "").strip().strip("\"'").strip().rstrip("/")
+    if not value:
+        return ""
+    from urllib.parse import urlparse
+    parts = urlparse(value)
+    if parts.scheme != "https" or not parts.netloc or any(c in value for c in " \t\r\n\"'<>"):
+        import logging
+        logging.getLogger("config").warning("%s=%r is not a well-formed https URL; ignoring it", name, raw)
+        return ""
+    return value
+
+
+STABLE_BASE_URL = _clean_base_url(os.getenv("STABLE_BASE_URL", ""))
 
 # Bot Configuration
 BOT_TOKEN = os.getenv("SINOBANED2_BOT_TOKEN", "your_token_here")
@@ -202,24 +218,24 @@ DISCOVER_CAP_TIERS = [
 # bot scope), used solely to learn who clicked an invite link so
 # the Discord login flow can identify them. Get these from the
 # same Discord Developer Portal application as the bot, under OAuth2.
-DISCORD_OAUTH_CLIENT_ID = os.getenv("DISCORD_OAUTH_CLIENT_ID", "1534579332528472246")  # public application ID
-DISCORD_OAUTH_CLIENT_SECRET = os.getenv("DISCORD_OAUTH_CLIENT_SECRET", "")
+# Read from this file ONLY (like PUBLIC_BASE_URL): the DISCORD_OAUTH_CLIENT_ID / *_REDIRECT_URI variables on Railway are
+# deliberately ignored, so a mistyped value there can no longer break "Sign in with Discord" ("not a well formed URL").
+# The client ID is the public application ID. The SECRET is the one exception: it must never be committed, so it is
+# still read from the environment (trimmed, because pasted secrets often carry a trailing space or newline).
+DISCORD_OAUTH_CLIENT_ID = "1534579332528472246"
+DISCORD_OAUTH_CLIENT_SECRET = os.getenv("DISCORD_OAUTH_CLIENT_SECRET", "").strip()
 # Redirect URI for /bump bot's ownership-verification flow (see
 # api/bump_oauth.py). Discord requires each redirect URI used by an OAuth
 # app to be registered individually in the Developer Portal — same
 # application, same client id/secret.
-BUMP_OAUTH_REDIRECT_URI = os.getenv(
-    "BUMP_OAUTH_REDIRECT_URI",
-    f"{_PUBLIC_BASE}/api/bump_oauth"
-)
+BUMP_OAUTH_REDIRECT_URI = f"{_PUBLIC_BASE}/api/bump_oauth"
 
 # Redirect URI for "Sign in with Discord" on the landing page (see
 # api/discord_login_oauth.py). Same Developer Portal application/client id/
 # secret as the three above, plus this scope needs "identify guilds" (not
 # just "identify") — add both to the redirect URI's scope list in the
 # Developer Portal if Discord complains about an invalid scope.
-DISCORD_LOGIN_OAUTH_REDIRECT_URI = os.getenv(
-    "DISCORD_LOGIN_OAUTH_REDIRECT_URI",
+DISCORD_LOGIN_OAUTH_REDIRECT_URI = (
     f"{STABLE_BASE_URL}/oauth/discord-login/" if STABLE_BASE_URL
     else f"{_PUBLIC_BASE}/api/discord_login_oauth"
 )
@@ -839,11 +855,10 @@ TURNSTILE_ENABLED = bool(TURNSTILE_SECRET_KEY and TURNSTILE_PAGES_URL and VERIFY
 # DASH_PAGES_URL: where dashboard/ is deployed, e.g. https://prime-bot-dash.pages.dev
 # DASH_OAUTH_REDIRECT_URI: https://<this backend>/api/dash. It must also be added under
 #   Redirects in the Discord Developer Portal (OAuth2) for the PRIME BOT application.
-# Both default to the values from dashboard/README.md, so nothing has to be set on Railway;
-# an env var still overrides (e.g. if Cloudflare gave the project a different pages.dev name).
-DASH_PAGES_URL = os.getenv("DASH_PAGES_URL", "https://prime-bot-dash.pages.dev").strip().rstrip("/")
-DASH_OAUTH_REDIRECT_URI = os.getenv(
-    "DASH_OAUTH_REDIRECT_URI", f"{PUBLIC_BASE_URL}/api/dash").strip()
+# Read from this file ONLY: the DASH_PAGES_URL / DASH_OAUTH_REDIRECT_URI variables on Railway are ignored, so nothing
+# has to be (or can be mistyped) there. If Cloudflare gives the project a different pages.dev name, change it here.
+DASH_PAGES_URL = "https://prime-bot-dash.pages.dev"
+DASH_OAUTH_REDIRECT_URI = f"{PUBLIC_BASE_URL}/api/dash"
 DASH_SESSION_MINUTES = int(os.getenv("DASH_SESSION_MINUTES", "720"))
 # Owner area (Phase 0): shorter sessions, step-up window, and an env-driven owner list.
 DASH_OWNER_SESSION_MINUTES = int(os.getenv("DASH_OWNER_SESSION_MINUTES", "120"))
