@@ -59,8 +59,8 @@ class LiveKeys(list):
 
     def _sync(self) -> None:
         fresh = load_keys()
-        if fresh != list(self):
-            self[:] = fresh
+        if fresh != list.copy(self):
+            list.__setitem__(self, slice(None), fresh)
         try:
             from modules import owner_env as oe
             oe.kick_refresh()
