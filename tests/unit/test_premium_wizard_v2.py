@@ -164,7 +164,7 @@ def test_home_is_compact_and_shows_the_prices():
                        "What's included", "Compare"):
             assert any(needle in l for l in labels), needle
         text = all_text(v)
-        assert "PrimeBot Premium" in text and "✨ Plus" in text
+        assert "Premium" in text and "✨ Plus" in text
         # compact: three rows of buttons for plans and info, no more
         rows = [c for c in v.walk_children() if isinstance(c, discord.ui.ActionRow)]
         assert len(rows) == 3, len(rows)

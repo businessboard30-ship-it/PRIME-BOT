@@ -58,7 +58,7 @@ def test_the_colour_stagger_comes_from_css_classes_not_inline_styles():
 
 def test_css_and_js_always_revalidate_so_a_new_page_never_gets_an_old_stylesheet():
     assert "stale-while-revalidate" not in HEADERS and "/assets/*\n" not in HEADERS
-    for name in ("site.css", "site.js", "boot.js", "config.js"):
+    for name in ("site.css", "site.js", "boot.js", "config.js", "theme.js"):
         block = re.search(rf"^/assets/{re.escape(name)}\n  Cache-Control: ([^\n]+)", HEADERS, re.M)
         assert block and "must-revalidate" in block.group(1) and "max-age=0" in block.group(1), name
 
@@ -69,7 +69,7 @@ def test_every_page_links_the_same_versioned_assets():
     versions = set()
     for page in pages:
         html = Path(page).read_text(encoding="utf-8")
-        for name in ("site.css", "site.js", "boot.js", "config.js"):
+        for name in ("site.css", "site.js", "boot.js", "config.js", "theme.js"):
             links = re.findall(rf'/assets/{re.escape(name)}([^"]*)"', html)
             for q in links:
                 assert re.fullmatch(r"\?v=\d+", q), (page, name, q)

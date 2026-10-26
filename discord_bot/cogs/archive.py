@@ -265,7 +265,8 @@ class ArchiveCog(commands.Cog):
         if interaction.guild_id is None:
             await interaction.response.send_message(
                 "This only works when the bot is added to the server (not as your personal app). "
-                "Ask a server admin to add PrimeBot with the 'Add to Server' option, then try again here.",
+                f"Ask a server admin to add {getattr(getattr(interaction.client, 'user', None), 'display_name', None) or 'this bot'} "
+                "with the 'Add to Server' option, then try again here.",
                 ephemeral=True,
             )
             return False

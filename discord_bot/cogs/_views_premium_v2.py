@@ -143,8 +143,9 @@ def _plus_plans():
 
 class PremiumWizardView(discord.ui.LayoutView):
     def __init__(self, guild, clone_id, buyer_id: int, status: PremiumStatus, mode: str = "split",
-                 page: str = "home", category: Optional[str] = None):
+                 page: str = "home", category: Optional[str] = None, bot_name: str = "Premium"):
         super().__init__(timeout=TIMEOUT_SECONDS)
+        self.bot_name = bot_name     # the name of the bot the buyer is talking to (a clone shows its own name)
         self.guild = guild
         self.clone_id = clone_id
         self.buyer_id = buyer_id
@@ -202,7 +203,7 @@ class PremiumWizardView(discord.ui.LayoutView):
         s = self.status
         T = discord.ui.TextDisplay
         kids = [T("\n".join([
-            "## 💎 PrimeBot Premium",
+            f"## 💎 {self.bot_name} Premium",
             status_text(s),
             f"-# One plan covers the whole server · {len(pp.perks())} perks · ✨ Plus adds {pp.plus_extras()}",
         ]))]
@@ -317,9 +318,18 @@ class PremiumWizardView(discord.ui.LayoutView):
             self._busy = False
 
 
+def bot_display_name(interaction) -> str:
+    """The name of the bot that received this interaction. Every clone is its own Discord bot with its own name,
+    so its Premium screen must say that name, never the main bot's."""
+    user = getattr(getattr(interaction, "client", None), "user", None)
+    name = (getattr(user, "display_name", None) or getattr(user, "name", None) or "").strip()
+    return name or "Server"
+
+
 async def open_premium_wizard(interaction: discord.Interaction, guild, clone_id, *, page: str = "home") -> None:
     """Call AFTER interaction.response.defer(ephemeral=True) -- the same contract as send_premium_pitch."""
     status = await load_status(guild.id, clone_id)
     mode = await _payment_mode(clone_id)
-    view = PremiumWizardView(guild, clone_id, interaction.user.id, status, mode, page=page)
+    view = PremiumWizardView(guild, clone_id, interaction.user.id, status, mode, page=page,
+                             bot_name=bot_display_name(interaction))
     view.message = await interaction.followup.send(view=view, ephemeral=True)

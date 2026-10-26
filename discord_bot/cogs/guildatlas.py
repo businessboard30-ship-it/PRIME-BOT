@@ -71,6 +71,11 @@ class GuildAtlasCog(commands.Cog):
         self._weblog_channel_id: int = 0
 
     async def cog_load(self):
+        import config
+        if getattr(config, "GUILDATLAS_POLLING_PAUSED", False):
+            self.client = None  # no loops, no knowledge fetches, no queue lookups while paused
+            logger.info("GuildAtlas polling is PAUSED (config.GUILDATLAS_POLLING_PAUSED). Nothing is checked on the site.")
+            return
         if not self.client:
             logger.info("GuildAtlas integration is OFF (set GUILDATLAS_SITE_URL and a 32+ char GUILDATLAS_INTERNAL_SECRET).")
             return

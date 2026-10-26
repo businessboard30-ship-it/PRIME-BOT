@@ -13,6 +13,8 @@
   Cache-Control: public, max-age=0, must-revalidate
 /assets/site.js
   Cache-Control: public, max-age=0, must-revalidate
+/assets/theme.js
+  Cache-Control: public, max-age=0, must-revalidate
 /assets/boot.js
   Cache-Control: public, max-age=0, must-revalidate
 /assets/config.js

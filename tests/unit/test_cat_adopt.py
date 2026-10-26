@@ -134,7 +134,7 @@ def test_pooled_spawn_gets_an_adopt_button(monkeypatch):
     assert run(cat.post_cat(bot, g, 1)) is True
     create.assert_awaited_once_with(77, None, 1, 9)
     ids = _button_ids(ch.send.await_args.kwargs["view"])
-    assert ids == ["cat_adopt:31", "cat_mine", "cat_market", "cat_help", "cat_menu"]
+    assert ids == ["cat_adopt:31", "cat_mine", "cat_market", "cat_help", "cat_menu", "cat_home"]
     assert "embed" not in ch.send.await_args.kwargs              # a V2 post: no embed next to the card
     setmsg.assert_awaited_once_with(31, 555)
 
