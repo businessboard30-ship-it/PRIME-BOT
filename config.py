@@ -5,6 +5,15 @@ from dotenv import load_dotenv
 
 load_dotenv()
 
+# Shared settings saved through the owner's DM form (/admin envsetup) live in the database. Copy them into the
+# environment HERE, before anything below reads it, so every process (main bot, clone manager, API, clones) gets them.
+# Never raises; on any problem the Railway values are used. See modules/owner_env.py.
+try:
+    from modules import owner_env as _owner_env
+    _owner_env.bootstrap()
+except Exception:  # pragma: no cover - must never stop a bot from starting
+    pass
+
 # Public URL of the API/web service (api_server.py). Read from this file ONLY: the
 # PUBLIC_BASE_URL environment variable on Railway is deliberately ignored, so the main
 # bot, the clone service and the web service always get the same URL from code.

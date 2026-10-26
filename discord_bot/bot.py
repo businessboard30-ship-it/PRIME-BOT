@@ -331,6 +331,8 @@ class AnimeBotDiscord(commands.Bot):
         # mount their owner commands under the /admin group in cog_load
         # (see cogs/_admin_mount.py) to save global slash-command slots.
         await self.load_extension("discord_bot.cogs.admin")
+        # Owner-only DM form for the settings every bot shares (mounts /admin envsetup, so it loads after admin).
+        await self.load_extension("discord_bot.cogs.owner_env")
         # After admin: Scam Shield mounts /admin scamchannel, which needs AdminCog to exist already.
         await self.load_extension("discord_bot.cogs.scam_shield")
         await self.load_extension("discord_bot.cogs.welcome")
