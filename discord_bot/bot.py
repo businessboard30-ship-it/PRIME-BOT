@@ -77,7 +77,7 @@ from discord_bot.cogs._perm_guard import global_interaction_check, TooManyPrivil
 from discord_bot.cogs._views_join_dm import build_join_dm_view, DYNAMIC_ITEMS
 from discord_bot.cogs._views_style_wizard import STYLE_WIZARD_DYNAMIC_ITEMS
 from discord_bot.cogs._views_welcome import DYNAMIC_ITEMS as WELCOME_WIZARD_DYNAMIC_ITEMS
-from modules import channel_finder
+from modules import channel_finder, data_purge
 from discord_bot.cogs._views_card_customize import DYNAMIC_ITEMS as CARD_CUSTOMIZE_DYNAMIC_ITEMS
 from discord_bot.cogs.catch import DYNAMIC_ITEMS as CATCH_DYNAMIC_ITEMS
 from discord_bot.cogs._views_cat_adopt import DYNAMIC_ITEMS as CAT_ADOPT_DYNAMIC_ITEMS
@@ -340,6 +340,7 @@ class AnimeBotDiscord(commands.Bot):
         await self.load_extension("discord_bot.cogs.join_gate")
         await self.load_extension("discord_bot.cogs.quarantine")
         await self.load_extension("discord_bot.cogs.invites")
+        await self.load_extension("discord_bot.cogs.data_purge")
         await self.load_extension("discord_bot.cogs.quickstart")
         await self.load_extension("discord_bot.cogs.setup_channels")
         # AI-only server administration. This extension never calls add_cog: its commands go straight into the AI-only
@@ -620,6 +621,11 @@ class AnimeBotDiscord(commands.Bot):
         # cheap on every restart after the first.
         existing_rows = await db.list_discord_guilds(self.clone_id, include_left=True)
         existing_ids = {g["guild_id"] for g in existing_rows}
+        # Removals that happened while we were offline never fire on_guild_remove, so clear them now.
+        try:
+            await data_purge.sweep_departed_guilds(existing_rows, {g.id for g in self.guilds}, self.clone_id)
+        except Exception:
+            logger.exception("[purge] startup sweep failed")
         for guild in self.guilds:
             if guild.id in existing_ids:
                 await db.upsert_discord_guild(guild.id, guild.name, guild.member_count, self.clone_id,
@@ -1072,6 +1078,13 @@ class AnimeBotDiscord(commands.Bot):
         # join DM, instead of being permanently blocked by the claim row
         # from this membership (see db.claim_new_guild_handling).
         await db.clear_new_guild_claim(guild.id, self.clone_id)
+        # Discord's data rules: once the bot is gone, delete everything stored for that server right away.
+        # Payments and moderation/security records are kept (see modules/data_purge.py).
+        if data_purge.guild_purge_enabled():
+            try:
+                await data_purge.purge_guild(guild.id, self.clone_id)
+            except Exception:
+                logger.exception(f"[purge] could not clear data for departed guild {guild.id}")
 
     @tasks.loop(seconds=60)
     async def _owner_snapshot_loop(self):
