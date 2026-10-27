@@ -18,7 +18,7 @@ def _summary_text(counts: dict) -> str:
     return ("**What we hold about you**\n" + "\n".join(lines)
             + "\n\n**Kept even if you delete:** " + ", ".join(my_data.KEPT) + "."
             + "\n-# Your records for a server are also deleted automatically when you leave it, and a server's data "
-              "is deleted when the bot is removed from it.")
+              "is deleted 14 days after the bot is removed from it.")
 
 
 class ConfirmModal(discord.ui.Modal, title="Delete my data"):

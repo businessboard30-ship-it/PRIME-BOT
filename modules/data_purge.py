@@ -3,7 +3,9 @@
 Discord's developer policy expects data to be deleted when it is no longer needed. Two triggers use this module:
 
 * purge_guild(): the bot was removed from a server (kick, ban, or an admin removing it). Deletes everything stored for
-  that server, for this bot or clone only.
+  that server, for this bot or clone only. It does NOT run at the moment of removal: the server gets a
+  GUILD_PURGE_GRACE_DAYS (14 day) window so an accidental kick can be undone by re-adding the bot, which restores
+  everything. sweep_departed_guilds() runs the purge once that window is over.
 * purge_member(): a person left (or was removed from) a server the bot is in. Deletes that person's records for that
   server only. Their other servers and their account-level data are untouched (/mydata covers account-level data).
 
@@ -22,11 +24,16 @@ to the main bot, so it is only touched when the main bot (clone_id None) is the 
 """
 import logging
 import os
+from datetime import datetime, timedelta, timezone
 from typing import Optional
 
 from database import get_pool
 
 logger = logging.getLogger(__name__)
+
+# After the bot is removed from a server, its data is kept this long so re-adding the bot brings everything back.
+GUILD_PURGE_GRACE_DAYS = 14
+GUILD_PURGE_GRACE = timedelta(days=GUILD_PURGE_GRACE_DAYS)
 
 # Kept when the whole server is purged.
 GUILD_KEEP = frozenset({
@@ -161,16 +168,41 @@ async def purge_member(guild_id: int, user_id: int, clone_id: Optional[int] = No
     return {"removed": removed, "failed": failed}
 
 
-async def sweep_departed_guilds(tracked_rows: list, current_guild_ids: set, clone_id: Optional[int] = None) -> list:
-    """Startup catch-up for removals that happened while the bot was offline (no event reaches us then).
+def _grace_over(left_at, now: datetime) -> bool:
+    """True once a server has been gone for the full grace period."""
+    if not isinstance(left_at, datetime):
+        return False
+    if left_at.tzinfo is None:
+        left_at = left_at.replace(tzinfo=timezone.utc)
+    return now - left_at >= GUILD_PURGE_GRACE
 
-    tracked_rows: db.list_discord_guilds(clone_id, include_left=True). Purges every tracked server the bot is no longer
-    in. Safety: servers still marked as joined (left_at is None) are only purged if that is a small minority of what
-    we track, so a bad gateway start that reports few guilds can never wipe real servers. Returns the purged ids."""
+
+async def _mark_left(guild_id: int, clone_id: Optional[int]) -> None:
+    """Starts the grace clock for a server we found missing that was never marked as left."""
+    pool = await get_pool()
+    async with pool.acquire() as conn:
+        await conn.execute(
+            "UPDATE discord_guilds SET left_at = NOW() "
+            "WHERE guild_id = $1 AND COALESCE(clone_id, -1) = COALESCE($2, -1) AND left_at IS NULL",
+            guild_id, clone_id)
+
+
+async def sweep_departed_guilds(tracked_rows: list, current_guild_ids: set, clone_id: Optional[int] = None,
+                                now: Optional[datetime] = None) -> list:
+    """Purges servers the bot has been gone from for GUILD_PURGE_GRACE_DAYS (14 days). Runs at startup and hourly.
+
+    tracked_rows: db.list_discord_guilds(clone_id, include_left=True). A server the bot was removed from is purged only
+    once its left_at is 14+ days old and the bot is still not in it; re-adding the bot clears left_at, so it is never
+    purged. A server we find missing that was never marked as left (removed while we were offline) gets its left_at set
+    now, which starts the 14 days. Safety: servers still marked as joined are only treated as gone if that is a small
+    minority of what we track, so a bad gateway start that reports few guilds can never wipe real servers.
+    Returns the purged ids."""
     if not guild_purge_enabled() or not current_guild_ids:
         return []
-    gone_confirmed = [r["guild_id"] for r in tracked_rows
-                      if r.get("left_at") is not None and r["guild_id"] not in current_guild_ids]
+    now = now or datetime.now(timezone.utc)
+    overdue = [r["guild_id"] for r in tracked_rows
+               if r.get("left_at") is not None and r["guild_id"] not in current_guild_ids
+               and _grace_over(r["left_at"], now)]
     gone_unmarked = [r["guild_id"] for r in tracked_rows
                      if r.get("left_at") is None and r["guild_id"] not in current_guild_ids]
     still_joined = [r for r in tracked_rows if r.get("left_at") is None]
@@ -178,8 +210,13 @@ async def sweep_departed_guilds(tracked_rows: list, current_guild_ids: set, clon
         logger.error("[purge] sweep: %s of %s joined servers look missing; skipping those as a safety check",
                      len(gone_unmarked), len(still_joined))
         gone_unmarked = []
+    for gid in gone_unmarked:
+        try:
+            await _mark_left(int(gid), clone_id)
+        except Exception:
+            logger.warning("[purge] sweep could not start the grace period for guild %s", gid, exc_info=True)
     purged = []
-    for gid in gone_confirmed + gone_unmarked:
+    for gid in overdue:
         try:
             res = await purge_guild(int(gid), clone_id)
             if not res["failed"]:

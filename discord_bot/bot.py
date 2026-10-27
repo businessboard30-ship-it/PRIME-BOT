@@ -409,6 +409,7 @@ class AnimeBotDiscord(commands.Bot):
         self.join_dm_reminder_loop.start()
         self.payment_reminder_loop.start()
         self.status_rotation_loop.start()  # main bot and all clones
+        self.guild_purge_loop.start()  # main bot and all clones: wipes data of servers gone 14+ days
 
         # AI-only commands (allowlist ai_only=True) must leave the tree BEFORE syncing so Discord never lists them.
         # They stay runnable by the AI. Why: modules/ai_command_allowlist.py, AICommandSpec.ai_only.
@@ -621,7 +622,7 @@ class AnimeBotDiscord(commands.Bot):
         # cheap on every restart after the first.
         existing_rows = await db.list_discord_guilds(self.clone_id, include_left=True)
         existing_ids = {g["guild_id"] for g in existing_rows}
-        # Removals that happened while we were offline never fire on_guild_remove, so clear them now.
+        # Removals that happened while we were offline never fire on_guild_remove; start their 14-day clock (and purge overdue ones).
         try:
             await data_purge.sweep_departed_guilds(existing_rows, {g.id for g in self.guilds}, self.clone_id)
         except Exception:
@@ -1078,13 +1079,27 @@ class AnimeBotDiscord(commands.Bot):
         # join DM, instead of being permanently blocked by the claim row
         # from this membership (see db.claim_new_guild_handling).
         await db.clear_new_guild_claim(guild.id, self.clone_id)
-        # Discord's data rules: once the bot is gone, delete everything stored for that server right away.
-        # Payments and moderation/security records are kept (see modules/data_purge.py).
+        # Data is NOT deleted now: the server keeps everything for data_purge.GUILD_PURGE_GRACE_DAYS (14 days) so an
+        # accidental kick can be undone by re-adding the bot (that clears left_at). guild_purge_loop wipes it after that.
+        # Payments and moderation/security records are always kept (see modules/data_purge.py).
         if data_purge.guild_purge_enabled():
-            try:
-                await data_purge.purge_guild(guild.id, self.clone_id)
-            except Exception:
-                logger.exception(f"[purge] could not clear data for departed guild {guild.id}")
+            logger.info(f"[purge] guild {guild.id} data will be deleted in {data_purge.GUILD_PURGE_GRACE_DAYS} days "
+                        "unless the bot is re-added")
+
+    @tasks.loop(hours=1)
+    async def guild_purge_loop(self):
+        """Deletes the data of servers the bot has been gone from for 14+ days (main bot and every clone)."""
+        if not data_purge.guild_purge_enabled() or not self.guilds:
+            return
+        try:
+            rows = await db.list_discord_guilds(self.clone_id, include_left=True)
+            await data_purge.sweep_departed_guilds(rows, {g.id for g in self.guilds}, self.clone_id)
+        except Exception:
+            logger.exception("[purge] hourly sweep failed")
+
+    @guild_purge_loop.before_loop
+    async def _before_guild_purge_loop(self):
+        await self.wait_until_ready()
 
     @tasks.loop(seconds=60)
     async def _owner_snapshot_loop(self):
