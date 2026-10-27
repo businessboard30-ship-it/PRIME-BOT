@@ -187,3 +187,66 @@ async def sweep_departed_guilds(tracked_rows: list, current_guild_ids: set, clon
         except Exception:
             logger.warning("[purge] sweep failed for guild %s", gid, exc_info=True)
     return purged
+
+
+# ── /mydata: one person, every server and every bot ───────────────────────
+
+_LABELS = {
+    "discord_xp": "XP and levels",
+    "discord_economy_balances": "coins",
+    "discord_economy_inventory": "inventory",
+    "discord_economy_transactions": "coin history",
+    "leveling_ping_optout": "level-up ping setting",
+}
+
+
+def _label(table: str) -> str:
+    return _LABELS.get(table) or table.removeprefix("discord_").replace("_", " ")
+
+
+def _user_tables(plan: dict) -> list:
+    """Per-member server tables /mydata may touch: every guild table with a user_id column except the kept ones."""
+    return sorted(t for t, e in plan.items() if e["user"] and t not in MEMBER_KEEP)
+
+
+async def user_summary(user_id: int) -> dict:
+    """{label: row count} of this person's records across every server and bot (non-zero only)."""
+    plan = await _plan()
+    out: dict = {}
+    pool = await get_pool()
+    async with pool.acquire() as conn:
+        for table in _user_tables(plan):
+            entry = plan[table]
+            col = _q("user_id") if entry["user"] in _INT_TYPES else _q("user_id") + "::text"
+            try:
+                n = await conn.fetchval(f"SELECT COUNT(*) FROM {_q(table)} WHERE {col} = $1",
+                                        _bind(user_id, entry["user"]))
+            except Exception:
+                logger.warning("[mydata] could not count %s", table, exc_info=True)
+                continue
+            if n:
+                out[_label(table)] = out.get(_label(table), 0) + int(n)
+    return out
+
+
+async def purge_user_everywhere(user_id: int) -> dict:
+    """Delete this person's records in every server and for every bot/clone. Idempotent.
+    Returns {"removed": {label: rows}, "failed": [table, ...]}."""
+    plan = await _plan()
+    removed: dict = {}
+    failed: list = []
+    pool = await get_pool()
+    async with pool.acquire() as conn:
+        for table in _user_tables(plan):
+            entry = plan[table]
+            col = _q("user_id") if entry["user"] in _INT_TYPES else _q("user_id") + "::text"
+            try:
+                res = await conn.execute(f"DELETE FROM {_q(table)} WHERE {col} = $1", _bind(user_id, entry["user"]))
+                n = int(res.split()[-1])
+            except Exception:
+                logger.warning("[mydata] could not clear %s", table, exc_info=True)
+                failed.append(table)
+                continue
+            if n:
+                removed[_label(table)] = removed.get(_label(table), 0) + n
+    return {"removed": removed, "failed": failed}

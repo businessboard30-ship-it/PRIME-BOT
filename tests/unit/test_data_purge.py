@@ -134,3 +134,63 @@ def test_sweep_does_nothing_when_no_guilds_are_visible(monkeypatch):
     monkeypatch.setattr(data_purge, "purge_guild", fake_purge)
     assert run(data_purge.sweep_departed_guilds([{"guild_id": 1, "left_at": "x"}], set(), None)) == []
     assert not called
+
+
+# ── /mydata: one person across every server and bot ──────────────────────
+
+class FakeConn2(FakeConn):
+    async def fetchval(self, sql, *args):
+        self.calls.append((sql, args))
+        return 2
+
+
+def test_user_purge_deletes_across_all_servers_and_bots_except_kept(monkeypatch):
+    conn = FakeConn2()
+    setup(monkeypatch, conn)
+    res = run(data_purge.purge_user_everywhere(99))
+    assert tables(conn) == {"discord_xp", "text_guild_table"}   # quarantine (kept) and no-user tables skipped
+    for sql, args in conn.calls:
+        assert "guild_id" not in sql and "clone_id" not in sql   # every server, every clone
+    assert [a for s, a in conn.calls if '"discord_xp"' in s] == [(99,)]
+    assert [a for s, a in conn.calls if '"text_guild_table"' in s] == [("99",)]
+    assert res["failed"] == [] and res["removed"]["XP and levels"] == 3
+
+
+def test_user_purge_reports_failed_tables(monkeypatch):
+    conn = FakeConn2(fail_on=("discord_xp",))
+    setup(monkeypatch, conn)
+    res = run(data_purge.purge_user_everywhere(99))
+    assert res["failed"] == ["discord_xp"] and "text guild table" in res["removed"]
+
+
+def test_user_summary_counts_the_same_tables(monkeypatch):
+    conn = FakeConn2()
+    setup(monkeypatch, conn)
+    out = run(data_purge.user_summary(99))
+    assert out == {"XP and levels": 2, "text guild table": 2}
+
+
+def test_mydata_delete_fails_cleanly_when_a_table_cannot_be_cleared(monkeypatch):
+    import types as _t, sys as _s
+    from modules import my_data
+
+    async def fake_member_delete(uid, body, db):
+        return {"deleted": True, "removed": {"card_design": 1}}
+    fake_api = _t.ModuleType("api.dash_member")
+    fake_api.member_data_delete = fake_member_delete
+    fake_api.DELETE_PHRASE = "DELETE MY DATA"
+    monkeypatch.setitem(_s.modules, "api.dash_member", fake_api)
+    pkg = _t.ModuleType("api"); pkg.dash_member = fake_api
+    monkeypatch.setitem(_s.modules, "api", pkg)
+
+    async def fake_purge(uid):
+        return {"removed": {"coins": 4}, "failed": ["discord_xp"]}
+    monkeypatch.setattr(my_data.data_purge, "purge_user_everywhere", fake_purge)
+    res = run(my_data.delete_all(99, object()))
+    assert res["ok"] is False and "again" in res["message"] and res["removed"] == {"card_design": 1, "coins": 4}
+
+    async def ok_purge(uid):
+        return {"removed": {"coins": 4}, "failed": []}
+    monkeypatch.setattr(my_data.data_purge, "purge_user_everywhere", ok_purge)
+    res = run(my_data.delete_all(99, object()))
+    assert res["ok"] is True and res["removed"] == {"card_design": 1, "coins": 4}
