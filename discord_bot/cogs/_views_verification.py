@@ -45,6 +45,7 @@ logger = logging.getLogger(__name__)
 _VERIFY_BTN_RE = re.compile(r"^verify_btn:(\d+)$")
 _CAPTCHA_MODAL_RE = re.compile(r"^verify_captcha:(\d+):(\d+):(\d+)$")
 _VERIFY_DONE_RE = re.compile(r"^verify_done:(\d+)$")
+_VERIFY_DM_RE = re.compile(r"^verify_dm:(\d+)$")
 
 
 def _turnstile_ready() -> bool:
@@ -276,6 +277,162 @@ class VerifyButton(discord.ui.DynamicItem[discord.ui.Button], template=_VERIFY_B
             )
 
 
+# ── verify by DM (free) ─────────────────────────────────────────────────────
+# The new member gets a DM with this button. It is a DynamicItem like every other persistent button, so a DM sent
+# before a restart still works after it. The guild id rides in the custom_id; the member is looked up from the
+# guild (a DM interaction has no guild of its own).
+
+async def _member_for_dm(client, guild_id: int, user_id: int):
+    """(guild, member) for a DM click. member is None when they have left the server."""
+    guild = client.get_guild(guild_id)
+    if guild is None:
+        return None, None
+    member = guild.get_member(user_id)
+    if member is None:
+        try:
+            member = await guild.fetch_member(user_id)
+        except discord.HTTPException:
+            member = None
+    return guild, member
+
+
+def _already_verified(member: discord.Member, config: dict) -> bool:
+    """True when the member no longer has the Unverified role (so there is nothing left to do)."""
+    rid = config.get("unverified_role_id")
+    return bool(rid) and all(r.id != rid for r in member.roles)
+
+
+class DmCaptchaModal(discord.ui.Modal, title="Verify you're human"):
+    """The in-Discord question for DM verification. Same idea as CaptchaModal, but the member is looked up from the
+    guild id because a DM interaction has no guild."""
+
+    def __init__(self, guild_id: int, a: int, b: int):
+        super().__init__(custom_id=f"verify_dmcaptcha:{guild_id}:{a}:{b}")
+        self.guild_id, self.a, self.b = guild_id, a, b
+        self.answer = discord.ui.TextInput(placeholder="Type the number", max_length=5)
+        self.add_item(discord.ui.Label(text=f"What is {a} + {b}?", component=self.answer))
+
+    async def on_submit(self, interaction: discord.Interaction):
+        try:
+            given = int(str(self.answer.value).strip())
+        except ValueError:
+            given = None
+        if given != self.a + self.b:
+            await interaction.response.send_message("❌ That's not right. Tap the verify button again for a new question.")
+            return
+        guild, member = await _member_for_dm(interaction.client, self.guild_id, interaction.user.id)
+        if guild is None or member is None:
+            await interaction.response.send_message("I can't find you in that server any more.")
+            return
+        config = await db.get_verification_config(self.guild_id, clone_id=getattr(interaction.client, "clone_id", None))
+        ok, reason = await do_verify(member, config)
+        await interaction.response.send_message(
+            f"✅ You're verified in **{guild.name}**. Welcome in!" if ok
+            else f"⚠️ You passed, but I couldn't update your roles: {reason}.")
+        if ok:
+            await _retire_dm_prompt(interaction.message, guild.name)
+
+
+async def _retire_dm_prompt(message, guild_name: str) -> None:
+    """Swap the DM's button for a done line so it can't be pressed again. Best effort."""
+    if message is None:
+        return
+    try:
+        view = discord.ui.LayoutView(timeout=None)
+        c = discord.ui.Container(accent_colour=discord.Color.green())
+        c.add_item(discord.ui.TextDisplay(f"## ✅ Verified\nYou're in **{guild_name}**."))
+        view.add_item(c)
+        await message.edit(view=view)
+    except discord.HTTPException:
+        logger.debug("verification: couldn't retire the DM prompt", exc_info=True)
+
+
+class VerifyDmButton(discord.ui.DynamicItem[discord.ui.Button], template=_VERIFY_DM_RE.pattern):
+    def __init__(self, guild_id: int):
+        super().__init__(discord.ui.Button(
+            label="Verify me", emoji="✅", style=discord.ButtonStyle.success, custom_id=f"verify_dm:{guild_id}"))
+        self.guild_id = guild_id
+
+    @classmethod
+    async def from_custom_id(cls, interaction, item, match: re.Match):
+        return cls(int(match.group(1)))
+
+    async def callback(self, interaction: discord.Interaction):
+        guild, member = await _member_for_dm(interaction.client, self.guild_id, interaction.user.id)
+        if guild is None:
+            await interaction.response.send_message("I can't reach that server right now. Try again in a minute.")
+            return
+        if member is None:
+            await interaction.response.send_message(f"You're not in **{guild.name}** any more, so there's nothing to verify.")
+            return
+        clone_id = getattr(interaction.client, "clone_id", None)
+        config = await db.get_verification_config(self.guild_id, clone_id=clone_id)
+        if not config.get("enabled"):
+            await interaction.response.send_message("Verification isn't active in that server right now.")
+            return
+        if _already_verified(member, config):
+            await interaction.response.send_message(f"You're already verified in **{guild.name}** ✅")
+            await _retire_dm_prompt(interaction.message, guild.name)
+            return
+        if config.get("mode") == "captcha":
+            if _turnstile_ready():
+                token = sign_challenge(_cfg.VERIFY_SIGNING_SECRET, self.guild_id, interaction.user.id, clone_id)
+                try:
+                    interaction.client.get_cog("VerificationCog").wake_poll()
+                except Exception:
+                    logger.debug("swallowed exception in VerifyDmButton.callback", exc_info=True)
+                view = discord.ui.View(timeout=None)
+                view.add_item(discord.ui.Button(
+                    label="Open captcha", emoji="🧩", style=discord.ButtonStyle.link,
+                    url=f"{_cfg.TURNSTILE_PAGES_URL}/?t={token}"))
+                await interaction.response.send_message(
+                    "Solve the quick Cloudflare check on the page (valid for 10 minutes). "
+                    "You'll be verified automatically within a few seconds, and I'll DM you when it's done.", view=view)
+                return
+            a, b = random.randint(1, 9), random.randint(1, 9)
+            await interaction.response.send_modal(DmCaptchaModal(self.guild_id, a, b))
+            return
+        ok, reason = await do_verify(member, config)
+        await interaction.response.send_message(
+            f"✅ You're verified in **{guild.name}**. Welcome in!" if ok
+            else f"⚠️ I couldn't update your roles: {reason}.")
+        if ok:
+            await _retire_dm_prompt(interaction.message, guild.name)
+
+
+def build_dm_prompt(guild: discord.Guild, mode: str, look: dict | None = None) -> discord.ui.LayoutView:
+    """The DM a new member gets. `look` is the Premium panel look of an EFFECTIVE config (empty for free servers)."""
+    look = look or {}
+    text = look.get("panel_text") or (
+        "Tap the button below to prove you're a real person and unlock the rest of the server."
+        + ("\nYou'll get a quick security check." if mode == "captcha" else ""))
+    colour = discord.Color(look["panel_color"]) if look.get("panel_color") is not None else discord.Color.green()
+    view = discord.ui.LayoutView(timeout=None)
+    c = discord.ui.Container(accent_colour=colour)
+    c.add_item(discord.ui.TextDisplay(f"## {look.get('panel_title') or f'Welcome to {guild.name} 👋'}\n{text}"))
+    if look.get("panel_image_url"):
+        c.add_item(discord.ui.MediaGallery(discord.MediaGalleryItem(look["panel_image_url"])))
+    c.add_item(discord.ui.ActionRow(VerifyDmButton(guild.id)))
+    view.add_item(c)
+    return view
+
+
+async def send_verify_dm(member: discord.Member, config: dict) -> bool:
+    """DM the new member their verify prompt. False when their DMs are closed (they use the verify channel instead).
+    Never raises."""
+    try:
+        from modules import verification_pro
+        eff = await verification_pro.effective_for(member.guild.id, config.get("clone_id"), config)
+        view = build_dm_prompt(member.guild, config.get("mode") or "captcha", verification_pro.panel_look(eff))
+        await member.send(view=view)
+        return True
+    except (discord.Forbidden, discord.HTTPException):
+        return False
+    except Exception:
+        logger.exception("verification: DM prompt failed for %s in guild %s", member.id, member.guild.id)
+        return False
+
+
 def build_verify_panel_embed(guild_name: str, mode: str, look: dict | None = None) -> discord.Embed:
     """`look` is the premium custom-look dict (modules.verification_pro.panel_look of an EFFECTIVE config).
     Empty/None = the default look every server gets."""
@@ -327,4 +484,4 @@ async def lockdown_guild_channels(guild: discord.Guild, unverified_role: discord
     return touched
 
 
-DYNAMIC_ITEMS = [VerifyButton, VerifyDoneButton]
+DYNAMIC_ITEMS = [VerifyButton, VerifyDoneButton, VerifyDmButton]

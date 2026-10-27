@@ -37,6 +37,7 @@ from discord_bot.cogs._views_verification import (
     build_verify_panel_view,
     lockdown_guild_channels,
     apply_verification_pass,
+    send_verify_dm,
 )
 from database import db
 from modules import verification_pro
@@ -959,6 +960,12 @@ class VerificationCog(GuildOnlyCog):
         for attempt in range(3):
             try:
                 await member.add_roles(role, reason="Join verification gate")
+                if config.get("dm_verify"):
+                    # Free for every server. A closed DM is fine: the verify channel is the fallback.
+                    if not await send_verify_dm(member, config):
+                        await verification_pro.log_event(
+                            member.guild, extras, f"💬 Couldn't DM {member.mention} (`{member.id}`): their DMs are closed, "
+                            "so they have to verify in the verify channel.")
                 return
             except discord.HTTPException:
                 if attempt == 2:
