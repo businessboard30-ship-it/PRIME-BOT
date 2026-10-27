@@ -102,16 +102,46 @@ def test_one_failing_table_does_not_stop_the_rest(monkeypatch):
     assert "discord_welcome_designs" in tables(conn)
 
 
-def test_sweep_purges_confirmed_departures_and_skips_present_guilds(monkeypatch):
+def test_sweep_purges_only_after_14_days_and_skips_present_guilds(monkeypatch):
+    from datetime import datetime, timedelta, timezone
+    now = datetime(2026, 10, 27, tzinfo=timezone.utc)
     purged = []
 
     async def fake_purge(gid, clone_id=None):
         purged.append(gid)
         return {"removed": {}, "failed": []}
     monkeypatch.setattr(data_purge, "purge_guild", fake_purge)
-    rows = [{"guild_id": 1, "left_at": "x"}, {"guild_id": 2, "left_at": None}, {"guild_id": 3, "left_at": "x"}]
-    run(data_purge.sweep_departed_guilds(rows, {2, 3}, None))
+    rows = [
+        {"guild_id": 1, "left_at": now - timedelta(days=14)},          # grace over -> purged
+        {"guild_id": 2, "left_at": None},                              # still joined
+        {"guild_id": 3, "left_at": now - timedelta(days=20)},          # old, but the bot is back -> skipped
+        {"guild_id": 4, "left_at": now - timedelta(days=13, hours=23)},  # still inside the 14 days
+        {"guild_id": 5, "left_at": now - timedelta(days=1)},
+    ]
+    assert run(data_purge.sweep_departed_guilds(rows, {2, 3}, None, now=now)) == [1]
     assert purged == [1]
+
+
+def test_sweep_starts_grace_clock_for_unmarked_missing_guilds(monkeypatch):
+    marked, purged = [], []
+
+    async def fake_mark(gid, clone_id):
+        marked.append(gid)
+
+    async def fake_purge(gid, clone_id=None):
+        purged.append(gid)
+        return {"removed": {}, "failed": []}
+    monkeypatch.setattr(data_purge, "_mark_left", fake_mark)
+    monkeypatch.setattr(data_purge, "purge_guild", fake_purge)
+    rows = [{"guild_id": 1, "left_at": None}, {"guild_id": 2, "left_at": None}, {"guild_id": 3, "left_at": None},
+            {"guild_id": 4, "left_at": None}, {"guild_id": 5, "left_at": None}, {"guild_id": 6, "left_at": None},
+            {"guild_id": 7, "left_at": None}, {"guild_id": 8, "left_at": None}, {"guild_id": 9, "left_at": None},
+            {"guild_id": 10, "left_at": None}, {"guild_id": 11, "left_at": None}, {"guild_id": 12, "left_at": None},
+            {"guild_id": 13, "left_at": None}, {"guild_id": 14, "left_at": None}, {"guild_id": 15, "left_at": None},
+            {"guild_id": 16, "left_at": None}, {"guild_id": 17, "left_at": None}, {"guild_id": 18, "left_at": None},
+            {"guild_id": 19, "left_at": None}, {"guild_id": 20, "left_at": None}]
+    run(data_purge.sweep_departed_guilds(rows, set(range(2, 21)), None))
+    assert marked == [1] and purged == []
 
 
 def test_sweep_refuses_mass_purge_of_still_joined_guilds(monkeypatch):
@@ -132,7 +162,7 @@ def test_sweep_does_nothing_when_no_guilds_are_visible(monkeypatch):
     async def fake_purge(*a, **k):
         called.append(1)
     monkeypatch.setattr(data_purge, "purge_guild", fake_purge)
-    assert run(data_purge.sweep_departed_guilds([{"guild_id": 1, "left_at": "x"}], set(), None)) == []
+    assert run(data_purge.sweep_departed_guilds([{"guild_id": 1, "left_at": None}], set(), None)) == []
     assert not called
 
 
