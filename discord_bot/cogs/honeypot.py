@@ -228,6 +228,48 @@ def _find_existing_channel(guild: discord.Guild):
     return None
 
 
+_STAFF_PERM_NAMES = ("administrator", "manage_guild", "manage_messages", "ban_members", "kick_members",
+                     "moderate_members")
+
+
+async def apply_member_visibility(guild: discord.Guild, channel: discord.abc.GuildChannel, hide: bool) -> tuple:
+    """Hide the trap from normal member roles (so only role-less accounts, like fresh joins, can see it), or undo it.
+    Staff roles, managed (bot) roles and @everyone are left alone. Returns (ok, message)."""
+    overwrites = dict(channel.overwrites)
+    changed = 0
+    for role in guild.roles:
+        if role.is_default() or role.managed:
+            continue
+        if any(getattr(role.permissions, n) for n in _STAFF_PERM_NAMES):
+            continue
+        ow = overwrites.get(role)
+        if hide:
+            ow = ow or discord.PermissionOverwrite()
+            if ow.view_channel is False:
+                continue
+            ow.view_channel = False
+            overwrites[role] = ow
+            changed += 1
+        elif ow is not None and ow.view_channel is False:
+            ow.view_channel = None
+            if ow.is_empty():
+                overwrites.pop(role, None)
+            else:
+                overwrites[role] = ow
+            changed += 1
+    if not changed:
+        return True, "Nothing to change."
+    try:
+        await channel.edit(overwrites=overwrites,
+                           reason="Honeypot: " + ("hide from member roles" if hide else "show to member roles again"))
+    except discord.Forbidden:
+        return False, ("Discord wouldn't let me change that channel's permissions. "
+                       "I need **Manage Roles** (or Manage Permissions on the channel).")
+    except discord.HTTPException:
+        return False, "Discord rejected the permission change — try again in a moment."
+    return True, f"Updated {changed} role(s)."
+
+
 async def ensure_honeypot(guild: discord.Guild, clone_id, user) -> tuple:
     """Make sure a honeypot channel exists and is configured. Reuses the
     configured channel, then an existing #honeypot, before creating one.
@@ -278,6 +320,8 @@ async def ensure_honeypot(guild: discord.Guild, clone_id, user) -> tuple:
         channel_auto_created=created or bool(cfg.get("channel_auto_created")),
         warning_message_id=cfg.get("warning_message_id") if channel.id == cfg.get("channel_id") else None,
     )
+    if cfg.get("hide_from_members"):
+        await apply_member_visibility(guild, channel, True)   # picks up roles created since last time
     warn_id = await _refresh_warning(guild, cfg)
     if warn_id != cfg.get("warning_message_id"):
         cfg = await db.set_honeypot_config(guild.id, clone_id=clone_id, warning_message_id=warn_id)
@@ -369,20 +413,22 @@ async def trip(bot, message: discord.Message, cfg: dict) -> None:
     _tripping.add(key)
     try:
         action = cfg.get("action") or "ban"
-        snippet = discord.utils.escape_markdown(discord.utils.escape_mentions(message.content or ""))[:300]
+        # Never repost the trapped message: scam text and links in a staff channel can trip Discord's own
+        # spam/phishing filters. The log carries the account only.
         extras = f"\n📎 {len(message.attachments)} attachment(s)" if message.attachments else ""
 
         # Tell the person why BEFORE the action (can't DM someone after a ban).
         # Hacked accounts are the usual case, so give them a way back.
-        try:
-            await member.send(
-                f"You were **{ACTIONS[action][2]}** in **{guild.name}** for posting in its honeypot "
-                "channel — a trap that only spam bots and hacked accounts ever post in.\n"
-                "If that was your real account, it's probably compromised: change your password, "
-                "turn on 2FA, remove unknown authorised apps, then contact the server staff to appeal."
-            )
-        except (discord.Forbidden, discord.HTTPException):
-            pass
+        if cfg.get("dm_offender") is not False:   # servers can choose silent actions
+            try:
+                await member.send(
+                    f"You were **{ACTIONS[action][2]}** in **{guild.name}** for posting in its honeypot "
+                    "channel — a trap that only spam bots and hacked accounts ever post in.\n"
+                    "If that was your real account, it's probably compromised: change your password, "
+                    "turn on 2FA, remove unknown authorised apps, then contact the server staff to appeal."
+                )
+            except (discord.Forbidden, discord.HTTPException):
+                pass
 
         ok, detail = await _apply_action(guild, member, cfg)
         try:
@@ -402,8 +448,9 @@ async def trip(bot, message: discord.Message, cfg: dict) -> None:
         joined = int(member.joined_at.timestamp()) if member.joined_at else None
         embed = discord.Embed(
             title="🍯 Honeypot triggered" if ok else "⚠️ Honeypot triggered — action FAILED",
-            description=(f"{member.mention} (`{member.id}`) posted in <#{cfg['channel_id']}>."
-                         + (f"\n>>> {snippet}" if snippet else "") + extras),
+            description=(f"{member.mention} (`{member.id}`, {discord.utils.escape_markdown(str(member))}) "
+                         f"posted in <#{cfg['channel_id']}>." + extras
+                         + "\n-# Message text isn't copied here on purpose."),
             color=discord.Color.red() if ok else discord.Color.orange(),
         )
         embed.add_field(name="Result", value=detail, inline=False)
@@ -451,11 +498,10 @@ async def warn_staff(bot, message: discord.Message, cfg: dict) -> None:
         )
     except (discord.Forbidden, discord.HTTPException):
         pass
-    snippet = discord.utils.escape_markdown(discord.utils.escape_mentions(message.content or ""))[:300]
     embed = discord.Embed(
         title="🍯 Staff member posted in the honeypot",
         description=(f"{member.mention} (`{member.id}`) posted in <#{cfg['channel_id']}>."
-                     + (f"\n>>> {snippet}" if snippet else "")),
+                     "\n-# Message text isn't copied here on purpose."),
         color=discord.Color.gold(),
     )
     embed.add_field(name="Result", value="Warned — no action taken (staff aren't banned)", inline=False)
@@ -539,6 +585,8 @@ def _status_lines(guild: discord.Guild, cfg: dict, premium: bool, stats: dict | 
     if action != "timeout":
         lines.append(f"**History:** {DELETE_OPTIONS.get(int(cfg.get('delete_seconds') or 0), 'custom')}")
     lines.append(f"**Log channel:** {f'<#{log_id}>' if log_id else 'server mod-log (if set)'}")
+    lines.append(f"**DM to caught account:** {'on' if cfg.get('dm_offender') is not False else 'off (silent)'}")
+    lines.append(f"**Hidden from member roles:** {'on' if cfg.get('hide_from_members') else 'off'}")
     arole = alert_role_of(guild, cfg)
     lines.append(f"**Staff alert:** {arole.mention if arole else 'no role set — pick one below'}")
     if stats:
@@ -617,6 +665,11 @@ def build_panel(guild: discord.Guild, clone_id, cfg: dict, premium: bool, note: 
         nav_row.add_item(HoneypotButton("clearalert", guild.id, clone_id))
     nav_row.add_item(HoneypotButton("panel", guild.id, clone_id))
     container.add_item(nav_row)
+
+    safety_row = discord.ui.ActionRow()   # free for every server: these exist to keep servers clear of Discord's filters
+    safety_row.add_item(HoneypotButton("dmtoggle", guild.id, clone_id, on=cfg.get("dm_offender") is not False))
+    safety_row.add_item(HoneypotButton("hidetoggle", guild.id, clone_id, on=bool(cfg.get("hide_from_members"))))
+    container.add_item(safety_row)
 
     btn_row = discord.ui.ActionRow()
     paused = not cfg.get("enabled")
@@ -834,15 +887,20 @@ _BUTTONS = {
     "removeyes": ("Yes, remove it", discord.ButtonStyle.danger, "🗑️"),
     "removeno":  ("Keep it", discord.ButtonStyle.secondary, "↩️"),
     "upgrade":   ("Unlock premium extras", discord.ButtonStyle.success, "💎"),
+    "dmtoggle":  ("DM caught account", discord.ButtonStyle.secondary, "✉️"),
+    "hidetoggle": ("Hide from member roles", discord.ButtonStyle.secondary, "🙈"),
 }
 
 
-class HoneypotButton(discord.ui.DynamicItem[discord.ui.Button], template=_pat("pause|repost|remove|removeyes|removeno|upgrade|test|clearalert|panel")):
-    def __init__(self, kind: str, guild_id: int, clone_id, paused: bool = False):
+class HoneypotButton(discord.ui.DynamicItem[discord.ui.Button], template=_pat("pause|repost|remove|removeyes|removeno|upgrade|test|clearalert|panel|dmtoggle|hidetoggle")):
+    def __init__(self, kind: str, guild_id: int, clone_id, paused: bool = False, on: bool = False):
         self.kind, self.guild_id, self.clone_id = kind, guild_id, clone_id
         label, style, emoji = _BUTTONS[kind]
         if kind == "pause" and paused:
             label, style, emoji = "Resume", discord.ButtonStyle.success, "▶️"
+        elif kind in ("dmtoggle", "hidetoggle"):
+            label = f"{label}: {'On' if on else 'Off'}"
+            style = discord.ButtonStyle.success if on else discord.ButtonStyle.secondary
         super().__init__(discord.ui.Button(label=label, style=style, emoji=emoji,
                                            custom_id=_cid(kind, guild_id, clone_id)))
 
@@ -882,6 +940,35 @@ class HoneypotButton(discord.ui.DynamicItem[discord.ui.Button], template=_pat("p
         elif self.kind == "upgrade":
             # Reached only when the server is premium now (the pitch is shown otherwise): just refresh.
             await _rerender(interaction, guild, clone_id)
+
+        elif self.kind == "dmtoggle":
+            await interaction.response.defer()
+            cfg = await db.get_honeypot_config(guild.id, clone_id=clone_id)
+            await db.set_honeypot_config(guild.id, clone_id=clone_id,
+                                         dm_offender=not (cfg.get("dm_offender") is not False))
+            _invalidate(guild.id, clone_id)
+            await _rerender(interaction, guild, clone_id)
+
+        elif self.kind == "hidetoggle":
+            await interaction.response.defer()
+            cfg = await db.get_honeypot_config(guild.id, clone_id=clone_id)
+            channel = guild.get_channel(cfg.get("channel_id") or 0)
+            if channel is None:
+                await interaction.followup.send("Set up the honeypot channel first (tap **Repost / recreate**).",
+                                                ephemeral=True)
+                return
+            want = not cfg.get("hide_from_members")
+            ok, msg = await apply_member_visibility(guild, channel, want)
+            if not ok:
+                await interaction.followup.send("⚠️ " + msg, ephemeral=True)
+                return
+            await db.set_honeypot_config(guild.id, clone_id=clone_id, hide_from_members=want)
+            _invalidate(guild.id, clone_id)
+            await _rerender(interaction, guild, clone_id)
+            await interaction.followup.send(
+                ("🙈 Hidden from member roles. Only accounts with no role (new joins, unverified) can see the trap. "
+                 "Staff roles still see it. Roles you create later need this toggled off and on again."
+                 if want else "👀 Visible to everyone again."), ephemeral=True)
 
         elif self.kind == "pause":
             await interaction.response.defer()

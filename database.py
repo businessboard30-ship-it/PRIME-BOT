@@ -157,7 +157,8 @@ _pool_loop = None  # the asyncio event loop _pool's connections belong to
 # Do NOT bump it for unrelated changes — an unnecessary bump forces every
 # bot/clone's next cold start to run the full DDL pass again, which is
 # exactly the schema-reload storm this version check exists to avoid.
-SCHEMA_VERSION = "135"
+SCHEMA_VERSION = "136"
+# "135" -> "136" adds 087_honeypot_safety.sql (discord_honeypot_config.dm_offender BOOLEAN DEFAULT TRUE + hide_from_members BOOLEAN DEFAULT FALSE). ADD COLUMN IF NOT EXISTS only. Bump-or-it-never-runs trap: tests/unit/test_schema_version_guard.py
 # "134" -> "135" adds 086_verification_dm.sql (discord_verification_config.dm_verify BOOLEAN DEFAULT FALSE: verify by DM). ADD COLUMN IF NOT EXISTS only. Bump-or-it-never-runs trap: tests/unit/test_schema_version_guard.py
 # "133" -> "134" adds 085_anime_feed_nudge.sql (anime_feed_nudge: one setup reminder per server). CREATE TABLE IF NOT EXISTS only. Bump-or-it-never-runs trap: tests/unit/test_schema_version_guard.py
 # "132" -> "133" adds 084_anime_spawn.sql (anime_feed_config.spawn_interval_minutes + last_spawn_at, anime_feed_spawned). ADD COLUMN / CREATE TABLE IF NOT EXISTS only. Bump-or-it-never-runs trap: tests/unit/test_schema_version_guard.py
@@ -5873,6 +5874,11 @@ class Database:
         if verification_dm_migration.exists():
             await conn.execute(verification_dm_migration.read_text())
 
+        # Honeypot Discord-safety options (dm_offender, hide_from_members). Additive/idempotent.
+        honeypot_safety_migration = pathlib.Path(__file__).parent / "database" / "migrations" / "087_honeypot_safety.sql"
+        if honeypot_safety_migration.exists():
+            await conn.execute(honeypot_safety_migration.read_text())
+
         # Anime feed D5: personal upgrade entitlements + checkout rows. Additive/idempotent.
         anime_plus_migration = pathlib.Path(__file__).parent / "database" / "migrations" / "076_anime_plus.sql"
         if anime_plus_migration.exists():
@@ -10990,6 +10996,7 @@ class Database:
     _HONEYPOT_FIELDS = (
         "channel_id", "enabled", "action", "delete_seconds", "log_channel_id",
         "warning_message_id", "channel_auto_created", "created_by", "alert_role_id",
+        "dm_offender", "hide_from_members",
     )
 
     async def get_honeypot_config(self, guild_id: int, clone_id: Optional[int] = None) -> Dict:
@@ -11005,6 +11012,7 @@ class Database:
                 "guild_id": guild_id, "clone_id": clone_id, "channel_id": None, "enabled": True,
                 "action": "ban", "delete_seconds": 86400, "log_channel_id": None,
                 "warning_message_id": None, "channel_auto_created": False,
+                "dm_offender": True, "hide_from_members": False,
                 "triggered_count": 0, "last_triggered_at": None, "created_by": None,
                 "alert_role_id": None,
             }
@@ -11021,17 +11029,19 @@ class Database:
                 INSERT INTO discord_honeypot_config
                     (guild_id, clone_id, channel_id, enabled, action, delete_seconds,
                      log_channel_id, warning_message_id, channel_auto_created, created_by,
-                     alert_role_id)
-                VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
+                     alert_role_id, dm_offender, hide_from_members)
+                VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)
                 ON CONFLICT (guild_id, (COALESCE(clone_id, -1))) DO UPDATE
                     SET channel_id = $3, enabled = $4, action = $5, delete_seconds = $6,
                         log_channel_id = $7, warning_message_id = $8, channel_auto_created = $9,
-                        created_by = $10, alert_role_id = $11
+                        created_by = $10, alert_role_id = $11, dm_offender = $12, hide_from_members = $13
                 RETURNING *
                 """,
                 guild_id, clone_id, merged["channel_id"], merged["enabled"], merged["action"],
                 merged["delete_seconds"], merged["log_channel_id"], merged["warning_message_id"],
                 merged["channel_auto_created"], merged["created_by"], merged["alert_role_id"],
+                True if merged["dm_offender"] is None else merged["dm_offender"],
+                bool(merged["hide_from_members"]),
             )
             return dict(row)
 
