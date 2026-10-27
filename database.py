@@ -157,7 +157,8 @@ _pool_loop = None  # the asyncio event loop _pool's connections belong to
 # Do NOT bump it for unrelated changes — an unnecessary bump forces every
 # bot/clone's next cold start to run the full DDL pass again, which is
 # exactly the schema-reload storm this version check exists to avoid.
-SCHEMA_VERSION = "134"
+SCHEMA_VERSION = "135"
+# "134" -> "135" adds 086_verification_dm.sql (discord_verification_config.dm_verify BOOLEAN DEFAULT FALSE: verify by DM). ADD COLUMN IF NOT EXISTS only. Bump-or-it-never-runs trap: tests/unit/test_schema_version_guard.py
 # "133" -> "134" adds 085_anime_feed_nudge.sql (anime_feed_nudge: one setup reminder per server). CREATE TABLE IF NOT EXISTS only. Bump-or-it-never-runs trap: tests/unit/test_schema_version_guard.py
 # "132" -> "133" adds 084_anime_spawn.sql (anime_feed_config.spawn_interval_minutes + last_spawn_at, anime_feed_spawned). ADD COLUMN / CREATE TABLE IF NOT EXISTS only. Bump-or-it-never-runs trap: tests/unit/test_schema_version_guard.py
 # "131" -> "132" adds 083_welcome_design_schedule.sql (sched_* on discord_welcome_designs + design_schedule_on on discord_welcome_config: Welcome Card Studio Phase 7a). ADD COLUMN IF NOT EXISTS only.
@@ -5867,6 +5868,11 @@ class Database:
         if anime_nudge_migration.exists():
             await conn.execute(anime_nudge_migration.read_text())
 
+        # Verify by DM: discord_verification_config.dm_verify. Additive/idempotent.
+        verification_dm_migration = pathlib.Path(__file__).parent / "database" / "migrations" / "086_verification_dm.sql"
+        if verification_dm_migration.exists():
+            await conn.execute(verification_dm_migration.read_text())
+
         # Anime feed D5: personal upgrade entitlements + checkout rows. Additive/idempotent.
         anime_plus_migration = pathlib.Path(__file__).parent / "database" / "migrations" / "076_anime_plus.sql"
         if anime_plus_migration.exists():
@@ -11497,7 +11503,7 @@ class Database:
                 "guild_id": guild_id, "clone_id": clone_id, "mode": "captcha",
                 "channel_id": None, "unverified_role_id": None, "verified_role_id": None,
                 "timeout_seconds": 300, "max_attempts": 3, "message_id": None,
-                "enabled": False,
+                "enabled": False, "dm_verify": False,
                 "wizard_channel_id": None, "wizard_message_id": None, "wizard_invoker_id": None,
             }
             default.update({k: None for k in self._VERIFICATION_PRO_FIELDS})
@@ -11506,7 +11512,7 @@ class Database:
     async def set_verification_config(self, guild_id: int, clone_id: Optional[int] = None, **fields) -> Dict:
         """fields may include mode, channel_id, unverified_role_id,
         verified_role_id, timeout_seconds, max_attempts, message_id,
-        enabled, wizard_channel_id, wizard_message_id, wizard_invoker_id,
+        enabled, dm_verify, wizard_channel_id, wizard_message_id, wizard_invoker_id,
         and the premium extras (panel_title, panel_text, panel_color,
         panel_image_url, log_channel_id, kick_after_minutes,
         min_account_age_days, welcome_text) — any key omitted keeps its
@@ -11515,7 +11521,7 @@ class Database:
         current = await self.get_verification_config(guild_id, clone_id=clone_id)
         base_cols = (
             "mode", "channel_id", "unverified_role_id", "verified_role_id", "timeout_seconds", "max_attempts",
-            "message_id", "enabled", "wizard_channel_id", "wizard_message_id", "wizard_invoker_id",
+            "message_id", "enabled", "wizard_channel_id", "wizard_message_id", "wizard_invoker_id", "dm_verify",
         )
         cols = base_cols + self._VERIFICATION_PRO_FIELDS
         values = [fields.get(c, current.get(c)) for c in cols]

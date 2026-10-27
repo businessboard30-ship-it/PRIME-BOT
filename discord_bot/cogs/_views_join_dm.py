@@ -2190,6 +2190,9 @@ class JoinDMMoreView(discord.ui.LayoutView):
         container = discord.ui.Container(accent_colour=discord.Color.blurple())
         container.add_item(discord.ui.TextDisplay("## ➕ More features\nExtras for growing and running your server."))
         for text, button in (
+            ("🛡️ **Verification**\nKeep bots and raiders out: new members verify by DM or in a verify channel. Free. "
+             "Premium adds a custom look, a log channel, auto-kick, a minimum account age and a welcome DM.",
+             _VerificationButton(guild_id, clone_id)),
             ("📝 **Applications**\nBuild an application form (staff, partners, anything) with accept/deny review buttons.",
              _ApplyFormButton(guild_id, clone_id)),
             ("🤝 **Partnership (Bump)**\nSet up the bump network so other servers can find yours.",
@@ -2235,6 +2238,32 @@ class _MoreFeaturesButton(discord.ui.DynamicItem[discord.ui.Button], template=r"
     async def callback(self, interaction: discord.Interaction):
         await interaction.response.defer()
         await interaction.edit_original_response(view=build_join_dm_more_view(self.guild_id, self.clone_id))
+
+
+class _VerificationButton(discord.ui.DynamicItem[discord.ui.Button], template=r"^join_dm_verify:(\d+):(-|\d+)$"):
+    """Opens the verification setup (Components V2, restart-proof) as its own message. Free; needs Manage Server like the
+    other setup wizards. The setup itself lives in _views_verify_setup.py."""
+
+    def __init__(self, guild_id: int, clone_id=None):
+        self.guild_id = guild_id
+        self.clone_id = clone_id
+        super().__init__(discord.ui.Button(
+            label="Set up", style=discord.ButtonStyle.primary, emoji="🛡️",
+            custom_id=_encode("verify", guild_id, clone_id),
+        ))
+
+    @classmethod
+    async def from_custom_id(cls, interaction: discord.Interaction, item, match: re.Match):
+        guild_id, clone_id = _decode(match)
+        return cls(guild_id, clone_id)
+
+    async def callback(self, interaction: discord.Interaction):
+        from discord_bot.cogs._views_bot_profile import _check_access
+        if not await _check_access(interaction, self.guild_id):
+            return                                    # it already told the person why
+        await interaction.response.defer(ephemeral=interaction.guild is not None)
+        from discord_bot.cogs._views_verify_setup import open_verify_setup
+        await open_verify_setup(interaction, self.guild_id, self.clone_id)
 
 
 class _BotProfileButton(discord.ui.DynamicItem[discord.ui.Button], template=r"^join_dm_botprof:(\d+):(-|\d+)$"):
@@ -2448,6 +2477,8 @@ DYNAMIC_ITEMS = (
 )
 from discord_bot.cogs._views_bot_profile import DYNAMIC_ITEMS as _BOT_PROFILE_ITEMS  # noqa: E402
 DYNAMIC_ITEMS = DYNAMIC_ITEMS + _BOT_PROFILE_ITEMS
+from discord_bot.cogs._views_verify_setup import DYNAMIC_ITEMS as _VERIFY_SETUP_ITEMS  # noqa: E402
+DYNAMIC_ITEMS = DYNAMIC_ITEMS + (_VerificationButton,) + _VERIFY_SETUP_ITEMS
 
 # Scam Shield button + its sub-screen controls (replaced the "List your server" button).
 from discord_bot.cogs._views_join_dm_scamshield import DYNAMIC_ITEMS as _SCAM_ITEMS  # noqa: E402

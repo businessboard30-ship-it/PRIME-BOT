@@ -88,7 +88,7 @@ def perks() -> Tuple[Perk, ...]:
              pitch=f"{sv.PREMIUM_GUILD_DAILY} AI image scam checks a day (free: {sv.FREE_GUILD_DAILY}), Strict mode & deep reports"),
         Perk("verification", "mod", "✅", "Verification Pro",
              "Custom verify panel, log channel, auto-kick for no-shows, minimum account age and a post-verify welcome.",
-             free="Captcha or button check, roles and lockdown",
+             free="Captcha or button check, verify by DM, roles and lockdown",
              premium="Panel, log channel, auto-kick, account age, welcome message",
              pitch="custom panel, log channel, auto-kick & minimum account age"),
         Perk("honeypot", "mod", "🍯", "Honeypot extras",

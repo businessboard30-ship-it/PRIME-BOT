@@ -3,7 +3,7 @@
 """
 Premium extras for join verification (discord_bot/cogs/verification.py).
 
-Free for everyone: captcha / button check, verify channel, Unverified + Verified roles, channel lockdown.
+Free for everyone: captcha / button check, verify by DM, verify channel, Unverified + Verified roles, channel lockdown.
 Premium servers also get:
   - a custom verify panel (title, text, colour, banner)
   - a verification log channel
