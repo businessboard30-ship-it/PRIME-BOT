@@ -16,7 +16,9 @@ logger = logging.getLogger(__name__)
 def _summary_text(counts: dict) -> str:
     lines = [f"- {k}: {v}" for k, v in counts.items()] or ["- Nothing stored beyond what's kept below."]
     return ("**What we hold about you**\n" + "\n".join(lines)
-            + "\n\n**Kept even if you delete:** " + ", ".join(my_data.KEPT) + ".")
+            + "\n\n**Kept even if you delete:** " + ", ".join(my_data.KEPT) + "."
+            + "\n-# Your records for a server are also deleted automatically when you leave it, and a server's data "
+              "is deleted when the bot is removed from it.")
 
 
 class ConfirmModal(discord.ui.Modal, title="Delete my data"):
