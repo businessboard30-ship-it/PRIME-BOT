@@ -434,6 +434,15 @@ PREMIUM_FEE_USD = 2.99
 # (top-5 on the XP leaderboard is necessary but no longer sufficient).
 CHIEF_MIN_LEVEL = 3
 
+# Buying a Chief Seat with coins (modules/card_chief.py). A purchase is a time-limited LEASE: while it runs, the XP
+# leaderboard recompute leaves the seat alone; afterwards the seat returns to the normal top-5 rules. A buyer can renew
+# but never hold more than CHIEF_SEAT_MAX_LEASE_DAYS from today, so a seat can't be bought out for good.
+# Prices are per seat rank (seat 1 first). Per-server tuning will move into XP Options.
+CHIEF_SEAT_PURCHASE_ENABLED = os.getenv("CHIEF_SEAT_PURCHASE_ENABLED", "1").strip().lower() in ("1", "true", "yes", "on")
+CHIEF_SEAT_PRICES = (50_000, 40_000, 30_000, 22_000, 15_000)
+CHIEF_SEAT_LEASE_DAYS = 7
+CHIEF_SEAT_MAX_LEASE_DAYS = 28
+
 # Shown on every payment screen.
 PAYMENT_SUPPORT_LINE = "❤️ Your payment helps keep this bot alive."
 PREMIUM_DAYS = 30

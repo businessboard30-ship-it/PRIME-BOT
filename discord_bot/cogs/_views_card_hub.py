@@ -9,6 +9,7 @@ button on the XP leaderboard (no slash command), and has these screens, switched
   🎴 My cards  your collection (sort + rarity filter + paging) -> card detail -> boost with coins or a boost item
   👤 Profile   stats, featured card, privacy toggles, achievements, look another collector up by ID
   🏆 Rankings  collector leaderboards, this server or every server
+  👑 Chief Seats    lease one of this server's 5 chief seats for coins (see _views_card_chief.py)
   💱 Trade & games  open offers, global/local trades, coin transfers, Coin Flip / League Flip / Rob (see _views_card_trade.py)
 
 Persistence: every control is a DynamicItem whose custom_id carries ALL the state it needs (screen, page, sort, copy id)
@@ -46,7 +47,8 @@ SORTS = (("newest", "Newest"), ("strongest", "Strongest"), ("rarest", "Rarest"),
 ITEM_KEYS = tuple(cb.ITEM_TIERS)                      # index in a custom_id -> item key
 ITEM_LABEL = {"boost_shard": "Boost Shard", "boost_core": "Boost Core", "boost_apex": "Boost Apex"}
 SCREENS = (("home", "Home", "🏠"), ("store", "Store", "🛒"), ("col", "My cards", "🎴"),
-           ("prof", "Profile", "👤"), ("ranks", "Rankings", "🏆"), ("trade", "Trade & games", "💱"))
+           ("prof", "Profile", "👤"), ("ranks", "Rankings", "🏆"), ("trade", "Trade & games", "💱"),
+           ("chief", "Chief Seats", "👑"))
 STORE_PAGE = 5
 COL_PAGE = 5
 METRICS = (("unique", "Most unique cards"), ("copies", "Most card copies"), ("strength", "Highest collection strength"),
@@ -640,12 +642,15 @@ async def route(ctx: Ctx, act: str, arg: str, value: Optional[str]):
     from discord_bot.cogs import _views_card_trade as vt      # lazy: that module imports this one
     if act in vt.ACTS:
         return await vt.route(ctx, act, arg, value)
+    from discord_bot.cogs import _views_card_chief as vc
+    if act in vc.ACTS:
+        return await vc.route(ctx, act, arg, value)
     from discord_bot.cogs import _views_card_admin as va
     if act in va.ACTS or (act == "nav" and value == "admin"):
         return await va.route(ctx, "admin" if act == "nav" else act, arg, value)
     if act == "nav":
         screens = {"home": screen_home, "store": screen_store, "col": screen_col, "prof": screen_prof, "ranks": screen_ranks,
-                   "trade": vt.screen_trade}
+                   "trade": vt.screen_trade, "chief": vc.screen_chief}
         return await screens.get(value, screen_home)(ctx)
     if act == "home":
         return await screen_home(ctx)
@@ -689,7 +694,8 @@ async def dispatch(interaction: discord.Interaction, act: str, clone_id, guild_i
     ctx = Ctx(interaction, clone_id, guild_id)
     from discord_bot.cogs import _views_card_trade as vt
     from discord_bot.cogs import _views_card_admin as va
-    guard = (ctx.user_id, act, arg, value) if act in ("buyok", "boost") or act in vt.GUARDED or act in va.GUARDED else None
+    from discord_bot.cogs import _views_card_chief as vc
+    guard = (ctx.user_id, act, arg, value) if act in ("buyok", "boost") or act in vt.GUARDED or act in va.GUARDED or act in vc.GUARDED else None
     if guard is not None:
         if guard in _inflight:
             if not interaction.response.is_done():
