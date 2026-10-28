@@ -188,8 +188,20 @@ def test_clone_still_requires_manage_server(env, monkeypatch):
 # Clone billing is covered by tests/unit/test_dash_clone_checkout.py (clones sell Premium through the dashboard now).
 
 
-def test_me_lists_clones_present_in_server(env, monkeypatch):
+def test_me_offers_no_custom_bot_when_the_main_bot_is_in_the_server(env, monkeypatch):
     _clone_env(env, monkeypatch)
+    st, p, _ = call("GET", {"action": "me"})
+    assert st == 200 and p["servers"][0]["bot_present"] is True and p["servers"][0]["clones"] == []
+
+
+def test_me_offers_exactly_one_custom_bot_when_the_main_bot_is_absent(env, monkeypatch):
+    _clone_env(env, monkeypatch)
+
+    real = dash._bot_guild_ids
+
+    async def main_absent():
+        return set() if dash._cid() is None else await real()
+    monkeypatch.setattr(dash, "_bot_guild_ids", main_absent)
     st, p, _ = call("GET", {"action": "me"})
     assert st == 200 and p["servers"][0]["clones"] == [{"clone_id": 7, "name": "Cloney"}]
 
