@@ -80,7 +80,10 @@ class BoostXPButton(discord.ui.DynamicItem[discord.ui.Button], template=r"^level
 
 async def pass_offered(clone_id) -> bool:
     """Offer the Level Pass when its Gumroad product is ready, or when this bot's payments don't go through Gumroad
-    (Paystack/manual need no product link). Any problem -> False, so the old single-boost flow keeps working."""
+    (Paystack/manual need no product link). Any problem -> False, so the old single-boost flow keeps working.
+    Always False while config.LEVELUP_PAYMENTS_ENABLED is off (paid level-ups removed)."""
+    if not getattr(app_config, "LEVELUP_PAYMENTS_ENABLED", False):
+        return False
     try:
         import gumroad_autocreate as _auto
         await _auto.load_runtime()
@@ -94,7 +97,9 @@ async def pass_offered(clone_id) -> bool:
 
 
 def _available_bundles() -> dict:
-    """Bundles whose Gumroad product link is configured."""
+    """Bundles whose Gumroad product link is configured (none while paid level-ups are switched off)."""
+    if not getattr(app_config, "LEVELUP_PAYMENTS_ENABLED", False):
+        return {}
     return {
         key: b for key, b in app_config.XP_BOOST_BUNDLES.items()
         if app_config.GUMROAD_PRODUCT_LINKS.get(key)

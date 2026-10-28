@@ -149,6 +149,7 @@ def test_pass_is_offered_only_when_it_can_be_bought(monkeypatch):
     async def mode(clone):
         return "gumroad"
     monkeypatch.setattr(boost, "app_config", config)
+    monkeypatch.setattr(config, "LEVELUP_PAYMENTS_ENABLED", True)   # this test covers the legacy shop logic
     import database
     monkeypatch.setattr(database.db, "get_payment_mode", mode, raising=False)
     monkeypatch.setattr(auto, "load_runtime", lambda *a, **k: asyncio.sleep(0))
