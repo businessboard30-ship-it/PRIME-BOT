@@ -371,6 +371,13 @@ class LevelingCog(GuildOnlyCog):
                     announce_channel, message.author, new_level, new_total, card_style, pinged=pinged,
                 )
             await self._grant_level_roles(message.author, new_level, clone_id=clone_id)
+            # Card-coin reward for the levels just reached (once per person per level, bot-wide; see modules/card_rewards.py).
+            # Never allowed to break the level-up itself.
+            try:
+                from modules import card_rewards
+                await card_rewards.award_levelup(message.author.id, clone_id, old_level, new_level)
+            except Exception:
+                logger.warning("[cards] level-up coin reward failed", exc_info=True)
             # Clan flavor card — every 3 levels gained (3, 6, 9, ...),
             # regardless of card_style ("text"/"off" only silence the normal
             # tier card above, not this). See modules/clan_cards.py and
