@@ -927,3 +927,11 @@ def __getattr__(name):
 # _available_bundles), so every existing button falls back to its "not on sale" message. Boosts people already own keep
 # working. Set LEVELUP_PAYMENTS_ENABLED=1 to turn the old shop back on. Welcome Bot / Ultra Card sales are separate.
 LEVELUP_PAYMENTS_ENABLED = os.getenv("LEVELUP_PAYMENTS_ENABLED", "0").strip().lower() in ("1", "true", "yes", "on")
+
+
+# Coins earned by leveling up (economy rework). Paid once per person per level, bot-wide (modules/card_rewards.py), so
+# leveling in many servers can't farm them. reward = min(BASE + PER_LEVEL * level, MAX). Set ENABLED=0 to switch off.
+CARD_LEVELUP_COINS_ENABLED = os.getenv("CARD_LEVELUP_COINS_ENABLED", "1").strip().lower() in ("1", "true", "yes", "on")
+CARD_LEVELUP_COIN_BASE = 25
+CARD_LEVELUP_COIN_PER_LEVEL = 5
+CARD_LEVELUP_COIN_MAX = 500

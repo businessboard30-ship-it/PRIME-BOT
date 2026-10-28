@@ -157,7 +157,8 @@ _pool_loop = None  # the asyncio event loop _pool's connections belong to
 # Do NOT bump it for unrelated changes — an unnecessary bump forces every
 # bot/clone's next cold start to run the full DDL pass again, which is
 # exactly the schema-reload storm this version check exists to avoid.
-SCHEMA_VERSION = "137"
+SCHEMA_VERSION = "138"
+# "137" -> "138" adds 093_card_levelup_rewards.sql (card_levelup_rewards: one payout per person per level). CREATE TABLE / CREATE UNIQUE INDEX IF NOT EXISTS only. Bump-or-it-never-runs trap: tests/unit/test_schema_version_guard.py
 # "136" -> "137" adds 088-092 card economy rework (card_catalog columns, card_offers, card_copies, card_purchases, card_stock_events, card_coin_ledger, user_boost_items, card_boost_log, card_trades, card_trade_items, card_coin_transfers, card_game_state, card_game_log, card_profiles, card_achievements). ADD COLUMN / CREATE TABLE / CREATE INDEX IF NOT EXISTS only. Bump-or-it-never-runs trap: tests/unit/test_schema_version_guard.py
 # "135" -> "136" adds 087_honeypot_safety.sql (discord_honeypot_config.dm_offender BOOLEAN DEFAULT TRUE + hide_from_members BOOLEAN DEFAULT FALSE). ADD COLUMN IF NOT EXISTS only. Bump-or-it-never-runs trap: tests/unit/test_schema_version_guard.py
 # "134" -> "135" adds 086_verification_dm.sql (discord_verification_config.dm_verify BOOLEAN DEFAULT FALSE: verify by DM). ADD COLUMN IF NOT EXISTS only. Bump-or-it-never-runs trap: tests/unit/test_schema_version_guard.py
@@ -6038,7 +6039,7 @@ class Database:
         # Card economy rework (global store + stock, per-copy ownership, boosts, trading, coin games, profiles).
         # Must run AFTER the card_catalog / card_coins tables above. Additive/idempotent; see each file's header.
         for _card_mig in ("088_card_economy_core.sql", "089_card_boosts.sql", "090_card_trading.sql",
-                          "091_card_coin_games.sql", "092_card_profiles.sql"):
+                          "091_card_coin_games.sql", "092_card_profiles.sql", "093_card_levelup_rewards.sql"):
             _card_mig_path = pathlib.Path(__file__).parent / "database" / "migrations" / _card_mig
             if _card_mig_path.exists():
                 await conn.execute(_card_mig_path.read_text())

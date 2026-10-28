@@ -6,7 +6,7 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[2]
 DB = (ROOT / "database.py").read_text()
 FILES = ["088_card_economy_core.sql", "089_card_boosts.sql", "090_card_trading.sql",
-         "091_card_coin_games.sql", "092_card_profiles.sql"]
+         "091_card_coin_games.sql", "092_card_profiles.sql", "093_card_levelup_rewards.sql"]
 
 
 def test_every_card_migration_exists_and_is_wired_in_order():

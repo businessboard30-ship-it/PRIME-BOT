@@ -353,6 +353,7 @@ class AnimeBotDiscord(commands.Bot):
         # heist / heist_inventory dropped: feature retired to free up global
         # slash-command slots. Re-add these two lines to restore.
         await self.load_extension("discord_bot.cogs.cards")
+        await self.load_extension("discord_bot.cogs.card_hub")
         await self.load_extension("discord_bot.cogs.automation")
         await self.load_extension("discord_bot.cogs.discover")
         await self.load_extension("discord_bot.cogs.ai_tools")
