@@ -199,7 +199,10 @@ _inflight: dict = {}
 
 async def _once(key, factory):
     loop = asyncio.get_running_loop()
-    k = (id(loop), key)
+    # The bot (main = None, or a clone id) is part of the key: without it a clone's "which servers am I in" lookup
+    # joined the main bot's in-flight lookup and got the MAIN bot's server list, so a server that only has a custom
+    # bot showed "Bot not added" and could not be managed.
+    k = (id(loop), _cid(), key)
     task = _inflight.get(k)
     if task is None:
         task = loop.create_task(factory())
@@ -1298,7 +1301,10 @@ async def _route(method: str, query: dict, headers, body: dict):
         try:
             present = await present_task
         except DiscordError:
-            _fail(502, "Couldn't reach Discord. Try again in a moment.")
+            # The main bot being unreachable must not lock out servers that only have a custom bot.
+            if not clones:
+                _fail(502, "Couldn't reach Discord. Try again in a moment.")
+            present = set()
         servers = [{**g, "icon_url": _icon(g), "bot_present": g["id"] in present, "clones": clones.get(g["id"], [])}
                    for g in sess.get("guilds", [])]
         servers.sort(key=lambda g: (not (g["bot_present"] or g["clones"]), g["name"].lower()))
