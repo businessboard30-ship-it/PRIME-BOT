@@ -56,19 +56,26 @@ def required_tier(target_level: int) -> int:
     return ITEM_FOR_LEVEL.get(target_level, 0)
 
 
-async def grant_item(user_id: int, clone_id: Optional[int], item_key: str, qty: int = 1) -> int:
+async def _grant_conn(conn, user_id: int, clone_id: Optional[int], item_key: str, qty: int) -> int:
+    row = await conn.fetchrow(
+        "INSERT INTO user_boost_items (user_id, clone_id, item_key, quantity) VALUES ($1,$2,$3,$4) "
+        "ON CONFLICT (user_id, COALESCE(clone_id, -1), item_key) DO UPDATE "
+        "SET quantity = user_boost_items.quantity + EXCLUDED.quantity RETURNING quantity",
+        user_id, clone_id, item_key, qty)
+    return row["quantity"]
+
+
+async def grant_item(user_id: int, clone_id: Optional[int], item_key: str, qty: int = 1, conn=None) -> int:
+    """Add items. Pass `conn` to join the caller's transaction (level-up drops do, so item + 'already paid' marker commit together)."""
     if item_key not in ITEM_TIERS:
         raise StoreError("bad_item", "Unknown boost item.")
     if qty <= 0:
         raise StoreError("bad_amount", "Quantity must be positive.")
+    if conn is not None:
+        return await _grant_conn(conn, user_id, clone_id, item_key, qty)
     pool = await _ce._pool()
-    async with pool.acquire() as conn:
-        row = await conn.fetchrow(
-            "INSERT INTO user_boost_items (user_id, clone_id, item_key, quantity) VALUES ($1,$2,$3,$4) "
-            "ON CONFLICT (user_id, COALESCE(clone_id, -1), item_key) DO UPDATE "
-            "SET quantity = user_boost_items.quantity + EXCLUDED.quantity RETURNING quantity",
-            user_id, clone_id, item_key, qty)
-        return row["quantity"]
+    async with pool.acquire() as c:
+        return await _grant_conn(c, user_id, clone_id, item_key, qty)
 
 
 async def boost_card(user_id: int, clone_id: Optional[int], copy_id: int, use_item: Optional[str] = None) -> dict:

@@ -19,6 +19,7 @@ from typing import Optional
 import config as app_config
 from modules import card_economy as _ce
 from modules.card_economy import _credit
+from modules import card_boost as _cb
 
 logger = logging.getLogger(__name__)
 
@@ -28,6 +29,20 @@ MAX_CATCH_UP = 20
 def reward_for(level: int) -> int:
     base = int(app_config.CARD_LEVELUP_COIN_BASE) + int(app_config.CARD_LEVELUP_COIN_PER_LEVEL) * max(0, level)
     return max(0, min(base, int(app_config.CARD_LEVELUP_COIN_MAX)))
+
+
+def item_for(level: int) -> Optional[tuple]:
+    """Boost item dropped for reaching `level`, or None. Rarer items need bigger milestones: every 5th level a Shard,
+    every 25th a Core, every 50th an Apex (Apex is what boosts 9-10 need, so it stays scarce). Once per person per level."""
+    if not app_config.CARD_LEVELUP_ITEMS_ENABLED or level <= 0:
+        return None
+    if level % 50 == 0:
+        return ("boost_apex", 1)
+    if level % 25 == 0:
+        return ("boost_core", 1)
+    if level % 5 == 0:
+        return ("boost_shard", 1)
+    return None
 
 
 async def award_levelup(user_id: int, clone_id: Optional[int], old_level: int, new_level: int) -> int:
@@ -48,5 +63,8 @@ async def award_levelup(user_id: int, clone_id: Optional[int], old_level: int, n
                     continue
                 if coins:
                     await _credit(conn, user_id, clone_id, coins, "levelup", f"level:{lvl}")
+                drop = item_for(lvl)       # same transaction + same once-per-level marker => can't be farmed or half-paid
+                if drop:
+                    await _cb.grant_item(user_id, clone_id, drop[0], drop[1], conn=conn)
                 paid += coins
     return paid

@@ -16,7 +16,7 @@ Components V2, persistent views that survive restarts, no timeout on permanent s
 ## Not built yet (nothing below has any UI)
 1. ~~Card Hub screens~~ built (#503).
 2. ~~Trading + coin transfer + games UI~~ built (see table). Recipient entry uses `resolve_user_ref` (same ID rules and lookup rate limit as the Cat Game box).
-3. **Boost items**: `card_boost.grant_item` exists but nothing grants items yet (drops / quests / admin).
+3. ~~Boost items~~ now drop at milestone levels (every 5th Shard, 25th Core, 50th Apex; once per person per level, in the same transaction as the coin payout; `card_rewards.item_for`, switch `CARD_LEVELUP_ITEMS_ENABLED`). Still no quests / admin grants. Catch-up caps at 20 levels per call, so a huge jump skips older drops (same as coins).
 4. **Chief Seat purchase with coins** (spec section 2): not started.
 5. **Admin tooling** for creating offers / limited stock / replenishing (`create_offer`, `set_limited_stock`, `replenish_stock` exist, no UI).
 6. XP Options integration for per-server economy settings (today the level-up coin knobs live in `config.py`).

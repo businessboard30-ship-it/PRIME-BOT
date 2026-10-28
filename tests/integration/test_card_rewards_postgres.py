@@ -111,3 +111,43 @@ async def test_sweep_expires_rentals_and_trades_but_spares_locked_cards(pool):
         assert await c.fetchval("SELECT status FROM card_trades WHERE trade_id=$1", t) == "expired"
         assert not await c.fetchval("SELECT bool_or(trade_locked) FROM card_copies WHERE copy_id IN ($1,$2)", a, b)
     assert await card_hub.sweep_once() == (0, 0)                  # safe to run again
+
+
+async def _items(pool, uid):
+    async with pool.acquire() as c:
+        rows = await c.fetch("SELECT item_key, quantity FROM user_boost_items WHERE user_id=$1", uid)
+    return {r["item_key"]: r["quantity"] for r in rows}
+
+
+def test_item_drop_schedule_is_rare_at_the_top():
+    assert cr.item_for(4) is None and cr.item_for(0) is None
+    assert cr.item_for(5) == ("boost_shard", 1) and cr.item_for(10) == ("boost_shard", 1)
+    assert cr.item_for(25) == ("boost_core", 1) and cr.item_for(75) == ("boost_core", 1)
+    assert cr.item_for(50) == ("boost_apex", 1) and cr.item_for(100) == ("boost_apex", 1)
+
+
+@pytest.mark.asyncio
+async def test_milestone_levels_drop_items_once_and_catch_up_pays_each(pool):
+    await _up(pool)
+    await cr.award_levelup(1, None, 0, 4)
+    assert await _items(pool, 1) == {}
+    await cr.award_levelup(1, None, 4, 12)                      # crosses 5 and 10
+    assert await _items(pool, 1) == {"boost_shard": 2}
+    await cr.award_levelup(1, None, 4, 12)                      # replay / second server: nothing more
+    await cr.award_levelup(1, None, 0, 12)
+    assert await _items(pool, 1) == {"boost_shard": 2}
+    await cr.award_levelup(1, None, 12, 30)                     # 15, 20, 30 shards; 25 core (inside the 20-level catch-up cap)
+    assert await _items(pool, 1) == {"boost_shard": 5, "boost_core": 1}
+    await cr.award_levelup(1, None, 30, 50)                     # 35, 40, 45 shards; 50 apex
+    assert await _items(pool, 1) == {"boost_shard": 8, "boost_core": 1, "boost_apex": 1}
+
+
+@pytest.mark.asyncio
+async def test_drops_can_be_switched_off_and_concurrent_awards_do_not_double_grant(pool, monkeypatch):
+    await _up(pool)
+    monkeypatch.setattr(app_config, "CARD_LEVELUP_ITEMS_ENABLED", False)
+    await cr.award_levelup(2, None, 0, 10)
+    assert await _items(pool, 2) == {}
+    monkeypatch.setattr(app_config, "CARD_LEVELUP_ITEMS_ENABLED", True)
+    await asyncio.gather(*[cr.award_levelup(3, None, 0, 5) for _ in range(6)])
+    assert await _items(pool, 3) == {"boost_shard": 1}
