@@ -287,6 +287,8 @@ async def screen_home(ctx: Ctx) -> discord.ui.LayoutView:
         f"**🎴 Cards:** {st.get('copies', 0)} cop{'y' if st.get('copies', 0) == 1 else 'ies'} · {st.get('unique', 0)} unique"
         f" · 💪 {st.get('strength', 0):,} total strength",
         f"**🎁 Next level-up pays:** {card_rewards.reward_for(lvl + 1):,} coins (each level pays once)",
+        *([f"**🧩 Next boost item:** a {ITEM_LABEL[card_rewards.item_for(nl)[0]]} at level {nl}"]
+          if (nl := next(( l for l in range(lvl + 1, lvl + 6) if card_rewards.item_for(l)), None)) else []),
         "",
         "Earn coins by leveling up, then spend them in the 🛒 Store or on boosts, trade with friends or play a game in 💱 Trade & games. Pick a screen below.",
         "-# Only you can see this."])

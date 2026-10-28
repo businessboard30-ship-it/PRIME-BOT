@@ -935,3 +935,4 @@ CARD_LEVELUP_COINS_ENABLED = os.getenv("CARD_LEVELUP_COINS_ENABLED", "1").strip(
 CARD_LEVELUP_COIN_BASE = 25
 CARD_LEVELUP_COIN_PER_LEVEL = 5
 CARD_LEVELUP_COIN_MAX = 500
+CARD_LEVELUP_ITEMS_ENABLED = os.getenv("CARD_LEVELUP_ITEMS_ENABLED", "1").strip().lower() in ("1", "true", "yes", "on")   # boost item drops at milestone levels (card_rewards.item_for)
