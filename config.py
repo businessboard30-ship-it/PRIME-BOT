@@ -920,3 +920,10 @@ def __getattr__(name):
         except Exception:
             return os.getenv(name, _LIVE_DEFAULTS[name])
     raise AttributeError(f"module 'config' has no attribute {name!r}")
+
+
+# Paid level-ups were removed in the economy rework: leveling is progression-based. When False (default) the Level Pass
+# and XP-boost bundles are reported as "not on sale" by discord_bot/cogs/_views_leveling_boost.py (pass_offered /
+# _available_bundles), so every existing button falls back to its "not on sale" message. Boosts people already own keep
+# working. Set LEVELUP_PAYMENTS_ENABLED=1 to turn the old shop back on. Welcome Bot / Ultra Card sales are separate.
+LEVELUP_PAYMENTS_ENABLED = os.getenv("LEVELUP_PAYMENTS_ENABLED", "0").strip().lower() in ("1", "true", "yes", "on")
