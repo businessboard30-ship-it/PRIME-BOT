@@ -106,3 +106,21 @@ async def test_concurrent_robs_of_one_victim_only_one_succeeds(pool):
     assert sum(isinstance(r, dict) for r in res) == 1      # shield blocks the rest
     total = sum([await _bal(pool, u) for u in list(range(1, 6)) + [9]])
     assert total == 10_500
+
+
+@pytest.mark.asyncio
+async def test_a_broke_player_cannot_win_free_coins(pool):
+    """Regression: funds used to be checked only on a LOSS, so a 0-coin player who rolled a win was paid for nothing."""
+    await _up(pool)
+    for play in (lambda: g.coin_flip(7, None, 100, rng=lambda: 0.0, now=T0),
+                 lambda: g.league_flip(7, None, "diamond", 100, rng=lambda: 0.0, now=T0)):
+        with pytest.raises(ce.StoreError) as e:
+            await play()
+        assert e.value.code == "funds"
+    assert (await _bal(pool, 7) or 0) == 0
+    await _fund(pool, 7, 99)                                   # one short of the stake: still refused, nothing paid
+    with pytest.raises(ce.StoreError):
+        await g.coin_flip(7, None, 100, rng=lambda: 0.0, now=T0)
+    assert await _bal(pool, 7) == 99
+    await _fund(pool, 7, 100)                                  # exactly the stake: allowed, win pays 1:1
+    assert (await g.coin_flip(7, None, 100, rng=lambda: 0.0, now=T0))["balance"] == 200
