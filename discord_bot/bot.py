@@ -123,6 +123,7 @@ from discord_bot.cogs._views_leveling_boost import DYNAMIC_ITEMS as LEVELING_BOO
 from discord_bot.cogs._views_leveling_wallet import DYNAMIC_ITEMS as LEVELING_WALLET_DYNAMIC_ITEMS
 from discord_bot.cogs._views_leveling_leaderboard import DYNAMIC_ITEMS as LEVELING_LEADERBOARD_DYNAMIC_ITEMS
 from discord_bot.cogs._views_xp_wizard import DYNAMIC_ITEMS as XP_WIZARD_DYNAMIC_ITEMS
+from discord_bot.cogs._views_card_hub import DYNAMIC_ITEMS as CARD_HUB_DYNAMIC_ITEMS
 from discord_bot.cogs._views_pending_payments import DYNAMIC_ITEMS as PENDING_PAYMENTS_DYNAMIC_ITEMS
 from discord_bot.cogs._views_gumroad_claim import DYNAMIC_ITEMS as GUMROAD_CLAIM_DYNAMIC_ITEMS
 from utils.guild_owner import resolve_guild_owner
@@ -255,6 +256,7 @@ class AnimeBotDiscord(commands.Bot):
         self.add_dynamic_items(*HELP_DYNAMIC_ITEMS)
         self.add_dynamic_items(*BIRTHDAY_DYNAMIC_ITEMS)
         self.add_dynamic_items(*XP_WIZARD_DYNAMIC_ITEMS)
+        self.add_dynamic_items(*CARD_HUB_DYNAMIC_ITEMS)       # card hub: persistent, state in the custom_id
         self.add_dynamic_items(*AUTOMOD_WIZARD_DYNAMIC_ITEMS)
         self.add_dynamic_items(*MODLOG_WIZARD_DYNAMIC_ITEMS)
         self.add_dynamic_items(*TERMS_DYNAMIC_ITEMS)

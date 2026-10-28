@@ -114,3 +114,21 @@ async def boost_card(user_id: int, clone_id: Optional[int], copy_id: int, use_it
             return {"copy_id": copy_id, "level": target, "strength": strength(card["base_strength"], target),
                     "coins_spent": coins, "item": use_item, "skills": active_skills(skills, target),
                     "next": next_milestone(skills, target)}
+
+
+async def list_items(user_id: int, clone_id: Optional[int]) -> dict:
+    """{item_key: quantity} for items the person holds (quantity > 0)."""
+    pool = await _ce._pool()
+    async with pool.acquire() as conn:
+        rows = await conn.fetch(
+            "SELECT item_key, quantity FROM user_boost_items WHERE user_id = $1 AND COALESCE(clone_id,-1) = $2 "
+            "AND quantity > 0", user_id, _clone_key(clone_id))
+    return {r["item_key"]: r["quantity"] for r in rows if r["item_key"] in ITEM_TIERS}
+
+
+def next_boost_plan(rarity: str, level: int, max_level: int) -> Optional[dict]:
+    """What the NEXT boost needs: None at the cap, else {target, coins, tier} (tier 0 = coins alone are enough)."""
+    if level >= max_level:
+        return None
+    target = level + 1
+    return {"target": target, "coins": coin_cost(rarity, level), "tier": required_tier(target)}

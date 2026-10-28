@@ -247,3 +247,26 @@ async def leaderboard(metric: str, clone_id: Optional[int], *, member_ids: Optio
         else:
             raise StoreError("bad_metric", "Unknown ranking.")
     return [{"rank": offset + i + 1, "user_id": r["user_id"], "score": r["score"]} for i, r in enumerate(rows)]
+
+
+async def get_copy_detail(viewer_id: int, copy_id: int, clone_id: Optional[int]) -> Optional[dict]:
+    """One copy as `viewer_id` may see it (owners see their own; others only when the owner shows their collection).
+    Returns None for a missing copy, another bot's copy, or a private collection."""
+    pool = await _ce._pool()
+    async with pool.acquire() as conn:
+        r = await conn.fetchrow(
+            f"SELECT cp.copy_id, cp.owner_id, cp.serial_no, cp.boost_level, cp.rental_expires_at, cp.trade_locked, "
+            f"cp.acquired_at, cc.card_id, cc.name, cc.rarity, cc.image_url, cc.emoji, cc.stock_total, cc.skills, "
+            f"cc.base_strength, cc.max_boost_level, cc.tradeable, {_STRENGTH_SQL}::int AS strength "
+            f"FROM card_copies cp JOIN card_catalog cc USING (card_id) "
+            f"WHERE cp.copy_id = $1 AND COALESCE(cp.clone_id,-1) = $2", copy_id, _clone_key(clone_id))
+    if r is None:
+        return None
+    if r["owner_id"] != viewer_id and not (await get_settings(r["owner_id"], clone_id))["show_collection"]:
+        return None
+    d = dict(r)
+    skills = _ce._jl(d["skills"], [])
+    d["skills"] = skills
+    d["active_skills"] = cb.active_skills(skills, d["boost_level"])
+    d["next_skill"] = cb.next_milestone(skills, d["boost_level"])
+    return d

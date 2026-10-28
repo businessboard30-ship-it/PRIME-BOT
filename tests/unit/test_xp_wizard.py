@@ -170,7 +170,7 @@ def test_boost_tab_sells_the_pass_and_the_packs_inline(env):
     assert "Level Pass" in text_of(v)
     env["pass"], env["bundles"] = False, {}
     v = make_view(env)
-    assert len(rows(v)) == 1 and "aren't on sale" in text_of(v)
+    assert len(rows(v)) == 2 and "aren't on sale" in text_of(v)           # tab row + the Card Hub row
 
 
 def test_a_buy_button_starts_the_same_checkout_as_before(env, monkeypatch):
@@ -210,7 +210,7 @@ def test_pings_toggle_flips_the_setting_and_the_button(env):
 
 def test_clans_tab_lists_clans_then_shows_members_with_paging(env):
     v = make_view(env, "clans")
-    assert len(rows(v)) == 2 and "Pick a clan" in text_of(v)
+    assert len(rows(v)) == 3 and "Pick a clan" in text_of(v)              # tab row, clan select, Card Hub row
     sel = rows(v)[1].children[0]
     fn = sel.item.options[0].value
     i = inter()
@@ -271,8 +271,9 @@ def test_every_tab_is_within_discord_limits(env):
 
 # ── no timeout, survives a restart ────────────────────────────────────────────
 def test_every_custom_id_routes_to_exactly_one_registered_item(env):
+    from discord_bot.cogs import _views_card_hub as hub
     templates = [(c, c.__discord_ui_compiled_template__) for c in
-                 wiz.DYNAMIC_ITEMS + (boost_mod.BoostBuyButton,)]
+                 wiz.DYNAMIC_ITEMS + (boost_mod.BoostBuyButton,) + hub.DYNAMIC_ITEMS]
     from discord_bot.cogs import _views_leveling_wallet as wallet
     templates.append((wallet.BuyBoostSelect, wallet.BuyBoostSelect.__discord_ui_compiled_template__))
     for tab, _l, _e in wiz.TABS:
@@ -301,3 +302,10 @@ def test_an_old_tab_button_and_ping_toggle_still_work_after_a_restart(env):
     i2 = inter()
     run(click(wiz.XPPingToggle, "xpw:ping:5:-", i2).callback(i2))
     assert env["toggles"] == 1 and label_of(rows(edited(i2))[1].children[0]) == "Turn pings ON"
+
+
+def test_every_tab_has_a_card_hub_button_that_opens_the_hub_in_place(env):
+    for tab, _l, _e in wiz.TABS:
+        v = make_view(env, tab, clan=("x.png" if tab == "clans" else None))
+        hub_btns = [c for c in controls(v) if cid_of(c).startswith("chub:home:")]
+        assert len(hub_btns) == 1 and label_of(hub_btns[0]) == "Card Hub"
