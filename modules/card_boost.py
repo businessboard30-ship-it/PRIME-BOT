@@ -15,6 +15,7 @@ Rules (all in the tables below so new items/rarities need no logic change):
 
 from __future__ import annotations
 
+import math
 from typing import Optional
 
 from modules import card_economy as _ce
@@ -33,7 +34,7 @@ ITEM_FOR_LEVEL = {6: 2, 7: 2, 8: 2, 9: 3, 10: 3}
 
 
 def strength(base: int, level: int) -> int:
-    return int(round(base * (1 + MAX_BONUS * (1 - DECAY ** max(0, level)))))
+    return int(math.floor(base * (1 + MAX_BONUS * (1 - DECAY ** max(0, level))) + 0.5))   # half-up, same as SQL
 
 
 def coin_cost(rarity: str, current_level: int) -> int:
