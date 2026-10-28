@@ -157,7 +157,8 @@ _pool_loop = None  # the asyncio event loop _pool's connections belong to
 # Do NOT bump it for unrelated changes — an unnecessary bump forces every
 # bot/clone's next cold start to run the full DDL pass again, which is
 # exactly the schema-reload storm this version check exists to avoid.
-SCHEMA_VERSION = "139"
+SCHEMA_VERSION = "140"
+# "139" -> "140" adds 095_card_chief_seats.sql (discord_clan_chiefs.lease_until + card_chief_purchases: buy a chief seat with coins). ALTER TABLE ADD COLUMN IF NOT EXISTS / CREATE TABLE IF NOT EXISTS only. Bump-or-it-never-runs trap: tests/unit/test_schema_version_guard.py
 # "138" -> "139" adds 094_card_trade_drafts.sql (card_trade_drafts: half-built trade offers for the Card Hub). CREATE TABLE / CREATE UNIQUE INDEX IF NOT EXISTS only. Bump-or-it-never-runs trap: tests/unit/test_schema_version_guard.py
 # "137" -> "138" adds 093_card_levelup_rewards.sql (card_levelup_rewards: one payout per person per level). CREATE TABLE / CREATE UNIQUE INDEX IF NOT EXISTS only. Bump-or-it-never-runs trap: tests/unit/test_schema_version_guard.py
 # "136" -> "137" adds 088-092 card economy rework (card_catalog columns, card_offers, card_copies, card_purchases, card_stock_events, card_coin_ledger, user_boost_items, card_boost_log, card_trades, card_trade_items, card_coin_transfers, card_game_state, card_game_log, card_profiles, card_achievements). ADD COLUMN / CREATE TABLE / CREATE INDEX IF NOT EXISTS only. Bump-or-it-never-runs trap: tests/unit/test_schema_version_guard.py
@@ -6041,7 +6042,7 @@ class Database:
         # Must run AFTER the card_catalog / card_coins tables above. Additive/idempotent; see each file's header.
         for _card_mig in ("088_card_economy_core.sql", "089_card_boosts.sql", "090_card_trading.sql",
                           "091_card_coin_games.sql", "092_card_profiles.sql", "093_card_levelup_rewards.sql",
-                          "094_card_trade_drafts.sql"):
+                          "094_card_trade_drafts.sql", "095_card_chief_seats.sql"):
             _card_mig_path = pathlib.Path(__file__).parent / "database" / "migrations" / _card_mig
             if _card_mig_path.exists():
                 await conn.execute(_card_mig_path.read_text())
@@ -9506,26 +9507,51 @@ class Database:
                 guild_id, clone_id, CHIEF_MIN_LEVEL,
             )
             top5_ids = [r["user_id"] for r in top5]
-            seats = await conn.fetch(
-                "SELECT * FROM discord_clan_chiefs WHERE guild_id = $1 AND clone_id IS NOT DISTINCT FROM $2 "
+            # lease_over / leased_now: a seat bought with coins (modules/card_chief.py, migration 095) is a LEASE.
+            # While it runs the seat is skipped below; once it ends the seat follows the normal top-5 rules again.
+            seats = [dict(r) for r in await conn.fetch(
+                "SELECT *, (lease_until IS NOT NULL AND lease_until <= NOW()) AS lease_over, "
+                "(lease_until IS NOT NULL AND lease_until > NOW()) AS leased_now "
+                "FROM discord_clan_chiefs WHERE guild_id = $1 AND clone_id IS NOT DISTINCT FROM $2 "
                 "ORDER BY seat_rank",
                 guild_id, clone_id,
-            )
+            )]
+            top5_id_set = set(top5_ids)
+
+            changes = []
+            # Ended leases: a holder who is also in the top 5 keeps the seat as an earned one; anyone else loses it
+            # (reported like any other loss, new_user_id=None) and the seat becomes fillable below.
+            for seat in seats:
+                if not seat["lease_over"]:
+                    continue
+                if seat["user_id"] is not None and seat["user_id"] in top5_id_set:
+                    await conn.execute(
+                        "UPDATE discord_clan_chiefs SET lease_until = NULL "
+                        "WHERE guild_id = $1 AND clone_id IS NOT DISTINCT FROM $2 AND seat_rank = $3",
+                        guild_id, clone_id, seat["seat_rank"])
+                else:
+                    await conn.execute(
+                        "UPDATE discord_clan_chiefs SET user_id = NULL, since = NULL, lease_until = NULL "
+                        "WHERE guild_id = $1 AND clone_id IS NOT DISTINCT FROM $2 AND seat_rank = $3",
+                        guild_id, clone_id, seat["seat_rank"])
+                    if seat["user_id"] is not None:
+                        changes.append({"seat_rank": seat["seat_rank"], "clan_slug": seat["clan_slug"],
+                                        "old_user_id": seat["user_id"], "new_user_id": None})
+                        seat["user_id"] = None
 
             # Who currently holds a seat, and who's in the top 5 now.
             seat_holder_ids = {seat["user_id"] for seat in seats if seat["user_id"] is not None}
-            top5_id_set = set(top5_ids)
 
             # Only seats whose holder fell out of the top 5 entirely (or
-            # were never filled) are up for grabs.
+            # were never filled) are up for grabs. Leased seats are never up for grabs.
             vacated_seats = [
                 seat for seat in seats
-                if seat["user_id"] is None or seat["user_id"] not in top5_id_set
+                if not seat["leased_now"]
+                and (seat["user_id"] is None or seat["user_id"] not in top5_id_set)
             ]
             # People in the top 5 who don't already hold one of the 5 seats.
             newcomers = [uid for uid in top5_ids if uid not in seat_holder_ids]
 
-            changes = []
             # Seats left over after filling (fewer eligible newcomers than
             # vacated seats): if the current holder is below the minimum
             # level (e.g. they held a seat before the level-3 rule existed,
