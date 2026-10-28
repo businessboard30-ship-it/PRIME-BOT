@@ -189,6 +189,18 @@ def test_reset_and_randomize_only_change_the_draft(monkeypatch):
     assert draft.dirty and not fake.cards and j.edits
 
 
+def walk(view):
+    return list(view.walk_children())
+
+
+def labels_of(view):
+    return [getattr(c, "label", None) for c in walk(view) if getattr(c, "label", None)]
+
+
+def text_of(view):
+    return "\n".join(c.content for c in walk(view) if isinstance(c, discord.ui.TextDisplay))
+
+
 def test_real_level_toggle_uses_the_members_xp(monkeypatch):
     fake = with_db(monkeypatch, FakeDB())
     fake.get_xp = AsyncMock(return_value={"total_xp": 1234})
@@ -201,7 +213,8 @@ def test_real_level_toggle_uses_the_members_xp(monkeypatch):
     assert not draft.use_real and draft.stats() == vlc.PREVIEW_STATS
     # no server (DM): the button is disabled
     dm = run(vlc.draft_for(7, None))
-    assert any(getattr(c, "disabled", False) and c.label in ("My real level", "Sample level") for c in vlc.CardWizardView(7, dm).children)
+    dm.tab = "extras"
+    assert any(getattr(c, "disabled", False) and c.label in ("My real level", "Sample level") for c in walk(vlc.CardWizardView(7, dm)))
 
 
 def test_share_posts_the_preview_publicly(monkeypatch):
@@ -223,47 +236,53 @@ def test_share_posts_the_preview_publicly(monkeypatch):
 def test_save_button_label_shows_the_pass_requirement(monkeypatch):
     with_db(monkeypatch, FakeDB().used_up())                     # had the plan before: no trial left, so the pass label
     free = run(vlc.draft_for(7, 1))
-    labels = [getattr(c, "label", "") for c in vlc.CardWizardView(7, free).children]
+    labels = labels_of(vlc.CardWizardView(7, free))
     assert "Save (Level Pass)" in labels
     with_db(monkeypatch, FakeDB(pass_days=5))
     paid = run(vlc.draft_for(7, 1))
-    assert "Save" in [getattr(c, "label", "") for c in vlc.CardWizardView(7, paid).children]
+    assert "Save" in labels_of(vlc.CardWizardView(7, paid))
 
 
-def test_the_designer_uses_at_most_five_rows():
-    d = vlc.Draft(design=dict(lcd.DEFAULT_DESIGN))
-    assert max(c.row for c in vlc.CardWizardView(7, d).children) <= 4
+def test_the_designer_is_a_never_expiring_v2_layout_with_four_tabs():
+    d = vlc.Draft(design=dict(lcd.DEFAULT_DESIGN), has_pass=True, guild_id=1)
+    v = vlc.CardWizardView(1, d)
+    assert isinstance(v, discord.ui.LayoutView) and v.timeout is None
+    assert [c.label for c in walk(v) if isinstance(c, vlc._TabButton)] == ["Look", "Images", "Text", "Extras"]
+    assert len(walk(v)) <= 40
+    assert [c for c in walk(v) if isinstance(c, discord.ui.MediaGallery)][0].items[0].media.url == "attachment://card.png"
 
 
-def test_designer_button_layout():
+def test_each_tab_shows_only_its_own_controls_and_save_is_always_there():
+    base = dict(design=dict(lcd.DEFAULT_DESIGN), has_pass=True, guild_id=1)
+    want = {
+        "look": ["Accent colour", "Font", "Shape", "Avatar", "Fade"],
+        "images": ["Background image", "Logo", "Remove uploads"],
+        "text": ["Edit bio"],
+        "extras": ["My real level", "Randomize", "Reset", "Share"],
+    }
+    for tab, expected in want.items():
+        v = vlc.CardWizardView(1, vlc.Draft(**base, tab=tab))
+        got = [l.split(":")[0] for l in labels_of(v) if l not in ("Look", "Images", "Text", "Extras", "Save")]
+        assert got == expected, tab
+        assert "Save" in labels_of(v)
+    look = vlc.CardWizardView(1, vlc.Draft(**base, tab="look"))
+    assert any(isinstance(c, vlc._Pick) and c.field_name == "background" for c in walk(look))
+    text = vlc.CardWizardView(1, vlc.Draft(**base, tab="text"))
+    assert any(isinstance(c, discord.ui.Select) and c.max_values == 6 for c in walk(text))
+    nopass = vlc.CardWizardView(1, vlc.Draft(design=dict(lcd.DEFAULT_DESIGN), guild_id=1))
+    assert "Save (Level Pass)" in labels_of(nopass)
+
+
+def test_font_and_shape_buttons_cycle_and_show_select_sets_the_switches():
     async def go():
-        d = vlc.Draft(design=dict(lcd.DEFAULT_DESIGN), has_pass=True, guild_id=1)
-        v = vlc.CardWizardView(1, d)
-        rows = {}
-        for c in v.children:
-            rows.setdefault(c.row, []).append(c)
-        assert sorted(rows) == [0, 1, 2, 3, 4] and len(v.children) == 16
-        assert [type(c) for c in rows[0]] == [vlc._Pick] and rows[0][0].field_name == "background"
-        assert [c.label.split(":")[0] for c in rows[1]] == ["Accent colour", "Font", "Shape", "Avatar", "Fade"]
-        assert [c.label for c in rows[2]] == ["Background image", "Logo", "Bio", "Show on card", "Remove uploads"]
-        assert [c.label for c in rows[3]] == ["My real level", "Randomize", "Reset", "Share"]
-        assert [c.label for c in rows[4]] == ["Save"] and rows[4][0].style == discord.ButtonStyle.success
-        nopass = vlc.CardWizardView(1, vlc.Draft(design=dict(lcd.DEFAULT_DESIGN), guild_id=1))
-        assert [c.label for c in nopass.children if c.row == 4] == ["Save (Level Pass)"]
-    run(go())
-
-
-def test_font_and_shape_buttons_cycle_and_show_menu_sets_the_switches():
-    async def go():
-        d = vlc.Draft(design=dict(lcd.DEFAULT_DESIGN), has_pass=True)
+        d = vlc.Draft(design=dict(lcd.DEFAULT_DESIGN), has_pass=True, tab="text")
         assert vlc._next_key(lcd.FONTS, "classic") == "clean" and vlc._next_key(lcd.FONTS, "clean") == "classic"
         assert vlc._next_key(lcd.SHAPES, "square") == "circle"
         d.design["show_bar"] = False
-        m = vlc.ShowOnCardView(1, d)
-        sel = m.children[0]
+        sel = next(c for c in walk(vlc.CardWizardView(1, d)) if isinstance(c, discord.ui.Select))
         assert sel.min_values == 0 and sel.max_values == 6 and len(sel.options) == 6
         assert {o.value for o in sel.options if o.default} == set(lcd.SHOW_KEYS) - {"show_bar"}
-        assert "Hidden: XP bar" in vlc.build_embed(d).description
+        assert "Hidden: XP bar" in text_of(vlc.CardWizardView(1, d))
     run(go())
 
 
@@ -320,7 +339,7 @@ def test_save_without_any_plan_offers_the_trial_and_stores_nothing(monkeypatch):
 def test_save_button_label_follows_the_state():
     async def go():
         base = dict(design=dict(lcd.DEFAULT_DESIGN), guild_id=1)
-        label = lambda d: next(c.label for c in vlc.CardWizardView(7, d).children if c.row == 4)
+        label = lambda d: next(l for l in labels_of(vlc.CardWizardView(7, d)) if l.startswith("Save"))
         assert label(vlc.Draft(**base)) == "Save (Level Pass)"
         assert label(vlc.Draft(**base, trial_available=True)) == "Save (free trial)"
         assert label(vlc.Draft(**base, has_pass=True)) == "Save"
@@ -343,7 +362,7 @@ def test_starting_the_trial_grants_5_days_and_saves_the_draft(monkeypatch):
     saved = json.loads(fake.cards["7"])
     assert saved["accent"] == "#FF0000" and saved["bio"] == "trial bio"                  # saved straight away
     assert press.response.edited and "trial has started" in press.response.edited[0]["content"]
-    assert designer.edits and "Saved" in designer.edits[-1]["embed"].description         # the designer message was redrawn
+    assert designer.edits and "Saved" in text_of(designer.edits[-1]["view"])         # the designer message was redrawn
     assert ent.has_access(run(fake.entitlements_list("7")), ("card_plan",))               # same gate the bot/website use
     assert not run(vlc.draft_for(7, 1)).trial_available and run(vlc.draft_for(7, 1)).on_trial
     assert "Free trial active" in vlc.build_embed(run(vlc.draft_for(7, 1))).description

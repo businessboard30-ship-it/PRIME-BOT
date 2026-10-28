@@ -103,7 +103,7 @@ def test_switch_shown_only_to_admins_of_a_premium_server(monkeypatch):
 
     async def labels(manage):
         d = await vlc.build_draft(Inter(manage=manage))
-        return [c.label for c in vlc.CardWizardView(7, d).children if getattr(c, "label", None)]
+        return [c.label for c in vlc.CardWizardView(7, d).walk_children() if getattr(c, "label", None)]
     with_db(monkeypatch, server_db())
     assert "Server card" in run(labels(True)) and "Server card" not in run(labels(False))
 
