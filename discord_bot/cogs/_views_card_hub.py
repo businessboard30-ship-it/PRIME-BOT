@@ -190,7 +190,9 @@ def _serial(card: dict) -> str:
 
 
 def _nav(ctx: Ctx, current: str) -> discord.ui.ActionRow:
-    opts = [discord.SelectOption(label=name, value=key, emoji=emo, default=(key == current)) for key, name, emo in SCREENS]
+    from config import DISCORD_CLONE_ADMIN_IDS
+    screens = SCREENS + ((("admin", "Card admin", "🛠️"),) if ctx.user_id in DISCORD_CLONE_ADMIN_IDS else ())
+    opts = [discord.SelectOption(label=name, value=key, emoji=emo, default=(key == current)) for key, name, emo in screens]
     return discord.ui.ActionRow(HubSelect("nav", ctx.clone_id, ctx.guild_id, "", opts, "Go to…"))
 
 
@@ -638,6 +640,9 @@ async def route(ctx: Ctx, act: str, arg: str, value: Optional[str]):
     from discord_bot.cogs import _views_card_trade as vt      # lazy: that module imports this one
     if act in vt.ACTS:
         return await vt.route(ctx, act, arg, value)
+    from discord_bot.cogs import _views_card_admin as va
+    if act in va.ACTS or (act == "nav" and value == "admin"):
+        return await va.route(ctx, "admin" if act == "nav" else act, arg, value)
     if act == "nav":
         screens = {"home": screen_home, "store": screen_store, "col": screen_col, "prof": screen_prof, "ranks": screen_ranks,
                    "trade": vt.screen_trade}
@@ -683,7 +688,8 @@ async def dispatch(interaction: discord.Interaction, act: str, clone_id, guild_i
     """Every hub click lands here. Never raises: a stale or broken control gets a private note and the hub stays usable."""
     ctx = Ctx(interaction, clone_id, guild_id)
     from discord_bot.cogs import _views_card_trade as vt
-    guard = (ctx.user_id, act, arg, value) if act in ("buyok", "boost") or act in vt.GUARDED else None
+    from discord_bot.cogs import _views_card_admin as va
+    guard = (ctx.user_id, act, arg, value) if act in ("buyok", "boost") or act in vt.GUARDED or act in va.GUARDED else None
     if guard is not None:
         if guard in _inflight:
             if not interaction.response.is_done():
@@ -691,7 +697,7 @@ async def dispatch(interaction: discord.Interaction, act: str, clone_id, guild_i
             return
         _inflight.add(guard)
     try:
-        if act != "lookup" and act not in vt.MODAL_ACTS:
+        if act != "lookup" and act not in vt.MODAL_ACTS and act not in va.MODAL_ACTS:
             await interaction.response.defer()
         view = await route(ctx, act, arg, value)
         if view is not None:

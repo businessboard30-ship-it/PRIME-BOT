@@ -242,3 +242,76 @@ async def global_level(user_id: int) -> int:
     async with pool.acquire() as conn:
         total = await conn.fetchval("SELECT COALESCE(SUM(total_xp), 0) FROM discord_xp WHERE user_id = $1", user_id)
     return leveling.compute_level(int(total or 0))
+
+
+# ---------------------------------------------------------------- admin helpers (the hub's Admin screen; owner-only there)
+RARITIES = ("common", "rare", "epic", "legendary", "god", "supreme")
+
+
+async def create_card(name: str, rarity: str, base_strength: int, price: int, stock_total: Optional[int] = None,
+                      min_level: int = 0, max_level: Optional[int] = None, tradeable: bool = True,
+                      image_url: Optional[str] = None, actor_id: Optional[int] = None) -> dict:
+    """New global store card with a permanent offer, in ONE transaction (a failure leaves no half-made card).
+    stock_total None = unlimited; a number = limited edition with that many copies bot-wide."""
+    name = (name or "").strip()
+    if not 2 <= len(name) <= 60:
+        raise StoreError("bad_name", "Card name must be 2-60 characters.")
+    if rarity not in RARITIES:
+        raise StoreError("bad_rarity", "Rarity must be one of: " + ", ".join(RARITIES) + ".")
+    if not 0 <= base_strength <= 1_000_000:
+        raise StoreError("bad_strength", "Base strength must be 0-1,000,000.")
+    if not 0 <= price <= 1_000_000_000:
+        raise StoreError("bad_price", "Price must be 0-1,000,000,000 coins.")
+    if stock_total is not None and not 1 <= stock_total <= 1_000_000:
+        raise StoreError("bad_stock", "Limited stock must be 1-1,000,000 copies (leave blank for unlimited).")
+    if min_level < 0 or (max_level is not None and max_level < min_level):
+        raise StoreError("bad_level", "Level range is invalid.")
+    pool = await _pool()
+    async with pool.acquire() as conn:
+        async with conn.transaction():
+            if await conn.fetchval("SELECT 1 FROM card_catalog WHERE clone_id IS NULL AND LOWER(name)=LOWER($1)", name):
+                raise StoreError("duplicate", "A card with that name already exists.")
+            card_id = await conn.fetchval(
+                "INSERT INTO card_catalog (clone_id, name, rarity, image_url, base_value, base_strength, min_level, max_level, "
+                "tradeable, store_enabled, stock_total, stock_remaining) VALUES (NULL,$1,$2,$3,$4,$5,$6,$7,$8,TRUE,$9,$9) "
+                "RETURNING card_id", name, rarity, image_url, min(price, 2_000_000_000), base_strength, min_level, max_level,
+                tradeable, stock_total)
+            offer_id = await conn.fetchval("INSERT INTO card_offers (card_id, kind, rental_days, price) VALUES ($1,'permanent',NULL,$2) "
+                                           "RETURNING offer_id", card_id, price)
+            if stock_total is not None:
+                await conn.execute("INSERT INTO card_stock_events (card_id, delta, reason, actor_id) VALUES ($1,$2,'created',$3)",
+                                   card_id, stock_total, actor_id)
+    logger.info("[cards] admin %s created card %s (%s, %s, stock=%s)", actor_id, card_id, name, rarity, stock_total)
+    return {"card_id": card_id, "offer_id": offer_id}
+
+
+async def set_store_enabled(card_id: int, enabled: bool) -> None:
+    """Show/hide a card in the store. Hiding never touches copies people already own."""
+    pool = await _pool()
+    async with pool.acquire() as conn:
+        n = await conn.fetchval("UPDATE card_catalog SET store_enabled=$2 WHERE card_id=$1 AND clone_id IS NULL RETURNING 1",
+                                card_id, enabled)
+    if not n:
+        raise StoreError("no_card", "Unknown card.")
+
+
+async def list_catalog(limit: int = 25, offset: int = 0) -> list[dict]:
+    """One page of global cards for the admin picker (hidden ones included)."""
+    pool = await _pool()
+    async with pool.acquire() as conn:
+        rows = await conn.fetch("SELECT * FROM card_catalog WHERE clone_id IS NULL AND active "
+                                "AND (base_strength > 0 OR store_enabled OR stock_total IS NOT NULL) "
+                                "ORDER BY card_id DESC LIMIT $1 OFFSET $2", min(limit, 25) + 1, offset)
+    return [dict(r) for r in rows]
+
+
+async def get_card_admin(card_id: int) -> Optional[dict]:
+    pool = await _pool()
+    async with pool.acquire() as conn:
+        c = await conn.fetchrow("SELECT * FROM card_catalog WHERE card_id=$1 AND clone_id IS NULL", card_id)
+        if c is None:
+            return None
+        offers = await conn.fetch("SELECT offer_id, kind, rental_days, price, active FROM card_offers WHERE card_id=$1 "
+                                  "ORDER BY offer_id", card_id)
+        sold = await conn.fetchval("SELECT COUNT(*) FROM card_copies WHERE card_id=$1", card_id)
+    return dict(c) | {"offers": [dict(o) for o in offers], "copies": sold}
