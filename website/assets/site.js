@@ -181,4 +181,14 @@ if(st&&C.STATS_API_URL&&window.fetch){
     if(h){st.innerHTML=h;st.classList.add("on")}
   }).catch(function(){}).then(function(){clearTimeout(to)});
 }
+
+/* ---- Games catalogue filters ---- */
+var gameFilters=$(".game-filter"),gameCards=$(".game-card[data-game-category]");
+if(gameFilters.length&&gameCards.length){
+  gameFilters.forEach(function(btn){btn.addEventListener("click",function(){
+    var filter=btn.getAttribute("data-game-filter")||"all";
+    gameFilters.forEach(function(b){b.setAttribute("aria-pressed",b===btn?"true":"false")});
+    gameCards.forEach(function(card){var cats=(card.getAttribute("data-game-category")||"").split(/\s+/);card.hidden=filter!=="all"&&cats.indexOf(filter)===-1});
+  })});
+}
 })();
