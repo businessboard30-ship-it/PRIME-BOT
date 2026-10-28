@@ -172,13 +172,6 @@
         var el = live
           ? h("a", { class: "card srv rv", style: "--i:" + i, href: target }, inner)
           : h("a", { class: "card srv rv", style: "--i:" + i, href: CFG.INVITE_URL + "&guild_id=" + g.id + "&disable_guild_select=true", target: "_blank", rel: "noopener" }, inner);
-        if (g.clones && g.clones.length) {
-          var chips = h("div", { class: "clonechips" }, h("small", { class: "muted", text: "Custom bots here:" }));
-          g.clones.forEach(function (c) {
-            chips.appendChild(h("a", { class: "btn sm ghost", href: "#/c/" + c.clone_id + "/g/" + g.id, text: c.name }));
-          });
-          el = h("div", { class: "srvwrap" }, el, chips);
-        }
         grid.appendChild(el);
       });
     };

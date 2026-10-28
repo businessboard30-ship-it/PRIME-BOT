@@ -1247,7 +1247,8 @@ async def _clone_presence(user_guild_ids: set, uid=None) -> dict:
     out: dict = {}
     for c, ids in await asyncio.gather(*[one(c) for c in listed], return_exceptions=False):
         for gid in ids & user_guild_ids:
-            out.setdefault(gid, []).append({"clone_id": int(c["clone_id"]), "name": c.get("bot_username") or f"Clone {c['clone_id']}"})
+            out.setdefault(gid, []).append({"clone_id": int(c["clone_id"]), "name": c.get("bot_username") or f"Clone {c['clone_id']}",
+                                            "mine": uid is not None and str(c.get("owner_id")) == str(uid)})
     return out
 
 
@@ -1305,7 +1306,15 @@ async def _route(method: str, query: dict, headers, body: dict):
             if not clones:
                 _fail(502, "Couldn't reach Discord. Try again in a moment.")
             present = set()
-        servers = [{**g, "icon_url": _icon(g), "bot_present": g["id"] in present, "clones": clones.get(g["id"], [])}
+        def _one_bot(gid):
+            # One bot per server: a custom bot is the same mechanism as the main bot, so listing both (or several
+            # custom bots) would only duplicate. The main bot wins; otherwise the user's own custom bot, else the first.
+            if gid in present:
+                return []
+            found = sorted(clones.get(gid, []), key=lambda c: not c.get("mine"))[:1]
+            return [{k: v for k, v in c.items() if k != "mine"} for c in found]
+
+        servers = [{**g, "icon_url": _icon(g), "bot_present": g["id"] in present, "clones": _one_bot(g["id"])}
                    for g in sess.get("guilds", [])]
         servers.sort(key=lambda g: (not (g["bot_present"] or g["clones"]), g["name"].lower()))
         raise _Reply(200, {"ok": True, "user": sess["user"], "servers": servers,

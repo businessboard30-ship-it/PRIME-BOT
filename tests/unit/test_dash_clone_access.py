@@ -40,7 +40,7 @@ def test_clone_presence_includes_a_late_clone_owned_by_the_user(monkeypatch):
     monkeypatch.setattr(dash, "_clone_row", row)
     monkeypatch.setattr(dash, "_clone_guild_ids", ids)
     out = asyncio.run(dash._clone_presence({"555"}, 42))
-    assert out == {"555": [{"clone_id": 9999, "name": "c9999"}]}
+    assert out == {"555": [{"clone_id": 9999, "name": "c9999", "mine": True}]}
 
 
 def test_a_failing_clone_is_logged_not_swallowed(monkeypatch, caplog):
