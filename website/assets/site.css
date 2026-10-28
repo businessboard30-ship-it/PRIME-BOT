@@ -404,3 +404,8 @@ html[data-theme="gold"]{--bg:#080602;--bg2:#150f04;--glow:rgba(255,205,90,.75);-
 @keyframes games-marquee{to{transform:translateX(-8%)}}
 @media(prefers-reduced-motion:reduce){.games-hero-orbit,.games-float-chip,.games-hero-main-art,.teaser-arena i,.games-marquee-track{animation:none!important}.games-teaser-card,.game-card,.game-art>img{transition:none!important}.games-teaser-card:hover,.game-card:hover{transform:none}}
 .no-motion .games-hero-orbit,.no-motion .games-float-chip,.no-motion .games-hero-main-art,.no-motion .teaser-arena i,.no-motion .games-marquee-track{animation:none!important}
+
+/* Keep the floating theme control visibly emerald even when generic button styles load later. */
+html body .theme-fab .theme-fab-btn{background:radial-gradient(circle at 50% 38%,#1c6848 0%,#0d3b29 55%,#061b12 100%) !important;border:1px solid #5df0b0 !important;color:#e0fff0 !important;box-shadow:0 0 0 1px rgba(93,240,176,.22),0 0 20px rgba(55,220,145,.28) !important;}
+html body .theme-fab .theme-fab-btn:hover,html body .theme-fab .theme-fab-btn:focus-visible{background:radial-gradient(circle at 50% 38%,#2b8058 0%,#104b33 55%,#072117 100%) !important;border-color:#a7ffd5 !important;box-shadow:0 0 0 3px rgba(93,240,176,.16),0 0 26px rgba(55,220,145,.42) !important;}
+html body .theme-fab .theme-fab-rings .ring-core{fill:#5df0b0 !important;stroke:#e0fff0 !important;filter:drop-shadow(0 0 4px rgba(93,240,176,.95));}
