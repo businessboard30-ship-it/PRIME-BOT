@@ -41,7 +41,7 @@ i18n: bot-authored strings go through discord_bot.i18n_helpers.tr().
 import asyncio
 import logging
 import io
-from modules import ai_bulk
+from modules import ai_bulk, ai_plan
 from modules.ai_tool_select import select_tools, select_tools_multi
 from typing import Optional
 
@@ -293,6 +293,33 @@ async def _message_attachments(message: discord.Message) -> list:
     if ref is not None and isinstance(ref.resolved, discord.Message):
         atts += list(ref.resolved.attachments or [])
     return atts[:ai_attachments.MAX_FILES]
+
+
+class PlanRetryView(discord.ui.View):
+    """Offered after a plan with failed/skipped steps. Re-runs ONLY those; finished steps are never repeated."""
+
+    def __init__(self, owner_id: int, plan, exec_factory):
+        super().__init__(timeout=300)
+        self.owner_id, self.plan, self.exec_factory = owner_id, plan, exec_factory
+
+    async def interaction_check(self, interaction: discord.Interaction) -> bool:
+        if interaction.user.id != self.owner_id:
+            await interaction.response.send_message("This isn't your plan.", ephemeral=True)
+            return False
+        return True
+
+    @discord.ui.button(label="Retry remaining", style=discord.ButtonStyle.primary)
+    async def retry(self, interaction: discord.Interaction, button: discord.ui.Button):
+        for item in self.children:
+            item.disabled = True
+        await interaction.response.edit_message(view=self)
+        if not self.plan.prepare_retry():
+            await interaction.followup.send("No more retries for this plan.", ephemeral=True)
+            return
+        await ai_plan.run_plan(self.plan, await self.exec_factory(interaction), pause=ai_bulk.BATCH_PAUSE_SECONDS)
+        view = PlanRetryView(self.owner_id, self.plan, self.exec_factory) if self.plan.retryable() else None
+        await interaction.followup.send(self.plan.report()[:1900], view=view, ephemeral=True)
+        self.stop()
 
 
 class AIToolsCog(commands.Cog):
@@ -892,24 +919,31 @@ class AIToolsCog(commands.Cog):
             await asyncio.sleep(ai_bulk.BATCH_PAUSE_SECONDS)
 
         if confirm:
-            async def _run_all(ci: discord.Interaction):
-                results = []
-                for i, (spec, name, args, _line) in enumerate(confirm, 1):
-                    label = f"{i}. /{spec.command_path}"
+            plan = ai_plan.PlanRun.from_calls(
+                [{"name": name, "label": f"/{spec.command_path}", "args": args} for (spec, name, args, _l) in confirm])
+
+            async def _exec_for(ci: discord.Interaction):
+                async def _exec(step: ai_plan.PlanStep) -> None:
+                    # execute_ai_command re-checks allowlist, the asker's real permission, role hierarchy (inside
+                    # each command) and the daily cap at the moment THIS step runs.
                     try:
-                        await execute_ai_command(ci, name, **args)
-                        results.append(f"\u2705 {label}")
+                        await execute_ai_command(ci, step.name, **step.args)
                     except AICommandDenied as exc:
                         if exc.cap_reached:
                             await send_cap_reached_prompt(ci)
-                            results.append(f"\u26d4 {label} -- daily limit reached, the rest were not run")
-                            break
-                        results.append(f"\u274c {label} -- {exc}")
+                            raise ai_plan.StepFailed("daily limit reached", stop_all=True)
+                        raise ai_plan.StepFailed(str(exc))
+                    except ai_plan.StepFailed:
+                        raise
                     except Exception:
-                        logger.exception("[ai_command] batch step '%s' failed", name)
-                        results.append(f"\u274c {label} -- failed (see logs)")
-                    await asyncio.sleep(ai_bulk.BATCH_PAUSE_SECONDS)
-                await ci.followup.send("Batch finished:\n" + "\n".join(results), ephemeral=True)
+                        logger.exception("[ai_command] plan step '%s' failed", step.name)
+                        raise ai_plan.StepFailed("failed (see logs)")
+                return _exec
+
+            async def _run_all(ci: discord.Interaction):
+                await ai_plan.run_plan(plan, await _exec_for(ci), pause=ai_bulk.BATCH_PAUSE_SECONDS)
+                view = PlanRetryView(ci.user.id, plan, _exec_for) if plan.retryable() else None
+                await ci.followup.send(plan.report()[:1900], view=view, ephemeral=True)
 
             body = "\n".join(f"{i}. {line}" for i, (_s, _n, _a, line) in enumerate(confirm, 1))
             prompt = f"I'd run these {len(confirm)} commands, in order -- confirm?\n{body}"
