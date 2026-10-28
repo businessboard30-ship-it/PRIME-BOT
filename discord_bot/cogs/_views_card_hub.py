@@ -9,6 +9,7 @@ button on the XP leaderboard (no slash command), and has these screens, switched
   🎴 My cards  your collection (sort + rarity filter + paging) -> card detail -> boost with coins or a boost item
   👤 Profile   stats, featured card, privacy toggles, achievements, look another collector up by ID
   🏆 Rankings  collector leaderboards, this server or every server
+  💱 Trade & games  open offers, global/local trades, coin transfers, Coin Flip / League Flip / Rob (see _views_card_trade.py)
 
 Persistence: every control is a DynamicItem whose custom_id carries ALL the state it needs (screen, page, sort, copy id)
 and NOTHING about who is clicking; who is clicking, what they own, their level, balance, stock and rules are re-read from
@@ -45,7 +46,7 @@ SORTS = (("newest", "Newest"), ("strongest", "Strongest"), ("rarest", "Rarest"),
 ITEM_KEYS = tuple(cb.ITEM_TIERS)                      # index in a custom_id -> item key
 ITEM_LABEL = {"boost_shard": "Boost Shard", "boost_core": "Boost Core", "boost_apex": "Boost Apex"}
 SCREENS = (("home", "Home", "🏠"), ("store", "Store", "🛒"), ("col", "My cards", "🎴"),
-           ("prof", "Profile", "👤"), ("ranks", "Rankings", "🏆"))
+           ("prof", "Profile", "👤"), ("ranks", "Rankings", "🏆"), ("trade", "Trade & games", "💱"))
 STORE_PAGE = 5
 COL_PAGE = 5
 METRICS = (("unique", "Most unique cards"), ("copies", "Most card copies"), ("strength", "Highest collection strength"),
@@ -287,7 +288,7 @@ async def screen_home(ctx: Ctx) -> discord.ui.LayoutView:
         f" · 💪 {st.get('strength', 0):,} total strength",
         f"**🎁 Next level-up pays:** {card_rewards.reward_for(lvl + 1):,} coins (each level pays once)",
         "",
-        "Earn coins by leveling up, then spend them in the 🛒 Store or on boosts. Pick a screen below.",
+        "Earn coins by leveling up, then spend them in the 🛒 Store or on boosts, trade with friends or play a game in 💱 Trade & games. Pick a screen below.",
         "-# Only you can see this."])
     return _shell(ctx, "home", text)
 
@@ -632,8 +633,12 @@ async def screen_ranks(ctx: Ctx, metric: int = 0, local: int = 1) -> discord.ui.
 # ---------------------------------------------------------------- routing
 async def route(ctx: Ctx, act: str, arg: str, value: Optional[str]):
     """Returns a LayoutView, or None when the action opened a modal itself."""
+    from discord_bot.cogs import _views_card_trade as vt      # lazy: that module imports this one
+    if act in vt.ACTS:
+        return await vt.route(ctx, act, arg, value)
     if act == "nav":
-        screens = {"home": screen_home, "store": screen_store, "col": screen_col, "prof": screen_prof, "ranks": screen_ranks}
+        screens = {"home": screen_home, "store": screen_store, "col": screen_col, "prof": screen_prof, "ranks": screen_ranks,
+                   "trade": vt.screen_trade}
         return await screens.get(value, screen_home)(ctx)
     if act == "home":
         return await screen_home(ctx)
@@ -675,7 +680,8 @@ async def route(ctx: Ctx, act: str, arg: str, value: Optional[str]):
 async def dispatch(interaction: discord.Interaction, act: str, clone_id, guild_id: int, arg: str, value: Optional[str]) -> None:
     """Every hub click lands here. Never raises: a stale or broken control gets a private note and the hub stays usable."""
     ctx = Ctx(interaction, clone_id, guild_id)
-    guard = (ctx.user_id, act, arg, value) if act in ("buyok", "boost") else None
+    from discord_bot.cogs import _views_card_trade as vt
+    guard = (ctx.user_id, act, arg, value) if act in ("buyok", "boost") or act in vt.GUARDED else None
     if guard is not None:
         if guard in _inflight:
             if not interaction.response.is_done():
@@ -683,7 +689,7 @@ async def dispatch(interaction: discord.Interaction, act: str, clone_id, guild_i
             return
         _inflight.add(guard)
     try:
-        if act != "lookup":
+        if act != "lookup" and act not in vt.MODAL_ACTS:
             await interaction.response.defer()
         view = await route(ctx, act, arg, value)
         if view is not None:

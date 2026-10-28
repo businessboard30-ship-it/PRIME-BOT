@@ -70,6 +70,10 @@ async def _wager_game(user_id, clone_id, game, wager, chance, mult, cooldown, rn
         async with conn.transaction():
             await _lock_balances(conn, clone_id, user_id)          # serialises this player's plays
             await _cooldown(conn, user_id, clone_id, game, cooldown, now)
+            have = await conn.fetchval("SELECT balance FROM card_coins WHERE user_id=$1 AND COALESCE(clone_id,-1)=$2",
+                                       user_id, _clone_key(clone_id))
+            if (have or 0) < wager:      # must be able to cover the stake BEFORE the roll, or a broke player gets free wins
+                raise StoreError("funds", "Not enough coins.")
             won = rng() < chance
             if won:
                 gain = int(wager * mult)
