@@ -83,6 +83,8 @@ async def boost_card(user_id: int, clone_id: Optional[int], copy_id: int, use_it
                 raise StoreError("not_owner", "You don't own that card.")
             if copy["rental_expires_at"] is not None:
                 raise StoreError("rented", "Rented cards can't be boosted.")
+            if copy["trade_locked"]:
+                raise StoreError("locked", "This card is in a pending trade.")
             card = await conn.fetchrow("SELECT * FROM card_catalog WHERE card_id = $1", copy["card_id"])
             cur = copy["boost_level"]
             if cur >= card["max_boost_level"]:
