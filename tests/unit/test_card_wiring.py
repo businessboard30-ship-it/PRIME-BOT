@@ -30,3 +30,26 @@ def test_migration_093_is_wired_and_additive():
     sql = _src("database/migrations/093_card_levelup_rewards.sql").upper()
     for bad in ("DROP TABLE", "DROP COLUMN", "TRUNCATE", "DELETE FROM"):
         assert bad not in sql
+
+
+def test_card_hub_items_register_on_a_real_bot_and_the_entry_point_has_no_command():
+    """discord.py itself must accept the hub's DynamicItems (templates compile, nothing clashes on startup)."""
+    import discord
+    from discord.ext import commands
+    from discord_bot.cogs import _views_card_hub as h
+    bot = commands.Bot(command_prefix="!", intents=discord.Intents.none())
+    bot.add_dynamic_items(*h.DYNAMIC_ITEMS)
+    src = _src("discord_bot/cogs/_views_card_hub.py")
+    assert "app_commands" not in src and "@commands.command" not in src and "discord.Embed" not in src
+    assert "timeout=None" in src
+    assert 'add_dynamic_items(*CARD_HUB_DYNAMIC_ITEMS)' in _src("discord_bot/bot.py")
+    assert 'HubButton("home"' in _src("discord_bot/cogs/_views_xp_wizard.py")
+
+
+def test_hub_uses_soft_muted_colours_only():
+    """Owner preference: no neon, no glow. Every accent is a desaturated mid-tone."""
+    import colorsys
+    from discord_bot.cogs import _views_card_hub as h
+    for colour in list(h.RARITY_COLOUR.values()) + [h.SOFT]:
+        hue, sat, val = colorsys.rgb_to_hsv(colour.r / 255, colour.g / 255, colour.b / 255)
+        assert sat <= 0.35 and 0.4 <= val <= 0.85, (colour, sat, val)

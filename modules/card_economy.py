@@ -206,3 +206,39 @@ async def list_store(clone_id: Optional[int], limit: int = 10, offset: int = 0) 
             "GROUP BY c.card_id ORDER BY c.base_value DESC, c.card_id LIMIT $2 OFFSET $3",
             _clone_key(clone_id), limit, offset)
         return [dict(r) for r in rows]
+
+
+def _jl(value, default):
+    """asyncpg hands json/jsonb back as text unless a codec is registered; accept both."""
+    if isinstance(value, (str, bytes)):
+        import json
+        try:
+            return json.loads(value)
+        except ValueError:
+            return default
+    return default if value is None else value
+
+
+async def get_offer(clone_id: Optional[int], offer_id: int) -> Optional[dict]:
+    """One active offer joined with its card (for the confirm screen). None if it's gone / not for sale / another bot's."""
+    pool = await _pool()
+    async with pool.acquire() as conn:
+        row = await conn.fetchrow(
+            "SELECT o.offer_id, o.kind, o.rental_days, o.price, c.* FROM card_offers o JOIN card_catalog c USING (card_id) "
+            "WHERE o.offer_id = $1 AND o.active AND c.active AND c.store_enabled AND COALESCE(c.clone_id,-1) = $2",
+            offer_id, _clone_key(clone_id))
+    if row is None:
+        return None
+    d = dict(row)
+    d["skills"] = _jl(d.get("skills"), [])
+    return d
+
+
+async def global_level(user_id: int) -> int:
+    """The person's level across every server (same total the global leaderboard ranks), read server-side. Used for
+    store level gates so a brand-new server can't be used to dodge a max-level card or fake a min-level one."""
+    from modules import leveling
+    pool = await _pool()
+    async with pool.acquire() as conn:
+        total = await conn.fetchval("SELECT COALESCE(SUM(total_xp), 0) FROM discord_xp WHERE user_id = $1", user_id)
+    return leveling.compute_level(int(total or 0))

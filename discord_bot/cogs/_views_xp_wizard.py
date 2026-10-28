@@ -8,6 +8,7 @@ row of buttons that each pop open another message.
   🔔 Pings        level-up pings on or off, with the current state shown
   🏰 Clans        pick a clan and page through its members
   🌍 Server boost buy a server-wide XP boost for everyone
+  🎴 Card Hub     a button under every tab opens the card hub (Store, collection, profile, rankings) in the same message
 
 A summary of your boost, the server boost and your ping setting sits at the top of every tab. Every purchase goes through
 the same checkout code as before (_views_leveling_boost._start_boost_checkout and BuyBoostSelect), so prices, products
@@ -186,6 +187,10 @@ class XPWizardState:
             else:
                 from discord_bot.cogs._views_leveling_wallet import BuyBoostSelect
                 box.add_item(discord.ui.ActionRow(BuyBoostSelect(g, c)))
+            # The card hub lives one click away from every tab (no slash command, no extra leaderboard button: that page
+            # is already at Discord's component ceiling). It opens in this same private message.
+            from discord_bot.cogs._views_card_hub import HubButton
+            box.add_item(discord.ui.ActionRow(HubButton("home", c, g, "", "Card Hub", "🎴")))
         view.add_item(box)
         return view
 
