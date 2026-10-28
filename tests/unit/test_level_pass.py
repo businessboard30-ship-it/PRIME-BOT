@@ -1,3 +1,4 @@
+import discord
 """Level Pass ($1.99): one payment = custom level-up card + one XP boost; Gumroad auto-create; the Discord designer."""
 import asyncio
 import json
@@ -223,12 +224,12 @@ def test_the_designer_opens_for_everyone(monkeypatch):
     with_db(monkeypatch, FakeDB())
     i = Inter()
     run(vlc.open_card_wizard(i))
-    emb = i.private[0]["embed"]
-    assert emb.title.startswith("🎨") and i.private[0]["file"] and "Preview mode" in emb.description
+    txt = "\n".join(c.content for c in i.private[0]["view"].walk_children() if isinstance(c, discord.ui.TextDisplay))
+    assert "🎨" in txt and i.private[0]["file"] and "Preview mode" in txt
     with_db(monkeypatch, FakeDB(pass_days=5))
     j = Inter()
     run(vlc.open_card_wizard(j))
-    assert "Level Pass active" in j.private[0]["embed"].description and j.private[0]["ephemeral"] is True
+    assert "Level Pass active" in "\n".join(c.content for c in j.private[0]["view"].walk_children() if isinstance(c, discord.ui.TextDisplay)) and j.private[0]["ephemeral"] is True
 
 
 def _png(size=(900, 300)):
