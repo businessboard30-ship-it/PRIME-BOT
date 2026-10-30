@@ -26,11 +26,26 @@ Plan: `docs/PRIME-BOT_Autonomous_AI_Phased_Plan.md` (PR #518).
 
 Not changed: read-only commands in a batch still run immediately, before the confirm prompt.
 
+## Phase 2 -- self-correcting execution (built)
+
+- `modules/ai_plan.py` now separates TRANSIENT errors (Discord 429/5xx, network blips) from PERMANENT ones (403, 404, denied, bad args).
+  - Transient: re-tried automatically, max 2 times per step, exponential backoff (2s, 4s, capped 30s), honouring Retry-After.
+  - Permanent: never auto-retried; the report says why in plain words (e.g. "the bot is missing a permission or its role is too low").
+- Hard bounds: 10 steps per plan, 16 total attempts, 600 s wall clock, 120 s per step, 2 manual "Retry remaining" rounds.
+- An identical action that already failed permanently earlier in the same run is not executed again. A manual retry clears that,
+  because the person may have fixed the cause (granted the permission).
+- `PlanRun.cancel` (an `asyncio.Event`) stops the plan before the next step. No button calls it yet.
+- `ai_tools.py` maps `discord.HTTPException` / network errors through `classify_http_status`.
+- Tests: `tests/unit/test_ai_plan.py` (16).
+
+Not done in Phase 2 (deliberately): model fallback (the AI provider setup was not changed), parallel execution (steps stay sequential;
+read-only commands already run immediately), passing a step's output to later steps, a Cancel button, and LLM-driven plan revision
+(today a failure ends the plan with an explanation; the AI can propose a new plan on the person's next message).
+
 ## Next
 
-- Phase 2: self-correcting agent (diagnose failures, revise plan, bounded retries/token/tool-call limits, model fallback only where compatible).
-- Then Phase 3 persistent scheduler (needs a new jobs table + migration; reuse the `tasks.loop` pattern), Phase 4 memory,
-  Phase 5 skills, Phase 6 sub-agents, Phase 7 security hardening, Phase 8 integration tests and rollout docs.
-- Known gap: steps cannot yet pass outputs to later steps (e.g. use the id of a category just created); today
-  commands resolve by name. Revisit in Phase 2.
-- Pre-existing failing tests on main (not from this work): `test_premium_price_copy`, `test_site_hero_orb::test_every_page_links_the_same_versioned_assets`.
+- Cancel button on the running plan, and show progress while it runs.
+- Step outputs passed to later steps (e.g. id of a category just created).
+- Phase 3 persistent scheduler (new jobs table + migration; reuse the `tasks.loop` pattern), then Phase 4 memory, 5 skills,
+  6 sub-agents, 7 security hardening, 8 integration tests and rollout docs.
+- Pre-existing failing tests on main (not from this work): `test_premium_price_copy`, `test_site_hero_orb::test_every_page_links_the_same_versioned_assets`; CI `test` is red on main because of them.

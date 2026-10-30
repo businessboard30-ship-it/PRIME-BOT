@@ -935,6 +935,11 @@ class AIToolsCog(commands.Cog):
                         raise ai_plan.StepFailed(str(exc))
                     except ai_plan.StepFailed:
                         raise
+                    except discord.HTTPException as exc:
+                        logger.warning("[ai_command] plan step '%s' HTTP %s", step.name, exc.status)
+                        raise ai_plan.classify_http_status(exc.status, text=getattr(exc, "text", "") or "")
+                    except (asyncio.TimeoutError, ConnectionError, OSError):
+                        raise ai_plan.StepFailed("network problem talking to Discord", transient=True)
                     except Exception:
                         logger.exception("[ai_command] plan step '%s' failed", step.name)
                         raise ai_plan.StepFailed("failed (see logs)")
