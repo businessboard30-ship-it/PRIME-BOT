@@ -24,7 +24,7 @@ CONTACT_EMAIL = "maxwelldumenya5@outlook.com"
 # from the contact email pending confirmation; correct this if the exact
 # legal name/spelling is wrong.
 OPERATOR_NAME = "Maxwell Dumenya"
-OPERATOR_LOCATION = "Ghana"
+OPERATOR_LOCATION = ""
 
 # Pricing table below is generated from these — edit config.py's own
 # constants (WELCOME_CARD_PACK_FEE_USD, XP_SERVER_BOOST_TIERS, etc.), not the
@@ -84,7 +84,7 @@ TERMS_HTML = f"""
 <h1>Terms of Service</h1>
 <p class="updated">{BOT_NAME}</p>
 <p>{BOT_NAME} is operated by {OPERATOR_NAME}, a sole proprietor based in
-{OPERATOR_LOCATION}. Contact: {CONTACT_EMAIL}.</p>
+Contact: {CONTACT_EMAIL}.</p>
 <p>By adding or using {BOT_NAME} ("the bot") in a Discord server, or by
 installing it to your own account, you agree to these terms. These terms also
 apply to every bot run from the same service, including {BOT_NAME}'s
@@ -259,7 +259,7 @@ else below is a one-time purchase. All prices in USD.</p>
 feature (giveaways, tickets, Music Pro, welcome cards, fonts, custom roles,
 higher AI chat limit and future features).</li>
 <li>Global checkout (Gumroad) renews automatically and can be cancelled any
-time. Ghana checkout (Paystack) covers 30 days per payment and does not
+time. local Paystack checkout covers 30 days per payment and does not
 auto-renew.</li>
 </ul>
 
@@ -312,7 +312,7 @@ available.</p>
 <ul>
 <li>Cancel any time. Cancelling stops future renewals; Premium stays active
 until the end of the period you already paid for.</li>
-<li>Paystack (Ghana) payments are a single 30-day purchase and never renew
+<li>Paystack (local checkout) payments are a single 30-day purchase and never renew
 on their own, so there is nothing to cancel.</li>
 <li>If Premium was paid for but never activated on your server, or doesn't
 work as described because of a fault on our end, contact us and we'll fix it
