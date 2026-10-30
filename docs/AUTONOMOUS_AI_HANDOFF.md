@@ -67,8 +67,27 @@ read-only commands already run immediately), passing a step's output to later st
 - Not done: editing a job's text/schedule (cancel + recreate for now), scheduling anything beyond messages, plan steps owning their own channel
   per step in the slash UI (storage supports it; `/aijobs create` posts all steps to one channel).
 
+## Phase 4 -- long-term memory (built)
+
+- `modules/ai_memory.py`; table `ai_memories` is created on first use (same convention as `ai_prefs.py`, so NO schema bump/migration).
+- Scopes never mix: `user` (keyed by Discord id; only that person changes it; only their chats read it) and `server` (keyed by guild id;
+  Manage Server to change; read only in that server).
+- Trust: a memory is untrusted user text. It goes into the prompt inside a fenced block that says it cannot grant permissions, change
+  rules, or confirm commands, each note JSON-quoted. The permission guard, allowlist, daily cap and Confirm flow never import it
+  (a test asserts that).
+- Write-time screening refuses secrets/tokens/passwords/card numbers, emails/phones, sensitive personal details, links/mentions/code blocks
+  and instructions aimed at the AI (ignore previous, auto-confirm, grant admin ...). 300 chars/note, 20 per person, 30 per server,
+  expiry 180 / 365 days (refreshed on update), duplicates refresh instead of adding.
+- Controls: `/aimemory list|add|edit|forget|clear` (scope me/server) and plain chat ("remember that ...", "remember for this server that ...",
+  "what do you remember about me", "forget everything", "forget #3", "forget that ..."). Chat controls cost no AI call or daily cap.
+- `aimemory` is deliberately NOT in the AI allowlist: the AI cannot read/write/wipe memory through a tool call.
+- Tests: `tests/unit/test_ai_memory.py` (47). Not run against a real Postgres (SQL syntax-checked with a Postgres parser): after deploy try
+  "remember that I like short answers", "what do you remember about me", then chat normally and `/aimemory clear`.
+- Not done: Plan-level "recurring workflows" memory (that is Phase 5 skills), server-wide purge UI for admins on other people's user notes
+  (they cannot read those by design), memory export.
+
 ## Next
 
 - Step outputs passed to later steps (e.g. id of a category just created).
-- Phase 4 long-term memory, 5 skills, 6 sub-agents, 7 security hardening, 8 integration tests and rollout docs.
+- Phase 5 reusable skills, 6 sub-agents, 7 security hardening, 8 integration tests and rollout docs.
 - Pre-existing failing tests on main (not from this work): `test_premium_price_copy`, `test_site_hero_orb::test_every_page_links_the_same_versioned_assets`; CI `test` is red on main because of them.

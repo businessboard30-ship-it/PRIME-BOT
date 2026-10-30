@@ -729,6 +729,14 @@ async def ai_chat(user_id: int, message: str, is_anime_question: bool = False,
         from modules import ai_prefs, ai_voice
         character, _ = await ai_prefs.get_prefs(user_id)
         system_content = f"{ai_prefs.style_prompt(character)}\n\n{system_content}"
+        try:                              # long-term memory: UNTRUSTED notes, clearly fenced (modules/ai_memory.py)
+            from modules import ai_memory
+            _u_notes, _s_notes = await ai_memory.notes_for_prompt(user_id, guild_id)
+            _mem_block = ai_memory.prompt_block(_u_notes, _s_notes)
+            if _mem_block:
+                system_content += "\n\n" + _mem_block
+        except Exception:
+            logger.debug("ai memory block failed", exc_info=True)
         if guild_id:                      # the server's own name for the AI (Bot profile wizard); default stays Maxwell
             from modules import ai_name
             server_ai_name = await ai_name.get_name(guild_id)
