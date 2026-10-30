@@ -81,7 +81,10 @@
   const esc=s=>String(s??"").replace(/[&<>"']/g,c=>({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]));
   async function load(){
     try{
-      const response=await fetch("/api/public_clones",{headers:{"Accept":"application/json"},cache:"no-store"});
+      const controller=new AbortController(); const timeout=setTimeout(()=>controller.abort(),10000);
+      let response;
+      try { response=await fetch("https://api-service-production-df63.up.railway.app/api/public_clones",{headers:{"Accept":"application/json"},cache:"no-store",signal:controller.signal}); }
+      finally { clearTimeout(timeout); }
       if(!response.ok)throw new Error("HTTP "+response.status);
       const data=await response.json(), bots=Array.isArray(data.bots)?data.bots:[];
       total.textContent=bots.length+" public bot"+(bots.length===1?"":"s");
@@ -90,7 +93,7 @@
         '<img src="'+esc(bot.avatar_url)+'" alt="" width="52" height="52" loading="lazy" style="width:52px;height:52px;border-radius:50%;object-fit:cover;background:#17212b" onerror="this.hidden=true">'+
         '<div style="min-width:0;flex:1"><strong style="display:block;overflow-wrap:anywhere">'+esc(bot.name)+'</strong><span class="muted" style="font-size:.88rem">'+esc(bot.servers)+' servers</span></div>'+
         '<span style="font-size:.78rem;white-space:nowrap;color:'+(bot.online?'#77d6a1':'#a5aab2')+'">● '+(bot.online?'Online':'Offline')+'</span></article>').join("");
-    }catch(error){total.textContent="";grid.innerHTML='<p class="muted">Bot profiles are temporarily unavailable. Please check back later.</p>';}
+    }catch(error){total.textContent="";grid.innerHTML='<p class="muted">Bot profiles could not load right now. Please refresh the page to try again.</p>';}
   }
   load(); setInterval(()=>{if(!document.hidden)load()},60000);
 })();
