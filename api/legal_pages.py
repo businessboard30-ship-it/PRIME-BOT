@@ -83,7 +83,7 @@ def _page(title: str, body_html: str) -> bytes:
 TERMS_HTML = f"""
 <h1>Terms of Service</h1>
 <p class="updated">{BOT_NAME}</p>
-<p>{BOT_NAME} is operated by {OPERATOR_NAME}, a sole proprietor based in
+<p>{BOT_NAME} is operated by {OPERATOR_NAME}, a independent developer based in
 Contact: {CONTACT_EMAIL}.</p>
 <p>By adding or using {BOT_NAME} ("the bot") in a Discord server, or by
 installing it to your own account, you agree to these terms. These terms also
