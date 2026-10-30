@@ -604,6 +604,18 @@ class AnimeBotDiscord(commands.Bot):
         logger.info(f"In {len(self.guilds)} guild(s)")
         if self.clone_id is not None:
             await db.touch_discord_clone_heartbeat(self.clone_id)
+            # Publish the clone's public avatar for the About page showcase.
+            try:
+                from database import get_pool
+                pool = await get_pool()
+                async with pool.acquire() as conn:
+                    await conn.execute("ALTER TABLE discord_cloned_bots ADD COLUMN IF NOT EXISTS avatar_url TEXT")
+                    await conn.execute(
+                        "UPDATE discord_cloned_bots SET avatar_url = $2 WHERE clone_id = $1",
+                        self.clone_id, str(self.user.display_avatar.url),
+                    )
+            except Exception:
+                logger.exception("Could not refresh public clone avatar for clone #%s", self.clone_id)
         # Catches up discord_guilds for any server joined while the bot was
         # offline, and backfills invite_url for guilds the bot was already
         # in before this column existed. Checked by ROW EXISTENCE
