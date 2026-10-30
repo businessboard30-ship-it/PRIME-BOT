@@ -105,6 +105,11 @@ class PlanRun:
                 s.status, s.detail = PENDING, ""
         return True
 
+    def progress(self) -> str:
+        """Short live status shown while the plan runs."""
+        lines = [f"{_ICON[s.status] if s.status != PENDING else chr(0x23f3)} {s.index}. {s.label}" for s in self.steps]
+        return f"Running {len(self.steps)} step(s)... {self.count(DONE)} done.\n" + "\n".join(lines)
+
     def report(self) -> str:
         lines = [f"{_ICON[s.status]} {s.index}. {s.label}" + (f" -- {s.detail}" if s.detail else "") for s in self.steps]
         parts = [f"{self.count(DONE)} done"]
@@ -121,11 +126,19 @@ class PlanRun:
 
 
 async def run_plan(run: PlanRun, executor: Callable[[PlanStep], Awaitable[None]], *, pause: float = 0.0,
-                   timeout: float = STEP_TIMEOUT, sleep=asyncio.sleep, clock=time.monotonic) -> PlanRun:
+                   timeout: float = STEP_TIMEOUT, sleep=asyncio.sleep, clock=time.monotonic,
+                   on_update: Optional[Callable[[PlanRun], Awaitable[None]]] = None) -> PlanRun:
     """Runs every PENDING step in order. DONE steps are skipped over untouched (that is what makes retry safe).
 
     Bounded on every axis: steps, total attempts, wall-clock time, per-step automatic retries. Only transient errors
     are re-tried automatically (with backoff, honouring Retry-After). A permanent error is never repeated."""
+    async def _notify() -> None:
+        if on_update is not None:
+            try:
+                await on_update(run)
+            except Exception:                       # a failed progress edit must never break the plan
+                pass
+
     started = clock()
     broken: Optional[PlanStep] = None
     first = True
@@ -166,6 +179,7 @@ async def run_plan(run: PlanRun, executor: Callable[[PlanStep], Awaitable[None]]
             try:
                 await asyncio.wait_for(executor(step), timeout)
                 step.status, step.detail = DONE, ""
+                await _notify()
                 break
             except StepFailed as exc:
                 if exc.transient and not exc.stop_all and auto < MAX_AUTO_RETRIES and not run.cancel.is_set():

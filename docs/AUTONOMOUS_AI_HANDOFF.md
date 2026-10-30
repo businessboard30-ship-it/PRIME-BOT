@@ -34,7 +34,7 @@ Not changed: read-only commands in a batch still run immediately, before the con
 - Hard bounds: 10 steps per plan, 16 total attempts, 600 s wall clock, 120 s per step, 2 manual "Retry remaining" rounds.
 - An identical action that already failed permanently earlier in the same run is not executed again. A manual retry clears that,
   because the person may have fixed the cause (granted the permission).
-- `PlanRun.cancel` (an `asyncio.Event`) stops the plan before the next step. No button calls it yet.
+- `PlanRun.cancel` (an `asyncio.Event`) stops the plan before the next step (button added in 2b).
 - `ai_tools.py` maps `discord.HTTPException` / network errors through `classify_http_status`.
 - Tests: `tests/unit/test_ai_plan.py` (16).
 
@@ -42,9 +42,15 @@ Not done in Phase 2 (deliberately): model fallback (the AI provider setup was no
 read-only commands already run immediately), passing a step's output to later steps, a Cancel button, and LLM-driven plan revision
 (today a failure ends the plan with an explanation; the AI can propose a new plan on the person's next message).
 
+## Phase 2b -- progress + cancel (built)
+
+- While a plan runs the person sees a live ephemeral progress message (one edit per finished step) with an owner-only
+  **Cancel after this step** button (sets `PlanRun.cancel`; the running step finishes, the rest are "not reached").
+- `run_plan(on_update=...)` callback; a failing progress edit never breaks the plan. Shared by the first run and "Retry remaining"
+  via `run_plan_with_progress` in `ai_tools.py`. Tests added in `test_ai_plan.py` (18 total).
+
 ## Next
 
-- Cancel button on the running plan, and show progress while it runs.
 - Step outputs passed to later steps (e.g. id of a category just created).
 - Phase 3 persistent scheduler (new jobs table + migration; reuse the `tasks.loop` pattern), then Phase 4 memory, 5 skills,
   6 sub-agents, 7 security hardening, 8 integration tests and rollout docs.
