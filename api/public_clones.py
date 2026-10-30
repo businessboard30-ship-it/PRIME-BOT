@@ -65,6 +65,18 @@ async def _handle():
 
 
 class handler(BaseHTTPRequestHandler):
+    def _cors(self):
+        self.send_header("Access-Control-Allow-Origin", "https://prime-bot-site.pages.dev")
+        self.send_header("Vary", "Origin")
+        self.send_header("Access-Control-Allow-Methods", "GET, OPTIONS")
+        self.send_header("Access-Control-Allow-Headers", "Accept, Content-Type")
+
+    def do_OPTIONS(self):
+        self.send_response(204)
+        self._cors()
+        self.send_header("Access-Control-Max-Age", "86400")
+        self.end_headers()
+
     def do_GET(self):
         try:
             body = asyncio.run(_handle())
@@ -75,6 +87,7 @@ class handler(BaseHTTPRequestHandler):
             status = 500
         self.send_response(status)
         self.send_header("Content-Type", "application/json; charset=utf-8")
-        self.send_header("Cache-Control", "public, max-age=60")
+        self._cors()
+        self.send_header("Cache-Control", "no-store")
         self.end_headers()
         self.wfile.write(body.encode("utf-8"))
