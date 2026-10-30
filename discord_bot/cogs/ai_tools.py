@@ -52,7 +52,7 @@ from discord.ext import commands
 from database import db
 import re
 
-from modules import leveling, ai_prefs, ai_voice, scam_check
+from modules import leveling, ai_prefs, ai_voice, scam_check, ai_memory
 from modules.ai_features import (
     ai_chat, generate_image, check_ai_usage_limit, get_user_ai_usage, AI_USAGE_CAPS,
     get_or_create_active_session, mentions_other_bot, OTHER_BOT_REFUSAL,
@@ -421,6 +421,40 @@ class AIToolsCog(commands.Cog):
             if await ai_prefs.set_character(user_id, req):
                 return ai_prefs.CHARACTERS[req]["intro"], None
             return "Couldn't save that right now — try again in a moment.", None
+        return None
+
+    async def _memory_quick_answer(self, text: str, user_id: int, guild_id, can_manage_server: bool):
+        """"remember that I like short answers" / "what do you remember about me" / "forget everything" -- handled in chat,
+        no AI call, no daily cap. Server-scope changes need Manage Server. (text, None) or None."""
+        req = ai_memory.detect_memory_request(text)
+        if not req:
+            return None
+        action, scope = req[0], req[1]
+        if scope == ai_memory.SERVER and not guild_id:
+            return "Server memories only exist inside a server.", None
+        owner = user_id if scope == ai_memory.USER else guild_id
+        if action != "list" and scope == ai_memory.SERVER and not can_manage_server:
+            return "Changing the server's memories needs the **Manage Server** permission.", None
+        try:
+            if action == "add":
+                ok, msg = await ai_memory.add_memory(scope, owner, user_id, req[2])
+                return ("\U0001f9e0 " if ok else "\u26a0\ufe0f ") + msg, None
+            if action == "list":
+                return ai_memory.format_list(await ai_memory.list_memories(scope, owner), scope), None
+            if action == "clear":
+                n = await ai_memory.clear_memories(scope, owner)
+                return f"\U0001f9f9 Forgot {n} memor{'y' if n == 1 else 'ies'}.", None
+            if action == "forget_id":
+                ok = await ai_memory.delete_memory(scope, owner, req[2])
+                return ("\U0001f9f9 Forgotten." if ok else f"I have no memory #{req[2]} for you."), None
+            if action == "forget_text":
+                n = await ai_memory.delete_matching(scope, owner, req[2])
+                if not n:
+                    return None                       # nothing matched: let normal chat handle the sentence
+                return f"\U0001f9f9 Forgot {n} memor{'y' if n == 1 else 'ies'} matching that.", None
+        except Exception:
+            logger.exception("[ai-memory] chat control failed")
+            return "Couldn't do that right now. Try again in a moment.", None
         return None
 
     async def _voice_setting(self, user_id: int, text: str) -> Optional[str]:
@@ -1160,6 +1194,9 @@ class AIToolsCog(commands.Cog):
             return
 
         pref = await self._prefs_quick_answer(message, interaction.user.id)
+        if not pref:
+            pref = await self._memory_quick_answer(
+                message, interaction.user.id, interaction.guild_id, bool(getattr(interaction.permissions, "manage_guild", False)))
         if pref:
             pref_text, pref_view = pref
             await interaction.response.send_message(
@@ -1399,8 +1436,12 @@ class AIToolsCog(commands.Cog):
         if quick:
             return quick  # fixed answer (premium button / invite link), no AI call, costs no cap
         pref = await self._prefs_quick_answer(content, message.author.id)
+        if not pref:
+            pref = await self._memory_quick_answer(
+                content, message.author.id, message.guild.id if message.guild else None,
+                bool(message.guild and message.author.guild_permissions.manage_guild))
         if pref:
-            return pref   # character / voice setting change, no AI call, costs no cap
+            return pref   # character / voice / memory change, no AI call, costs no cap
         user_id = message.author.id
         guild = message.guild
         guild_id = guild.id if guild else None
