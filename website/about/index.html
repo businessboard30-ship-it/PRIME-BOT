@@ -18,10 +18,17 @@
 <link rel="stylesheet" href="/assets/site.css?v=20261028">
 <style>
 .milestone-list{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:1rem;margin:1.5rem 0 1rem}
-.milestone{border:1px solid rgba(190,215,235,.16);border-radius:14px;padding:1.25rem;background:rgba(255,255,255,.025)}
+.milestone{border:1px solid rgba(190,215,235,.16);border-radius:14px;padding:1.25rem;background:rgba(255,255,255,.025);transition:transform .28s ease,border-color .28s ease,background .28s ease;animation:milestone-in .65s both}
+.milestone:nth-child(2){animation-delay:.08s}.milestone:nth-child(3){animation-delay:.16s}.milestone:nth-child(4){animation-delay:.24s}
+.milestone:hover{transform:translateY(-5px);border-color:rgba(190,215,235,.38);background:rgba(255,255,255,.045)}
 .milestone h3{margin:.35rem 0 .6rem}
 .milestone p:last-child{margin-bottom:0}
+.prose h2{scroll-margin-top:6rem}
+.prose h2.crack{animation:heading-in .7s ease both}
+@keyframes milestone-in{from{opacity:0;transform:translateY(16px)}to{opacity:1;transform:translateY(0)}}
+@keyframes heading-in{from{opacity:.35;transform:translateY(8px)}to{opacity:1;transform:translateY(0)}}
 @media(max-width:640px){.milestone-list{grid-template-columns:1fr}}
+@media(prefers-reduced-motion:reduce){.milestone,.prose h2.crack{animation:none;transition:none}.milestone:hover{transform:none}}
 </style>
 <script src="/assets/boot.js?v=20261026"></script>
 <script type="application/ld+json">{"@context":"https://schema.org","@type":"BreadcrumbList","itemListElement":[{"@type":"ListItem","position":1,"name":"Home","item":"https://prime-bot-site.pages.dev/"},{"@type":"ListItem","position":2,"name":"About","item":"https://prime-bot-site.pages.dev/about/"}]}</script><script type="application/ld+json">{"@context":"https://schema.org","@type":"AboutPage","name":"About PRIME BOT × WELCOME BOT","url":"https://prime-bot-site.pages.dev/about/","about":{"@type":"Organization","name":"PRIME BOT × WELCOME BOT","founder":{"@type":"Person","name":"Maxwell Dumenya"},"email":"maxwelldumenya5@outlook.com"}}</script>
@@ -35,6 +42,15 @@
 <a class="btn sm primary hdr-cta" href="/#invite">Add to Discord</a>
 </div></header>
 <main id="main">
+<section class="page-hero"><div class="wrap">
+<div class="milestone" style="max-width:820px;margin:0 auto 2rem;text-align:center">
+<p class="eyebrow">COMING SOON · A NEW WAY TO BUILD</p>
+<h2 class="crack" style="font-size:clamp(1.8rem,4vw,3rem);margin:.4rem 0 .7rem">YOUR OWN DISCORD BOT. ZERO CODING.</h2>
+<p class="lead">Soon, you’ll be able to connect a Discord bot you create yourself and power it with PRIME BOT features — without writing code.</p>
+<p>Setup will be guided: create your bot in the Discord Developer Portal, securely connect its token, invite it to your server, then choose and configure the features you want. We’ll walk you through each step.</p>
+<p class="muted" style="margin-bottom:0">Keep an eye on this page for setup guides, progress and launch updates.</p>
+</div>
+</div></section>
 <section class="page-hero"><div class="wrap"><p class="eyebrow">About</p><h1 class="crack">Who runs this</h1><p class="lead reveal">PRIME BOT × WELCOME BOT is built and operated by Maxwell Dumenya, an independent developer.</p></div></section>
 <div class="wrap" aria-hidden="true"><div data-circuit></div></div>
 <section><div class="wrap prose">
@@ -42,18 +58,13 @@
 <p class="reveal">Make it easy for any Discord server owner to set up a welcoming, safe and active community, without paying to get started. The bot is free to add and use; paid features are optional and clearly priced.</p>
 <h2 class="crack">The operator</h2>
 <p class="reveal"><strong>Maxwell Dumenya</strong>, independent developer. The bot, this website and customer support are run by one person.</p>
-<h2 class="crack">A realistic take on creating bots</h2>
-<p class="reveal">I want to be honest about why I build bots. I do not describe bot creation as my lifelong passion, because that would not be true. I build because I enjoy it. I like experimenting with ideas, figuring out how things work, solving problems and seeing something I imagined become useful to real communities. For me, it is something I choose to spend time on because it is fun and challenging — and that is a perfectly valid reason to create.</p>
-<p class="reveal">There is a lot of pressure in developer spaces to describe every project as a passion, a calling or a lifelong dream. Those words can mean something, but they should not be automatic labels people use because they sound impressive. Sometimes people build for enjoyment, curiosity, experience, practical reasons, or simply because they want to see whether an idea can work. None of those reasons makes the work less valuable. You do not need to invent a dramatic story about your motivation to take your work seriously.</p>
-<p class="reveal">I also want to be open about how I use AI. I use AI as a tool for debugging, exploring possible solutions and statistical planning. It can help me spot issues, compare approaches, understand unfamiliar areas and think through data. But using AI does not mean the work happens by itself, and I do not see it as something to hide or be ashamed of. It is another source of assistance — like documentation, research, tutorials or asking someone for a second opinion.</p>
-<p class="reveal">The effort still matters. I put time into deciding what should be built, testing ideas, reviewing suggestions, making changes, finding what does not work and continuing until the result is closer to what I intended. AI can suggest an answer, but it does not automatically understand every part of a project, make every decision correctly or take responsibility for the finished product. I have to evaluate what it gives me and do the work of turning useful suggestions into something reliable.</p>
-<p class="reveal">I think developers should be realistic about both their motivations and their process. If you build for fun, say so. If you use AI, be honest about that too. If you do most things yourself but get help when you are stuck, there is no contradiction. What matters more is the effort you put in, the decisions you make, how carefully you test what you create and whether you are honest about what you have actually done.</p>
-<p class="reveal">Not every hobby has to become a career, not every project needs to change the world, and not every developer needs to call themselves passionate. Enjoying the process is enough. Being curious is enough. Wanting to build something useful is enough. I would rather be straightforward about why I create and the tools I use than claim a version of the story that sounds better but is not true.</p>
-<h2 class="crack">Building with intention, using the tools available</h2>
-<p class="reveal">I have genuine respect for developers who build their bots entirely from scratch and work through the engineering themselves. That takes dedication, knowledge and a great deal of effort. My approach is different, but that does not mean I started by blindly asking AI to make a product for me. Before leaning on AI, I validated ideas, looked at what users and communities needed, and did my own research and planning. I wanted to understand what was worth building and why.</p>
-<p class="reveal">My estimate of the work behind this bot is roughly 70% my own direction, decisions, implementation and hands-on effort, with around 30% AI assistance. Those figures are my personal estimate, not a formal measurement. I use AI as an additional resource for debugging, exploring approaches, statistical planning and speeding up parts of the development process. I still have to decide what to build, provide context, judge the suggestions, correct mistakes and test whether the result actually works.</p>
-<p class="reveal">I have seen how much faster this approach can move when it is guided properly. In roughly two months, the bot has reached about 861 servers. For perspective, I have seen an older bot that has been around for years sitting in the region of 900 to 1,200 servers. The figures are approximate and server counts change, so this is not a claim that the products are identical or that one number proves which bot is better. It is simply a milestone I am proud of: in a short time, this project has approached the scale that another, much older bot took years to reach.</p>
-<p class="reveal">That growth does not happen because an AI button was pressed once. It comes from validating an idea, making product decisions, putting in time, improving the experience, responding to problems and continuing to build. AI helps me move faster, but the direction, priorities and responsibility for the finished product remain mine.</p>
+<h2 class="crack">How it started</h2>
+<p class="reveal">PRIME BOT began with a small idea: I wanted to make a bot for my little sister's Discord server. I never expected it to grow this far. What started as a simple project became a bot used by communities far beyond that first server.</p>
+<p class="reveal">I don't have a lifelong passion for bots. I enjoy the fun part of creating, experimenting, solving problems and making things easier for people. Seeing something I build become genuinely useful is what keeps me going.</p>
+<p class="reveal">I use AI to help with debugging, exploring solutions, planning and some code writing. I research ideas, set the direction, review suggestions, test changes and take responsibility for the result. AI is a tool in my workflow, not a replacement for that work.</p>
+<h2 class="crack">How I build</h2>
+<p class="reveal">I respect developers who build everything from scratch. My workflow is different: I research community needs, plan what is worth building and use available tools to move faster. My personal estimate is around 70% my direction, decisions and hands-on effort, with 30% AI assistance. That is an estimate, not a measured statistic.</p>
+<p class="reveal">The important part is the work behind the result: choosing useful features, checking suggestions, testing changes, fixing problems and improving the experience. Different workflows can still produce thoughtful work.</p>
 <h2 class="crack">Milestones so far</h2>
 <p class="reveal">A few moments that explain how PRIME BOT has developed. These are milestones, not a claim that the project is finished.</p>
 <div class="milestone-list" aria-label="PRIME BOT development milestones">
@@ -63,18 +74,16 @@
   <article class="milestone reveal"><p class="eyebrow">Early growth milestone</p><h3 class="crack">About 861 servers in roughly two months</h3><p>This was an approximate milestone shared during the bot’s early growth. Server counts change over time, so it is historical context rather than a live statistic.</p></article>
 </div>
 <p class="reveal muted">Growth figures are approximate and reflect a point in the project’s history. They are not live counters or a guarantee of future growth.</p>
-<p class="reveal">I respect developers who choose to write everything themselves, just as I respect people who use AI thoughtfully to bring an idea to life. These approaches do not have to be enemies. We can recognise the depth of traditional software engineering while also recognising the effort involved in directing tools, evaluating their output and delivering something people actually use. I do not think anyone should be mocked simply for choosing a different workflow. Judge the work fairly, be honest about the contribution, and let the results speak alongside the process.</p>
-<h2 class="crack">The People, Tools &amp; Research Behind PRIME BOT</h2>
-<p class="reveal">PRIME BOT × WELCOME BOT has been shaped by collaboration, research and tools used throughout development. Here is a clear acknowledgement of the different contributions.</p>
+
+<h2 class="crack">People, tools &amp; research</h2>
+<p class="reveal">A few people and tools have helped shape the project along the way.</p>
 <h3 class="crack">People</h3>
-<p class="reveal"><strong>Micky</strong> and <strong>Samuel</strong> — Their creativity and out-of-the-box ideas helped shape many of the bot’s plans, features and memorable concepts. They often came up with unexpected ideas that pushed the project in new directions and helped turn rough thoughts into things worth building.</p>
+<p class="reveal"><strong>Micky and Samuel</strong> — Creative brainstorming and unexpected ideas that helped shape plans and features.</p>
 <h3 class="crack">AI tools</h3>
-<p class="reveal"><strong>Claude</strong> — Assisted with some code writing and development analysis.</p>
-<p class="reveal"><strong>ChatGPT</strong> — Assisted with planning, selected website changes and safety-related improvements.</p>
-<p class="reveal"><strong>Vo AI</strong> — Assisted with identifying and fixing some bugs.</p>
-<h3 class="crack">Research and inspiration</h3>
-<p class="reveal">I started by researching successful Discord bots through Google, studying the features and approaches that seemed to work well for their communities. I used what I learned as inspiration to shape my own ideas, make product decisions and improve PRIME BOT. The goal was to learn from the wider ecosystem and build my own implementation, not simply copy another bot.</p>
-<p class="reveal">These acknowledgements describe the areas where each person or tool helped; they do not mean every part of the project was made by them. Product direction, decisions and responsibility for the finished project remain with me.</p>
+<p class="reveal"><strong>Claude</strong> helped with code and development analysis. <strong>ChatGPT</strong> helped with planning and selected website improvements. <strong>Vo AI</strong> helped identify and fix bugs.</p>
+<h3 class="crack">Research</h3>
+<p class="reveal">I studied successful Discord bots and community needs for inspiration, then used that research to shape my own ideas and implementation.</p>
+<p class="reveal muted">These contributions are acknowledgements, not claims that others built the entire project. Product direction and responsibility remain mine.</p>
 <h2 class="crack">Contact</h2>
 <p class="reveal">Email <a href="mailto:maxwelldumenya5@outlook.com">maxwelldumenya5@outlook.com</a> or join the <a data-support href="https://discord.gg/DYfajXrP9B">Discord support server</a>.</p>
 <h2 class="crack">Legal</h2>
