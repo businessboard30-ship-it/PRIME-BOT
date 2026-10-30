@@ -157,7 +157,8 @@ _pool_loop = None  # the asyncio event loop _pool's connections belong to
 # Do NOT bump it for unrelated changes — an unnecessary bump forces every
 # bot/clone's next cold start to run the full DDL pass again, which is
 # exactly the schema-reload storm this version check exists to avoid.
-SCHEMA_VERSION = "140"
+SCHEMA_VERSION = "141"
+# "140" -> "141" adds 096_ai_scheduled_jobs.sql (ai_scheduled_jobs + ai_job_runs: persistent AI scheduler, Phase 3). CREATE TABLE / CREATE INDEX IF NOT EXISTS only. Bump-or-it-never-runs trap: tests/unit/test_schema_version_guard.py
 # "139" -> "140" adds 095_card_chief_seats.sql (discord_clan_chiefs.lease_until + card_chief_purchases: buy a chief seat with coins). ALTER TABLE ADD COLUMN IF NOT EXISTS / CREATE TABLE IF NOT EXISTS only. Bump-or-it-never-runs trap: tests/unit/test_schema_version_guard.py
 # "138" -> "139" adds 094_card_trade_drafts.sql (card_trade_drafts: half-built trade offers for the Card Hub). CREATE TABLE / CREATE UNIQUE INDEX IF NOT EXISTS only. Bump-or-it-never-runs trap: tests/unit/test_schema_version_guard.py
 # "137" -> "138" adds 093_card_levelup_rewards.sql (card_levelup_rewards: one payout per person per level). CREATE TABLE / CREATE UNIQUE INDEX IF NOT EXISTS only. Bump-or-it-never-runs trap: tests/unit/test_schema_version_guard.py
@@ -6042,7 +6043,8 @@ class Database:
         # Must run AFTER the card_catalog / card_coins tables above. Additive/idempotent; see each file's header.
         for _card_mig in ("088_card_economy_core.sql", "089_card_boosts.sql", "090_card_trading.sql",
                           "091_card_coin_games.sql", "092_card_profiles.sql", "093_card_levelup_rewards.sql",
-                          "094_card_trade_drafts.sql", "095_card_chief_seats.sql"):
+                          "094_card_trade_drafts.sql", "095_card_chief_seats.sql",
+                          "096_ai_scheduled_jobs.sql"):
             _card_mig_path = pathlib.Path(__file__).parent / "database" / "migrations" / _card_mig
             if _card_mig_path.exists():
                 await conn.execute(_card_mig_path.read_text())
@@ -11907,6 +11909,137 @@ class Database:
                 "DELETE FROM discord_scheduled_messages WHERE id = $1 AND guild_id = $2 AND clone_id IS NOT DISTINCT FROM $3",
                 message_id, guild_id, clone_id
             )
+            return result is not None and "DELETE 0" not in result
+
+    # ── Persistent AI scheduler (096_ai_scheduled_jobs.sql, modules/ai_jobs.py) ──────────────────────────────
+    @staticmethod
+    def _ai_job_row(row) -> Dict:
+        d = dict(row)
+        if isinstance(d.get("steps"), str):
+            d["steps"] = json.loads(d["steps"])
+        return d
+
+    async def create_ai_job(self, guild_id: int, created_by: int, title: str, steps: list, schedule_kind: str,
+                            next_run_at, interval_seconds: Optional[int] = None, daily_at: Optional[str] = None,
+                            clone_id: Optional[int] = None) -> Dict:
+        pool = await get_pool()
+        async with pool.acquire() as conn:
+            row = await conn.fetchrow(
+                """
+                INSERT INTO ai_scheduled_jobs
+                    (guild_id, clone_id, created_by, title, steps, schedule_kind, interval_seconds, daily_at, next_run_at)
+                VALUES ($1, $2, $3, $4, $5::jsonb, $6, $7, $8, $9)
+                RETURNING *
+                """,
+                guild_id, clone_id, created_by, title, json.dumps(steps), schedule_kind, interval_seconds, daily_at, next_run_at
+            )
+            return self._ai_job_row(row)
+
+    async def count_ai_jobs(self, guild_id: int, clone_id: Optional[int] = None) -> int:
+        pool = await get_pool()
+        async with pool.acquire() as conn:
+            return int(await conn.fetchval(
+                "SELECT COUNT(*) FROM ai_scheduled_jobs WHERE guild_id = $1 AND clone_id IS NOT DISTINCT FROM $2",
+                guild_id, clone_id) or 0)
+
+    async def list_ai_jobs(self, guild_id: int, clone_id: Optional[int] = None) -> List[Dict]:
+        pool = await get_pool()
+        async with pool.acquire() as conn:
+            rows = await conn.fetch(
+                "SELECT * FROM ai_scheduled_jobs WHERE guild_id = $1 AND clone_id IS NOT DISTINCT FROM $2 ORDER BY id DESC LIMIT 25",
+                guild_id, clone_id)
+            return [self._ai_job_row(r) for r in rows]
+
+    async def get_ai_job(self, guild_id: int, job_id: int, clone_id: Optional[int] = None) -> Optional[Dict]:
+        pool = await get_pool()
+        async with pool.acquire() as conn:
+            row = await conn.fetchrow(
+                "SELECT * FROM ai_scheduled_jobs WHERE id = $1 AND guild_id = $2 AND clone_id IS NOT DISTINCT FROM $3",
+                job_id, guild_id, clone_id)
+            return self._ai_job_row(row) if row else None
+
+    async def claim_due_ai_jobs(self, clone_id: Optional[int], limit: int, lock_seconds: int) -> List[Dict]:
+        """Atomically claims due jobs (status -> 'running', lock set). SKIP LOCKED + the status guard mean two pollers
+        (or two bot processes) can never both get the same job: this is what prevents duplicate runs."""
+        pool = await get_pool()
+        async with pool.acquire() as conn:
+            rows = await conn.fetch(
+                """
+                WITH due AS (
+                    SELECT id FROM ai_scheduled_jobs
+                    WHERE enabled = TRUE AND status <> 'running' AND next_run_at <= NOW()
+                      AND COALESCE(clone_id, -1) = COALESCE($1, -1)
+                    ORDER BY next_run_at ASC LIMIT $2
+                    FOR UPDATE SKIP LOCKED
+                )
+                UPDATE ai_scheduled_jobs j
+                SET status = 'running', last_run_at = NOW(), locked_until = NOW() + make_interval(secs => $3)
+                FROM due WHERE j.id = due.id
+                RETURNING j.*
+                """,
+                clone_id, limit, float(lock_seconds))
+            return [self._ai_job_row(r) for r in rows]
+
+    async def get_interrupted_ai_jobs(self, clone_id: Optional[int]) -> List[Dict]:
+        """Jobs left 'running' past their lock: the bot died mid-run. They are finished off (never re-run)."""
+        pool = await get_pool()
+        async with pool.acquire() as conn:
+            rows = await conn.fetch(
+                """
+                SELECT * FROM ai_scheduled_jobs
+                WHERE status = 'running' AND locked_until < NOW() AND COALESCE(clone_id, -1) = COALESCE($1, -1)
+                """, clone_id)
+            return [self._ai_job_row(r) for r in rows]
+
+    async def finish_ai_job(self, job_id: int, *, job_status: str, run_status: str, report: str, enabled: bool,
+                            next_run_at, consecutive_failures: int, error: Optional[str] = None) -> None:
+        pool = await get_pool()
+        async with pool.acquire() as conn:
+            async with conn.transaction():
+                await conn.execute(
+                    """
+                    UPDATE ai_scheduled_jobs
+                    SET status = $2, last_status = $3, last_error = $4, enabled = $5, next_run_at = $6,
+                        consecutive_failures = $7, run_count = run_count + 1, locked_until = NULL
+                    WHERE id = $1
+                    """, job_id, job_status, run_status, error, enabled, next_run_at, consecutive_failures)
+                await conn.execute(
+                    "INSERT INTO ai_job_runs (job_id, status, report, finished_at) VALUES ($1, $2, $3, NOW())",
+                    job_id, run_status, (report or "")[:3500])
+                await conn.execute(
+                    """
+                    DELETE FROM ai_job_runs WHERE job_id = $1 AND run_id NOT IN
+                        (SELECT run_id FROM ai_job_runs WHERE job_id = $1 ORDER BY started_at DESC, run_id DESC LIMIT 50)
+                    """, job_id)
+
+    async def list_ai_job_runs(self, job_id: int, limit: int = 10) -> List[Dict]:
+        pool = await get_pool()
+        async with pool.acquire() as conn:
+            rows = await conn.fetch(
+                "SELECT * FROM ai_job_runs WHERE job_id = $1 ORDER BY started_at DESC, run_id DESC LIMIT $2", job_id, limit)
+            return [dict(r) for r in rows]
+
+    async def set_ai_job_enabled(self, guild_id: int, job_id: int, enabled: bool, next_run_at=None,
+                                 clone_id: Optional[int] = None) -> bool:
+        """Pause / resume. Resuming also resets the failure streak; pass next_run_at to re-arm a finished one-off."""
+        pool = await get_pool()
+        async with pool.acquire() as conn:
+            result = await conn.execute(
+                """
+                UPDATE ai_scheduled_jobs
+                SET enabled = $4, consecutive_failures = CASE WHEN $4 THEN 0 ELSE consecutive_failures END,
+                    status = CASE WHEN $4 THEN 'scheduled' ELSE 'paused' END,
+                    next_run_at = COALESCE($5, next_run_at)
+                WHERE id = $1 AND guild_id = $2 AND clone_id IS NOT DISTINCT FROM $3 AND status <> 'running'
+                """, job_id, guild_id, clone_id, enabled, next_run_at)
+            return result is not None and "UPDATE 0" not in result
+
+    async def delete_ai_job(self, guild_id: int, job_id: int, clone_id: Optional[int] = None) -> bool:
+        pool = await get_pool()
+        async with pool.acquire() as conn:
+            result = await conn.execute(
+                "DELETE FROM ai_scheduled_jobs WHERE id = $1 AND guild_id = $2 AND clone_id IS NOT DISTINCT FROM $3",
+                job_id, guild_id, clone_id)
             return result is not None and "DELETE 0" not in result
 
     # ─────────────────────────────────────────────────────────────────────
