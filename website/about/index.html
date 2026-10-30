@@ -66,6 +66,35 @@
 <p><strong>Welcome Bot is an example of what this system can power.</strong> It has reached 861 Discord servers, showing what can grow from the features and infrastructure built around PRIME BOT. The upcoming self-service platform takes that idea further by making the same kind of capability accessible to other creators.</p>
 <p>When it is ready, setup will be guided: create your bot in the Discord Developer Portal, securely connect its token, invite it to your server, then choose and configure the features you want.</p>
 <p class="muted" style="margin-bottom:0">The 1,000-bot figure is a platform goal, not a current live count. Keep an eye on this page for setup guides, progress and launch updates.</p>
+<div class="clone-showcase" style="margin-top:2rem;text-align:left" data-clone-showcase>
+  <div style="display:flex;align-items:end;justify-content:space-between;gap:1rem;flex-wrap:wrap">
+    <div><p class="eyebrow">POWERED BY PRIME BOT</p><h3 style="margin:.2rem 0">Bots built on the same platform</h3></div>
+    <span class="muted" data-clone-total>Loading active bots…</span>
+  </div>
+  <div class="clone-grid" data-clone-grid aria-live="polite"><p class="muted">Fetching public bot details…</p></div>
+  <p class="muted" style="font-size:.88rem;margin:.8rem 0 0">Only public bot names, avatars, server counts and connection status are shown. Bot tokens and owner information are never exposed.</p>
+</div>
+<script>
+(function(){
+  const root=document.querySelector("[data-clone-showcase]"); if(!root)return;
+  const grid=root.querySelector("[data-clone-grid]"), total=root.querySelector("[data-clone-total]");
+  const esc=s=>String(s??"").replace(/[&<>"']/g,c=>({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]));
+  async function load(){
+    try{
+      const response=await fetch("/api/public_clones",{headers:{"Accept":"application/json"},cache:"no-store"});
+      if(!response.ok)throw new Error("HTTP "+response.status);
+      const data=await response.json(), bots=Array.isArray(data.bots)?data.bots:[];
+      total.textContent=bots.length+" public bot"+(bots.length===1?"":"s");
+      if(!bots.length){grid.innerHTML='<p class="muted">No public bot profiles are available yet. Check back as the platform grows.</p>';return;}
+      grid.innerHTML=bots.map(bot=>'<article class="clone-card" style="display:flex;align-items:center;gap:1rem;padding:1rem;border:1px solid rgba(190,215,235,.16);border-radius:14px;background:rgba(255,255,255,.025)">'+
+        '<img src="'+esc(bot.avatar_url)+'" alt="" width="52" height="52" loading="lazy" style="width:52px;height:52px;border-radius:50%;object-fit:cover;background:#17212b" onerror="this.hidden=true">'+
+        '<div style="min-width:0;flex:1"><strong style="display:block;overflow-wrap:anywhere">'+esc(bot.name)+'</strong><span class="muted" style="font-size:.88rem">'+esc(bot.servers)+' servers</span></div>'+
+        '<span style="font-size:.78rem;white-space:nowrap;color:'+(bot.online?'#77d6a1':'#a5aab2')+'">● '+(bot.online?'Online':'Offline')+'</span></article>').join("");
+    }catch(error){total.textContent="";grid.innerHTML='<p class="muted">Bot profiles are temporarily unavailable. Please check back later.</p>';}
+  }
+  load(); setInterval(()=>{if(!document.hidden)load()},60000);
+})();
+</script>
 <div class="platform-faq" style="text-align:left;margin-top:1.6rem">
   <h3 style="text-align:center;margin-bottom:1rem">A few things you might be wondering</h3>
   <details><summary>Do I have to host my own bot?</summary><p>No. The plan is for PRIME BOT to handle the hosting and running of your connected bot through the platform. You will not need to keep your own computer or server online.</p></details>
