@@ -49,9 +49,26 @@ read-only commands already run immediately), passing a step's output to later st
 - `run_plan(on_update=...)` callback; a failing progress edit never breaks the plan. Shared by the first run and "Retry remaining"
   via `run_plan_with_progress` in `ai_tools.py`. Tests added in `test_ai_plan.py` (18 total).
 
+## Phase 3 -- persistent scheduler, "safe first" (built)
+
+- Tables (migration `096_ai_scheduled_jobs.sql`, SCHEMA_VERSION 141): `ai_scheduled_jobs` (steps JSONB, schedule once/interval/daily,
+  status, next run, failure streak, last status/error, lock) and `ai_job_runs` (history, latest 50 per job).
+- `modules/ai_jobs.py` (pure logic) + `discord_bot/cogs/ai_jobs.py` (poller + `/aijobs create|list|history|pause|resume|cancel`).
+- Safety: allow-list is `send_message` only (nothing destructive can be scheduled); the creator must STILL have Manage Server and
+  send permission in each channel at run time, else the job is disabled (status `blocked`); messages never ping (`AllowedMentions.none`).
+- No duplicate runs: `claim_due_ai_jobs` uses `FOR UPDATE SKIP LOCKED` + status `running`. At-most-once: a job left `running` past its
+  15 min lock (bot died) is marked `interrupted` and NOT repeated. Recurring jobs jump to the next future slot (never catch-up bursts).
+- Retries: steps run through `ai_plan.run_plan` (transient Discord errors retried with backoff). A failed one-off retries after 5 min,
+  15 min, then gives up after 3 runs; a recurring job is disabled after 5 failed runs in a row. Jobs run one at a time, 1.5 s between steps.
+- Limits: 5 steps/job, 20 jobs/server, min repeat 5 min, 5 jobs claimed per 60 s tick.
+- AI exposure: `aijobs *` are in the AI allowlist (list/history read-only; create/pause/resume/cancel need Manage Server + Confirm).
+- Tests: `tests/unit/test_ai_jobs.py` (10). NOT tested against a real Postgres (none in the sandbox): please smoke-test
+  `/aijobs create` (delay 2m), `list`, `history`, `pause`, `resume`, `cancel` once after deploy.
+- Not done: editing a job's text/schedule (cancel + recreate for now), scheduling anything beyond messages, plan steps owning their own channel
+  per step in the slash UI (storage supports it; `/aijobs create` posts all steps to one channel).
+
 ## Next
 
 - Step outputs passed to later steps (e.g. id of a category just created).
-- Phase 3 persistent scheduler (new jobs table + migration; reuse the `tasks.loop` pattern), then Phase 4 memory, 5 skills,
-  6 sub-agents, 7 security hardening, 8 integration tests and rollout docs.
+- Phase 4 long-term memory, 5 skills, 6 sub-agents, 7 security hardening, 8 integration tests and rollout docs.
 - Pre-existing failing tests on main (not from this work): `test_premium_price_copy`, `test_site_hero_orb::test_every_page_links_the_same_versioned_assets`; CI `test` is red on main because of them.
