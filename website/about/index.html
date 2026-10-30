@@ -17,6 +17,21 @@
 <link rel="apple-touch-icon" href="/apple-touch-icon.png"><link rel="manifest" href="/site.webmanifest">
 <link rel="stylesheet" href="/assets/site.css?v=20261028">
 <style>
+/* About page uses a calmer editorial type system, distinct from the site's HUD pages. */
+.about-page h1,.about-page h2,.about-page h3{
+  font-family:Georgia,"Times New Roman",serif;
+  letter-spacing:.015em;
+  text-transform:none;
+  text-shadow:none;
+  font-weight:500;
+}
+.about-page h1{font-size:clamp(2.6rem,6vw,4.6rem);line-height:1.06}
+.about-page h2{font-size:clamp(1.8rem,3.5vw,2.55rem);line-height:1.15}
+.about-page h3{font-size:1.35rem;line-height:1.25}
+.about-page .prose>p{max-width:72ch;font-size:1.04rem;line-height:1.85;letter-spacing:.005em}
+.about-page .prose>h2{margin-top:2.8rem;margin-bottom:1rem}
+.about-page .page-hero .lead{font-size:1.18rem;line-height:1.8}
+.about-page .eyebrow{font-family:var(--mono)}
 .milestone-list{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:1rem;margin:1.5rem 0 1rem}
 .milestone{border:1px solid rgba(190,215,235,.16);border-radius:14px;padding:1.25rem;background:rgba(255,255,255,.025);transition:transform .28s ease,border-color .28s ease,background .28s ease;animation:milestone-in .65s both}
 .milestone:nth-child(2){animation-delay:.08s}.milestone:nth-child(3){animation-delay:.16s}.milestone:nth-child(4){animation-delay:.24s}
@@ -32,7 +47,7 @@
 </style>
 <script src="/assets/boot.js?v=20261026"></script>
 <script type="application/ld+json">{"@context":"https://schema.org","@type":"BreadcrumbList","itemListElement":[{"@type":"ListItem","position":1,"name":"Home","item":"https://prime-bot-site.pages.dev/"},{"@type":"ListItem","position":2,"name":"About","item":"https://prime-bot-site.pages.dev/about/"}]}</script><script type="application/ld+json">{"@context":"https://schema.org","@type":"AboutPage","name":"About PRIME BOT × WELCOME BOT","url":"https://prime-bot-site.pages.dev/about/","about":{"@type":"Organization","name":"PRIME BOT × WELCOME BOT","founder":{"@type":"Person","name":"Maxwell Dumenya"},"email":"maxwelldumenya5@outlook.com"}}</script>
-</head><body>
+</head><body class="about-page">
 <canvas id="bgfx" aria-hidden="true"></canvas>
 <a class="skip" href="#main">Skip to content</a>
 <header class="site-header"><div class="wrap hdr-in">
