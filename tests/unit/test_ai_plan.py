@@ -207,3 +207,24 @@ def test_classify_http_status():
     assert ai_plan.classify_http_status(429, 3.0).transient and ai_plan.classify_http_status(503).transient
     assert not ai_plan.classify_http_status(403).transient and "permission" in str(ai_plan.classify_http_status(403))
     assert not ai_plan.classify_http_status(404).transient
+
+
+def test_on_update_called_per_done_step_and_failure_in_it_is_harmless():
+    seen = []
+
+    async def upd(r):
+        seen.append(r.count(DONE))
+        raise RuntimeError("edit failed")
+
+    async def ex(step):
+        pass
+
+    p = run(run_plan(make(3), ex, sleep=_nosleep, on_update=upd))
+    assert seen == [1, 2, 3] and p.count(DONE) == 3
+
+
+def test_progress_text_lists_every_step():
+    p = make(2)
+    p.steps[0].status = DONE
+    txt = p.progress()
+    assert "1 done" in txt and "/c1" in txt and "/c2" in txt

@@ -295,6 +295,41 @@ async def _message_attachments(message: discord.Message) -> list:
     return atts[:ai_attachments.MAX_FILES]
 
 
+class PlanCancelView(discord.ui.View):
+    """Shown while a plan runs. Cancel stops it before the NEXT step; the step already running finishes."""
+
+    def __init__(self, owner_id: int, plan):
+        super().__init__(timeout=None)
+        self.owner_id, self.plan = owner_id, plan
+
+    async def interaction_check(self, interaction: discord.Interaction) -> bool:
+        if interaction.user.id != self.owner_id:
+            await interaction.response.send_message("This isn't your plan.", ephemeral=True)
+            return False
+        return True
+
+    @discord.ui.button(label="Cancel after this step", style=discord.ButtonStyle.danger)
+    async def cancel(self, interaction: discord.Interaction, button: discord.ui.Button):
+        self.plan.cancel.set()
+        button.disabled = True
+        await interaction.response.edit_message(view=self)
+
+
+async def run_plan_with_progress(interaction: discord.Interaction, plan, exec_factory) -> None:
+    """Runs the plan with a live progress message + Cancel button, then replaces it with the final report."""
+    plan.cancel.clear()
+    cancel_view = PlanCancelView(interaction.user.id, plan)
+    msg = await interaction.followup.send(plan.progress()[:1900], view=cancel_view, ephemeral=True, wait=True)
+
+    async def _on_update(run) -> None:
+        await msg.edit(content=run.progress()[:1900], view=cancel_view)
+
+    await ai_plan.run_plan(plan, await exec_factory(interaction), pause=ai_bulk.BATCH_PAUSE_SECONDS, on_update=_on_update)
+    cancel_view.stop()
+    view = PlanRetryView(interaction.user.id, plan, exec_factory) if plan.retryable() else None
+    await msg.edit(content=plan.report()[:1900], view=view)
+
+
 class PlanRetryView(discord.ui.View):
     """Offered after a plan with failed/skipped steps. Re-runs ONLY those; finished steps are never repeated."""
 
@@ -316,9 +351,7 @@ class PlanRetryView(discord.ui.View):
         if not self.plan.prepare_retry():
             await interaction.followup.send("No more retries for this plan.", ephemeral=True)
             return
-        await ai_plan.run_plan(self.plan, await self.exec_factory(interaction), pause=ai_bulk.BATCH_PAUSE_SECONDS)
-        view = PlanRetryView(self.owner_id, self.plan, self.exec_factory) if self.plan.retryable() else None
-        await interaction.followup.send(self.plan.report()[:1900], view=view, ephemeral=True)
+        await run_plan_with_progress(interaction, self.plan, self.exec_factory)
         self.stop()
 
 
@@ -946,9 +979,7 @@ class AIToolsCog(commands.Cog):
                 return _exec
 
             async def _run_all(ci: discord.Interaction):
-                await ai_plan.run_plan(plan, await _exec_for(ci), pause=ai_bulk.BATCH_PAUSE_SECONDS)
-                view = PlanRetryView(ci.user.id, plan, _exec_for) if plan.retryable() else None
-                await ci.followup.send(plan.report()[:1900], view=view, ephemeral=True)
+                await run_plan_with_progress(ci, plan, _exec_for)
 
             body = "\n".join(f"{i}. {line}" for i, (_s, _n, _a, line) in enumerate(confirm, 1))
             prompt = f"I'd run these {len(confirm)} commands, in order -- confirm?\n{body}"
