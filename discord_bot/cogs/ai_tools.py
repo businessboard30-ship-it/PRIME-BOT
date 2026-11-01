@@ -52,7 +52,7 @@ from discord.ext import commands
 from database import db
 import re
 
-from modules import leveling, ai_prefs, ai_voice, scam_check, ai_memory
+from modules import leveling, ai_prefs, ai_voice, scam_check, ai_memory, ai_skills
 from modules.ai_features import (
     ai_chat, generate_image, check_ai_usage_limit, get_user_ai_usage, AI_USAGE_CAPS,
     get_or_create_active_session, mentions_other_bot, OTHER_BOT_REFUSAL,
@@ -775,7 +775,47 @@ class AIToolsCog(commands.Cog):
             command = _resolve_command(interaction.client, spec.command_path)
             if command is not None:
                 tools.append(self._command_tool_schema(spec, command))
+        try:    # skills the person may use here (enabled in this server + skill permission held); see modules/ai_skills.py
+            tools.extend(await ai_skills.tools_for(interaction.guild.id, interaction.permissions))
+        except Exception:
+            logger.debug("[ai_skills] couldn't add skill tools", exc_info=True)
         return tools
+
+    async def _expand_skill_calls(self, ctx, calls: list) -> list:
+        """Replaces each `skill__x` call with the ordinary allow-listed command calls the skill stands for. Those then take
+        the normal path (allowlist, real permission, hierarchy, daily cap, Confirm, plan runner) -- a skill adds no power."""
+        if not any(ai_skills.is_skill_call(c.get("name")) for c in calls):
+            return calls
+        out = []
+        for c in calls:
+            name = c.get("name")
+            if not ai_skills.is_skill_call(name):
+                out.append(c)
+                continue
+            skill, msg = ai_skills.get_skill(name), None
+            guild_id = getattr(ctx, "guild_id", None) or (ctx.guild.id if getattr(ctx, "guild", None) else None)
+            if skill is None or guild_id is None:
+                msg = "I don't know that skill."
+            elif not await ai_skills.is_enabled(guild_id, skill):
+                msg = f"The **{skill.name}** skill is turned off in this server."
+            else:
+                ok, wait = ai_skills.check_cooldown(ctx.user.id, skill)
+                if not ok:
+                    msg = f"Please wait {wait}s before using **{skill.name}** again."
+                else:
+                    expanded, err = ai_skills.expand(skill, c.get("arguments") or {}, ctx.permissions)
+                    if expanded is None:
+                        msg = err
+                    else:
+                        ai_skills.mark_used(ctx.user.id, skill)
+                        out.extend(expanded)
+            if msg:
+                logger.info("[ai_skills] %s not run for %s: %s", name, getattr(ctx.user, "id", "?"), msg)
+                try:
+                    await ctx.followup.send(f"\u26a0\ufe0f {msg}", ephemeral=True)
+                except Exception:
+                    logger.debug("[ai_skills] couldn't send refusal", exc_info=True)
+        return out
 
     @staticmethod
     def _extract_id(value) -> Optional[int]:
@@ -923,6 +963,7 @@ class AIToolsCog(commands.Cog):
         command that needs confirming is gathered under ONE Confirm prompt (one click runs them all, in order,
         with a pause between). Each command is still re-checked (allowlist, real permission, daily cap)."""
         calls = [c for c in (calls or []) if isinstance(c, dict)]
+        calls = await self._expand_skill_calls(ctx, calls)
         asks = [c for c in calls if c.get("name") == ai_choice.CHOICE_TOOL_NAME]
         if asks:
             # The AI needs an answer first; anything else it asked for in the same reply may depend on that answer, so it

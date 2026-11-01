@@ -86,8 +86,27 @@ read-only commands already run immediately), passing a step's output to later st
 - Not done: Plan-level "recurring workflows" memory (that is Phase 5 skills), server-wide purge UI for admins on other people's user notes
   (they cannot read those by design), memory export.
 
+## Phase 5 -- reusable skills (built)
+
+- `modules/ai_skills.py`: a skill = developer-defined recipe (code, never user text): typed input schema, permission requirement,
+  cooldown, step cap (5), per-server on/off, and a `build()` that returns EXISTING allow-listed commands. `register_skill()` is the
+  extension point; names/fields are validated at registration.
+- No new powers: the AI calls `skill__<name>`; `_expand_skill_calls` (ai_tools.py, first thing in `_run_tool_calls`) swaps it for ordinary
+  command calls, which take the normal path (allowlist, asker's real permission, hierarchy, daily cap, Confirm, ai_plan runner).
+  Expansion re-checks that every step is allowlisted and is not itself a skill (no recursion). Refusals are logged.
+- Skill tools are only offered when enabled in the server and the person holds the skill's permissions. Bad input / missing permission /
+  disabled / cooldown each give a plain message and run nothing.
+- Built-ins: `lockdown_channel` (lock + topic notice), `reopen_channel` (unlock + clear topic), `welcome_quickstart` (enable welcome cards + set text).
+- Admin control: `/aiskills list|enable|disable` (Manage Server); table `ai_skill_settings` created on first use (no migration/schema bump).
+  `aiskills` is NOT in the AI allowlist: the AI cannot toggle skills. The permission guard/allowlist do not import skills (tested).
+- Tests: `tests/unit/test_ai_skills.py` (19): invalid inputs, unauthorised use, allowlist escape attempts, cooldown, disabled skills, wiring.
+  Not run against a real Postgres (SQL syntax-checked). After deploy: ask the AI "lock #general because of a raid" as an admin and
+  as a non-admin; check `/aiskills list`.
+- Not done: more built-in skills (add via `register_skill`), skills that pass one step's output to the next, skills combining read-only
+  lookups, per-skill daily limits (the existing AI daily cap still counts every expanded command).
+
 ## Next
 
 - Step outputs passed to later steps (e.g. id of a category just created).
-- Phase 5 reusable skills, 6 sub-agents, 7 security hardening, 8 integration tests and rollout docs.
+- Phase 6 sub-agents, 7 security hardening, 8 integration tests and rollout docs.
 - Pre-existing failing tests on main (not from this work): `test_premium_price_copy`, `test_site_hero_orb::test_every_page_links_the_same_versioned_assets`; CI `test` is red on main because of them.
