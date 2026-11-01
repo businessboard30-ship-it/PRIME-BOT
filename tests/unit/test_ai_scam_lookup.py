@@ -177,3 +177,69 @@ def test_wiring_only_admins_are_offered_the_tool_and_it_runs_first():
     src = (ROOT / "discord_bot/cogs/ai_tools.py").read_text()
     assert "getattr(interaction.permissions, ai_scam_lookup.REQUIRED_PERMISSION" in src
     assert src.index("lookups = [c for c in calls") < src.index("_expand_skill_calls(ctx, calls)") < src.index("ai_bulk.pick_tool_calls(calls)")
+
+
+# ---- scam link + image from the archived evidence copy -------------------------------------------------------------
+
+class FakeMsg:
+    def __init__(self, content, atts=()):
+        self.content, self.attachments = content, list(atts)
+
+
+def fake_bot(msg=None, boom=False):
+    class Ch:
+        async def fetch_message(self, mid):
+            if boom:
+                raise discord.NotFound(SimpleNamespace(status=404, reason=""), "gone")
+            return msg
+    return SimpleNamespace(get_channel=lambda i: Ch())
+
+
+def ev_hit(i=7):
+    return hit(i, evidence_channel_id=1, evidence_message_id=2)
+
+
+GOOD = f"\U0001F6E1\ufe0f **Scam Shield catch** | domain: `x` | server `9` | user `{UID}` | deleted\n>>> free nitro https://fatowin.com/claim?x=1 now"
+IMG = SimpleNamespace(url="https://cdn.example/scam.png", content_type="image/png", filename="scam_0_a.png")
+
+
+def test_evidence_gives_defanged_link_and_image():
+    h = ev_hit()
+    ev = run(sl.load_evidence(fake_bot(FakeMsg(GOOD, [IMG])), 9, UID, [h]))
+    assert ev[7]["images"] == ["https://cdn.example/scam.png"]
+    assert ev[7]["links"] and "https://" not in ev[7]["links"][0] and "hxxps://fatowin[.]com" in ev[7]["links"][0]
+    e = sl.build_embed(UID, data(here_total=1, hits=[h]), {"in_server": False}, ev)
+    assert e.image.url == "https://cdn.example/scam.png"
+    assert "scam link:" in _text(e) and "https://fatowin" not in _text(e)
+
+
+def test_evidence_from_another_server_or_user_is_never_shown():
+    for bad in (GOOD.replace("server `9`", "server `10`"), GOOD.replace(f"user `{UID}`", "user `5`")):
+        ev = run(sl.load_evidence(fake_bot(FakeMsg(bad, [IMG])), 9, UID, [ev_hit()]))
+        assert ev == {}
+
+
+def test_missing_evidence_copy_is_reported_not_raised():
+    h = ev_hit()
+    ev = run(sl.load_evidence(fake_bot(boom=True), 9, UID, [h]))
+    assert ev[7]["gone"] is True
+    assert "no longer available" in _text(sl.build_embed(UID, data(here_total=1, hits=[h]), {"in_server": False}, ev))
+    assert run(sl.load_evidence(None, 9, UID, [h])) == {}
+
+
+def test_domain_catch_without_a_copy_still_shows_the_matched_link():
+    e = sl.build_embed(UID, data(here_total=1, hits=[hit(snippet=None)]), {"in_server": False})
+    assert "scam link:" in _text(e) and "fatowin[.]com" in _text(e)
+
+
+def test_extra_images_get_their_own_embeds_and_are_capped():
+    hits = [ev_hit(i) for i in range(1, 6)]
+    ev = {i: {"links": [], "images": [f"https://cdn.example/{i}.png"], "gone": False} for i in range(1, 6)}
+    extra = sl.image_embeds(data(hits=hits), ev)
+    assert len(extra) == sl.MAX_EXTRA_IMAGE_EMBEDS and extra[0].image.url.endswith("/2.png")
+
+
+def test_only_a_few_copies_are_opened():
+    hits = [ev_hit(i) for i in range(1, 7)]
+    ev = run(sl.load_evidence(fake_bot(FakeMsg(GOOD, [IMG])), 9, UID, hits))
+    assert len(ev) == sl.MAX_EVIDENCE_FETCH

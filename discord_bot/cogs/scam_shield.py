@@ -434,6 +434,7 @@ class ScamShieldCog(commands.Cog):
             await self._answer(message, sc.OTHER_BOT_TEXT, color=discord.Color.red())
             return
         deleted = False
+        evidence = None
         if reason is None:
             host, files = await self._evidence(target)       # must run BEFORE the delete: CDN links die with the message
             try:
@@ -447,11 +448,11 @@ class ScamShieldCog(commands.Cog):
                 logger.warning("[scam-shield] manual check couldn't delete in guild %s (%s)", guild.id, e)
                 reason = sc.ERROR_TEXT.format(code=getattr(e, "status", "?"))
             if host is not None:
-                await self._archive(host, files, target, kind, matched, rule_id, deleted)
+                evidence = await self._archive(host, files, target, kind, matched, rule_id, deleted)
         try:
             snippet = discord.utils.escape_mentions((target.content or "")[:300]) or "(image / embed only)"
             await ss.log_hit(guild.id, target.channel.id, target.author.id, kind, matched, rule_id,
-                             snippet, deleted, clone_id)
+                             snippet, deleted, clone_id, evidence=evidence)
         except Exception:
             logger.debug("[scam-shield] couldn't record the manual-check hit", exc_info=True)
         if deleted:
@@ -822,7 +823,7 @@ class ScamShieldCog(commands.Cog):
                 continue
         return host, got
 
-    async def _archive(self, host, files, message, kind, matched, rule_id, deleted) -> None:
+    async def _archive(self, host, files, message, kind, matched, rule_id, deleted) -> Optional[tuple]:
         """Drop the caught scam into the hosting channel (text + the files) so you keep a copy of everything
         Scam Shield removed, e.g. to add new rules from. Best effort: never blocks or breaks the delete."""
         try:
@@ -830,23 +831,26 @@ class ScamShieldCog(commands.Cog):
             head = (f"\U0001F6E1\ufe0f **Scam Shield catch** | {kind}: `{discord.utils.escape_markdown(str(matched))[:80]}`"
                     f"{f' (rule {rule_id})' if rule_id else ''} | server `{message.guild.id}` | user `{message.author.id}` "
                     f"| {'deleted' if deleted else 'NOT deleted'}\n>>> {discord.utils.escape_mentions(body)}")
-            await host.send(content=head[:1990],
-                            files=[discord.File(io.BytesIO(d), filename=f"scam_{i}_{n}"[:100]) for i, (n, d) in enumerate(files)],
-                            allowed_mentions=discord.AllowedMentions.none())
+            sent = await host.send(content=head[:1990],
+                                   files=[discord.File(io.BytesIO(d), filename=f"scam_{i}_{n}"[:100]) for i, (n, d) in enumerate(files)],
+                                   allowed_mentions=discord.AllowedMentions.none())
+            return (sent.channel.id, sent.id)     # pointer only: lets the AI scam lookup show the link + image later
         except Exception:
             logger.debug("[scam-shield] couldn't archive the catch", exc_info=True)
+        return None
 
     async def _act(self, message: discord.Message, kind: str, matched: str, rule_id: Optional[int],
                    action: str = "delete") -> None:
         host, files = await self._evidence(message)
         deleted = False
+        evidence = None
         try:
             await message.delete()
             deleted = True
         except discord.HTTPException as e:
             logger.warning("[scam-shield] couldn't delete in guild %s (%s)", message.guild.id, e)
         if host is not None:
-            await self._archive(host, files, message, kind, matched, rule_id, deleted)
+            evidence = await self._archive(host, files, message, kind, matched, rule_id, deleted)
         clone_id = getattr(self.bot, "clone_id", None)
         action_note = ""
         if action != "delete":
@@ -857,7 +861,7 @@ class ScamShieldCog(commands.Cog):
             return                                    # already flagged this user a moment ago
         snippet = discord.utils.escape_mentions((message.content or "")[:300]) or "(image / embed only)"
         await ss.log_hit(message.guild.id, message.channel.id, message.author.id, kind, matched, rule_id,
-                         snippet, deleted, clone_id)
+                         snippet, deleted, clone_id, evidence=evidence)
         fallback = await self._flag(message, kind, matched, deleted, snippet, clone_id, action_note)
         if fallback is not message.channel:           # the fallback flag already warns the channel it landed in
             await self._notice(message, deleted)

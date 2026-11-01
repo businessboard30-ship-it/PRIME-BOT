@@ -813,9 +813,14 @@ class AIToolsCog(commands.Cog):
             except discord.HTTPException:
                 pass
         data = await ai_scam_lookup.gather(guild.id, target_id)
-        embed = ai_scam_lookup.build_embed(target_id, data, facts)
+        evidence = await ai_scam_lookup.load_evidence(getattr(self, "bot", None), guild.id, target_id, data["hits"])
+        embed = ai_scam_lookup.build_embed(target_id, data, facts, evidence)
+        extra = ai_scam_lookup.image_embeds(data, evidence)
         logger.info("[ai_scam_lookup] %s looked up %s in guild %s (here=%s)", ctx.user.id, target_id, guild.id, data["here_total"])
-        await ctx.followup.send(embed=embed, ephemeral=False)      # public by design
+        if extra:
+            await ctx.followup.send(embeds=[embed] + extra, ephemeral=False)      # public by design
+        else:
+            await ctx.followup.send(embed=embed, ephemeral=False)      # public by design
 
     async def _expand_skill_calls(self, ctx, calls: list) -> list:
         """Replaces each `skill__x` call with the ordinary allow-listed command calls the skill stands for. Those then take

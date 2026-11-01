@@ -117,7 +117,12 @@ read-only commands already run immediately), passing a step's output to later st
 - Public-output safety: snippets are defanged (hxxp, [.], pings broken, markdown escaped); 8 s cooldown per admin; one lookup per message;
   non-admins get a private refusal and nothing is queried; lookups are logged (who looked up whom).
 - Tests: `tests/unit/test_ai_scam_lookup.py` (14). Not run against a real Postgres (SQL syntax-checked).
-- Not done: showing evidence from `/modlogs` actions, honeypot/antiraid catches, attaching original images (only text snippets are stored).
+- Scam link + image (added): `scam_shield_hits` now stores a POINTER (`evidence_channel_id`, `evidence_message_id`, migration 097, SCHEMA_VERSION 142)
+  to the archived copy Scam Shield already saves. At lookup time `ai_scam_lookup.load_evidence` opens the newest 3 copies, only trusts one whose header
+  names this server AND this user, and shows the scam link (always defanged, never clickable) and the scam image (main embed + up to 2 extra embeds).
+  Domain catches with no copy still show the matched domain. Older hits (before this change) and servers with no evidence channel have no pointer, so
+  they show no image. Smoke-test after deploy: trigger a scam catch with an image, then ask the AI "is <id> a scammer?".
+- Not done: showing evidence from `/modlogs` actions, honeypot/antiraid catches.
 
 ## Next
 

@@ -20,6 +20,7 @@ It is a heads-up for admins, not a verdict: accounts get hacked, and the report 
 
 from __future__ import annotations
 
+import asyncio
 import logging
 import re
 import time
@@ -35,6 +36,10 @@ REQUIRED_PERMISSION = "administrator"     # "only admins": change this one word 
 COOLDOWN_SECONDS = 8
 MAX_HITS_SHOWN = 6
 SNIPPET_CHARS = 160
+MAX_EVIDENCE_FETCH = 3      # archived copies opened per lookup (newest first)
+MAX_LINKS_PER_HIT = 2
+MAX_EXTRA_IMAGE_EMBEDS = 2  # the main embed shows the first image; up to this many more get their own
+_URL_RE = re.compile(r"(?i)\bhttps?://[^\s<>`\"')\]]+")
 
 KIND_LABELS = {"word": "scam wording", "domain": "scam link", "image": "known scam image", "vision": "AI-detected scam image"}
 
@@ -93,7 +98,8 @@ async def gather(guild_id: int, user_id: int) -> dict:
             out["here_total"] = int(await conn.fetchval(
                 "SELECT COUNT(*) FROM scam_shield_hits WHERE guild_id = $1 AND user_id = $2", guild_id, user_id) or 0)
             rows = await conn.fetch(
-                "SELECT h.id, h.channel_id, h.kind, h.matched, h.snippet, h.deleted, h.created_at, r.note "
+                "SELECT h.id, h.channel_id, h.kind, h.matched, h.snippet, h.deleted, h.created_at, r.note, "
+                "h.evidence_channel_id, h.evidence_message_id "
                 "FROM scam_shield_hits h LEFT JOIN scam_shield_rules r ON r.id = h.rule_id "
                 "WHERE h.guild_id = $1 AND h.user_id = $2 ORDER BY h.id DESC LIMIT $3", guild_id, user_id, MAX_HITS_SHOWN)
             out["hits"] = [dict(r) for r in rows]
@@ -116,6 +122,61 @@ async def gather(guild_id: int, user_id: int) -> dict:
     return out
 
 
+async def load_evidence(bot, guild_id: int, user_id: int, hits: List[dict]) -> Dict[int, dict]:
+    """hit id -> {"links": [defanged urls], "images": [urls], "gone": bool} read from the archived copy Scam Shield saved.
+    The copy lives in the shared evidence channel, so it is only trusted when its header names THIS server and THIS user.
+    Best effort: anything unreachable just means no link/image for that catch."""
+    out: Dict[int, dict] = {}
+    if bot is None:
+        return out
+    opened = 0
+    for h in hits:
+        cid, mid = h.get("evidence_channel_id"), h.get("evidence_message_id")
+        if not (cid and mid) or opened >= MAX_EVIDENCE_FETCH:
+            continue
+        opened += 1
+        try:
+            ch = bot.get_channel(int(cid)) or await bot.fetch_channel(int(cid))
+            msg = await asyncio.wait_for(ch.fetch_message(int(mid)), timeout=5)
+        except Exception:
+            logger.debug("[ai_scam_lookup] evidence copy for hit %s unreachable", h.get("id"), exc_info=True)
+            out[h["id"]] = {"links": [], "images": [], "gone": True}
+            continue
+        text = getattr(msg, "content", "") or ""
+        if f"server `{guild_id}`" not in text or f"user `{user_id}`" not in text:
+            continue                                    # not this server's / this user's copy: never show it
+        links, seen = [], set()
+        for u in _URL_RE.findall(text):
+            k = u.lower().rstrip(".,")
+            if k not in seen:
+                seen.add(k)
+                links.append(defang(u.rstrip(".,"), 90))
+            if len(links) >= MAX_LINKS_PER_HIT:
+                break
+        images = []
+        for a in getattr(msg, "attachments", None) or []:
+            ctype = (getattr(a, "content_type", "") or "").lower()
+            if ctype.startswith("image/") or re.search(r"(?i)\.(png|jpe?g|gif|webp)$", getattr(a, "filename", "") or ""):
+                images.append(a.url)
+        out[h["id"]] = {"links": links, "images": images[:1], "gone": False}
+    return out
+
+
+def image_embeds(data: dict, evidence: Optional[Dict[int, dict]]) -> List[discord.Embed]:
+    """Extra embeds (one image each) for catches beyond the first image, which the main embed already shows."""
+    extra = []
+    for h in data["hits"]:
+        imgs = ((evidence or {}).get(h["id"]) or {}).get("images") or []
+        if imgs:
+            extra.append((h["id"], imgs[0]))
+    out = []
+    for hid, url in extra[1:1 + MAX_EXTRA_IMAGE_EMBEDS]:
+        e = discord.Embed(title=f"Scam image \u2014 catch #{hid}", color=0xB85450)
+        e.set_image(url=url)
+        out.append(e)
+    return out
+
+
 def assess(data: dict) -> Tuple[str, str]:
     """(level, why). Deterministic from recorded counts -- no guessing."""
     here, other = data["here_total"], (data.get("other") or {}).get("catches", 0)
@@ -130,8 +191,9 @@ _COLOR = {"strong": 0xB85450, "some": 0xC9A227, "none": 0x5B8C5A}
 _LABEL = {"strong": "Strong evidence", "some": "Some evidence", "none": "No recorded evidence"}
 
 
-def build_embed(user_id: int, data: dict, facts: dict) -> discord.Embed:
+def build_embed(user_id: int, data: dict, facts: dict, evidence: Optional[Dict[int, dict]] = None) -> discord.Embed:
     level, why = assess(data)
+    evidence = evidence or {}
     e = discord.Embed(title=f"\U0001f50e Scam lookup \u2014 {_LABEL[level]}", color=_COLOR[level],
                       description=f"User ID `{user_id}`" + (f" ({defang(facts['display'], 60)})" if facts.get("display") else "")
                                   + f"\n**{why}.**")
@@ -160,7 +222,20 @@ def build_embed(user_id: int, data: dict, facts: dict) -> discord.Embed:
             row = " \u00b7 ".join(bits)
             if h.get("note"):
                 row += f"\n  rule: {defang(h['note'], 80)}"
-            row += "\n  > " + (defang(h["snippet"]) if h.get("snippet") else "(text no longer stored)")
+            ev = evidence.get(h["id"]) or {}
+            links = list(ev.get("links") or [])
+            if not links and h.get("kind") == "domain" and h.get("matched"):
+                links = [defang(h["matched"], 90).replace(chr(92), "")]     # the domain the rule matched
+            if links:
+                row += "\n  scam link: " + " , ".join(f"`{l.replace(chr(96), chr(39))}`" for l in links) + " (made unclickable)"
+            if h.get("snippet"):
+                row += "\n  > " + defang(h["snippet"])
+            elif not links:
+                row += "\n  > (text no longer stored)"
+            if ev.get("images"):
+                row += "\n  scam image: shown below"
+            elif ev.get("gone"):
+                row += "\n  scam image: the saved copy is no longer available"
             lines.append(row)
         more = data["here_total"] - len(data["hits"])
         e.add_field(name=f"Catches in this server ({data['here_total']})",
@@ -181,6 +256,12 @@ def build_embed(user_id: int, data: dict, facts: dict) -> discord.Embed:
         w = [f"#{x['id']} <t:{int(x['created_at'].timestamp())}:d> \u2014 {defang(x.get('reason') or 'no reason', 80)}"
              for x in data["warns"] if x.get("created_at")]
         e.add_field(name=f"Warns in this server ({data['warn_total']})", value="\n".join(w)[:1000] or "\u2014", inline=False)
+
+    for h in data["hits"]:
+        imgs = (evidence.get(h["id"]) or {}).get("images") or []
+        if imgs:
+            e.set_image(url=imgs[0])
+            break
 
     foot = "A heads-up, not a verdict: accounts can be hacked. Only catches this bot recorded are shown."
     if data["errors"]:
