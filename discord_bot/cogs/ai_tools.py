@@ -52,7 +52,7 @@ from discord.ext import commands
 from database import db
 import re
 
-from modules import leveling, ai_prefs, ai_voice, scam_check, ai_memory, ai_skills
+from modules import leveling, ai_prefs, ai_voice, scam_check, ai_memory, ai_skills, ai_scam_lookup
 from modules.ai_features import (
     ai_chat, generate_image, check_ai_usage_limit, get_user_ai_usage, AI_USAGE_CAPS,
     get_or_create_active_session, mentions_other_bot, OTHER_BOT_REFUSAL,
@@ -775,11 +775,47 @@ class AIToolsCog(commands.Cog):
             command = _resolve_command(interaction.client, spec.command_path)
             if command is not None:
                 tools.append(self._command_tool_schema(spec, command))
+        if getattr(interaction.permissions, ai_scam_lookup.REQUIRED_PERMISSION, False):
+            tools.append(ai_scam_lookup.tool_schema())      # admin-only AI tool (not a slash command)
         try:    # skills the person may use here (enabled in this server + skill permission held); see modules/ai_skills.py
             tools.extend(await ai_skills.tools_for(interaction.guild.id, interaction.permissions))
         except Exception:
             logger.debug("[ai_skills] couldn't add skill tools", exc_info=True)
         return tools
+
+    async def _handle_scam_lookup(self, ctx, args: dict) -> None:
+        """Admin-only, public. Permission is re-checked HERE (offering the tool is not the gate). The report is built from the
+        database by modules/ai_scam_lookup.py -- the model never writes the evidence."""
+        guild = getattr(ctx, "guild", None)
+        if guild is None or not getattr(ctx.permissions, ai_scam_lookup.REQUIRED_PERMISSION, False):
+            logger.info("[ai_scam_lookup] refused for %s (not %s)", getattr(ctx.user, "id", "?"), ai_scam_lookup.REQUIRED_PERMISSION)
+            await ctx.followup.send("\u26d4 Only server admins can ask me for scam evidence.", ephemeral=True)
+            return
+        target_id = ai_scam_lookup.parse_user_id((args or {}).get("user_id"))
+        if target_id is None:
+            await ctx.followup.send("Give me the user's Discord ID (the long number) or an @mention.", ephemeral=True)
+            return
+        wait = ai_scam_lookup.on_cooldown(ctx.user.id)
+        if wait:
+            await ctx.followup.send(f"Please wait {wait}s before another scam lookup.", ephemeral=True)
+            return
+        facts = {"created_at": discord.utils.snowflake_time(target_id), "in_server": False, "banned": None}
+        member = guild.get_member(target_id)
+        if member is not None:
+            facts.update(in_server=True, joined_at=member.joined_at, display=member.display_name,
+                         timed_out=bool(member.is_timed_out()))
+        else:
+            try:
+                await guild.fetch_ban(discord.Object(id=target_id))
+                facts["banned"] = True
+            except discord.NotFound:
+                facts["banned"] = False
+            except discord.HTTPException:
+                pass
+        data = await ai_scam_lookup.gather(guild.id, target_id)
+        embed = ai_scam_lookup.build_embed(target_id, data, facts)
+        logger.info("[ai_scam_lookup] %s looked up %s in guild %s (here=%s)", ctx.user.id, target_id, guild.id, data["here_total"])
+        await ctx.followup.send(embed=embed, ephemeral=False)      # public by design
 
     async def _expand_skill_calls(self, ctx, calls: list) -> list:
         """Replaces each `skill__x` call with the ordinary allow-listed command calls the skill stands for. Those then take
@@ -963,6 +999,10 @@ class AIToolsCog(commands.Cog):
         command that needs confirming is gathered under ONE Confirm prompt (one click runs them all, in order,
         with a pause between). Each command is still re-checked (allowlist, real permission, daily cap)."""
         calls = [c for c in (calls or []) if isinstance(c, dict)]
+        lookups = [c for c in calls if c.get("name") == ai_scam_lookup.TOOL_NAME]
+        if lookups:
+            calls = [c for c in calls if c.get("name") != ai_scam_lookup.TOOL_NAME]
+            await self._handle_scam_lookup(ctx, lookups[0].get("arguments") or {})      # one lookup per message
         calls = await self._expand_skill_calls(ctx, calls)
         asks = [c for c in calls if c.get("name") == ai_choice.CHOICE_TOOL_NAME]
         if asks:
