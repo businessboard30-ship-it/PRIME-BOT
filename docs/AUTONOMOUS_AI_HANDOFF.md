@@ -105,6 +105,20 @@ read-only commands already run immediately), passing a step's output to later st
 - Not done: more built-in skills (add via `register_skill`), skills that pass one step's output to the next, skills combining read-only
   lookups, per-skill daily limits (the existing AI daily cap still counts every expanded command).
 
+## AI scam lookup (built, outside the numbered phases)
+
+- Admin asks the AI in chat with a Discord user id ("is 123456789012345678 a scammer?"); the bot replies PUBLICLY with an evidence embed.
+  No slash command: it is an AI tool (`scam_lookup`) handled in `ai_tools.py` (`_handle_scam_lookup`), offered only to people with
+  `ai_scam_lookup.REQUIRED_PERMISSION` (= `administrator`; change that one word to loosen/tighten) and re-checked at execution.
+- `modules/ai_scam_lookup.py` builds the report from recorded data, so the model never writes/paraphrases evidence: this server's
+  `scam_shield_hits` (id, time, channel, kind, matched rule + its note, deleted?, stored snippet if not yet scrubbed by the privacy
+  retention), other servers as COUNTS ONLY (existing `scam_reputation`, never names or text), this server's warns, and Discord facts
+  (account age from the id, joined, banned here, timed out). Verdict level is deterministic from counts, footer says it is a heads-up.
+- Public-output safety: snippets are defanged (hxxp, [.], pings broken, markdown escaped); 8 s cooldown per admin; one lookup per message;
+  non-admins get a private refusal and nothing is queried; lookups are logged (who looked up whom).
+- Tests: `tests/unit/test_ai_scam_lookup.py` (14). Not run against a real Postgres (SQL syntax-checked).
+- Not done: showing evidence from `/modlogs` actions, honeypot/antiraid catches, attaching original images (only text snippets are stored).
+
 ## Next
 
 - Step outputs passed to later steps (e.g. id of a category just created).
