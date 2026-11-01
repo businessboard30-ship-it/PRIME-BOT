@@ -429,14 +429,17 @@ async def set_evidence_channel(channel_id: Optional[int]) -> None:
 
 
 async def log_hit(guild_id: int, channel_id: int, user_id: int, kind: str, matched: str,
-                  rule_id: Optional[int], snippet: str, deleted: bool, clone_id: Optional[int] = None) -> None:
+                  rule_id: Optional[int], snippet: str, deleted: bool, clone_id: Optional[int] = None,
+                  evidence: Optional[tuple] = None) -> None:
+    """evidence = (channel_id, message_id) of the archived copy, if one was made. Only the pointer is stored."""
+    ev_c, ev_m = (evidence or (None, None))
     try:
         pool = await _pool()
         async with pool.acquire() as conn:
             await conn.execute(
                 "INSERT INTO scam_shield_hits (guild_id, clone_id, channel_id, user_id, kind, matched, rule_id, "
-                "snippet, deleted) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)",
-                guild_id, clone_id, channel_id, user_id, kind, matched[:200], rule_id, None, deleted)  # message text is not kept (privacy)
+                "snippet, deleted, evidence_channel_id, evidence_message_id) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)",
+                guild_id, clone_id, channel_id, user_id, kind, matched[:200], rule_id, None, deleted, ev_c, ev_m)  # message text is not kept (privacy)
     except Exception:
         logger.exception("[scam-shield] couldn't record a hit")
 

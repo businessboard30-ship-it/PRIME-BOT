@@ -157,7 +157,8 @@ _pool_loop = None  # the asyncio event loop _pool's connections belong to
 # Do NOT bump it for unrelated changes — an unnecessary bump forces every
 # bot/clone's next cold start to run the full DDL pass again, which is
 # exactly the schema-reload storm this version check exists to avoid.
-SCHEMA_VERSION = "141"
+SCHEMA_VERSION = "142"
+# "141" -> "142" adds 097_scam_hit_evidence_ref.sql (scam_shield_hits.evidence_channel_id / evidence_message_id: pointer to the archived copy, used by the AI scam lookup to show the scam link + image). ALTER TABLE ADD COLUMN IF NOT EXISTS only. Bump-or-it-never-runs trap: tests/unit/test_schema_version_guard.py
 # "140" -> "141" adds 096_ai_scheduled_jobs.sql (ai_scheduled_jobs + ai_job_runs: persistent AI scheduler, Phase 3). CREATE TABLE / CREATE INDEX IF NOT EXISTS only. Bump-or-it-never-runs trap: tests/unit/test_schema_version_guard.py
 # "139" -> "140" adds 095_card_chief_seats.sql (discord_clan_chiefs.lease_until + card_chief_purchases: buy a chief seat with coins). ALTER TABLE ADD COLUMN IF NOT EXISTS / CREATE TABLE IF NOT EXISTS only. Bump-or-it-never-runs trap: tests/unit/test_schema_version_guard.py
 # "138" -> "139" adds 094_card_trade_drafts.sql (card_trade_drafts: half-built trade offers for the Card Hub). CREATE TABLE / CREATE UNIQUE INDEX IF NOT EXISTS only. Bump-or-it-never-runs trap: tests/unit/test_schema_version_guard.py
@@ -6044,7 +6045,7 @@ class Database:
         for _card_mig in ("088_card_economy_core.sql", "089_card_boosts.sql", "090_card_trading.sql",
                           "091_card_coin_games.sql", "092_card_profiles.sql", "093_card_levelup_rewards.sql",
                           "094_card_trade_drafts.sql", "095_card_chief_seats.sql",
-                          "096_ai_scheduled_jobs.sql"):
+                          "096_ai_scheduled_jobs.sql", "097_scam_hit_evidence_ref.sql"):
             _card_mig_path = pathlib.Path(__file__).parent / "database" / "migrations" / _card_mig
             if _card_mig_path.exists():
                 await conn.execute(_card_mig_path.read_text())
