@@ -52,7 +52,7 @@ from discord.ext import commands
 from database import db
 import re
 
-from modules import leveling, ai_prefs, ai_voice, scam_check, ai_memory, ai_skills, ai_scam_lookup
+from modules import leveling, ai_prefs, ai_voice, scam_check, ai_memory, ai_skills, ai_scam_lookup, ai_agents
 from modules.ai_features import (
     ai_chat, generate_image, check_ai_usage_limit, get_user_ai_usage, AI_USAGE_CAPS,
     get_or_create_active_session, mentions_other_bot, OTHER_BOT_REFUSAL,
@@ -781,6 +781,10 @@ class AIToolsCog(commands.Cog):
             tools.extend(await ai_skills.tools_for(interaction.guild.id, interaction.permissions))
         except Exception:
             logger.debug("[ai_skills] couldn't add skill tools", exc_info=True)
+        try:    # specialist agents enabled here that the person may use (OFF by default); see modules/ai_agents.py
+            tools.extend(await ai_agents.tools_for(interaction.guild.id, interaction.permissions))
+        except Exception:
+            logger.debug("[ai_agents] couldn't add agent tools", exc_info=True)
         return tools
 
     async def _handle_scam_lookup(self, ctx, args: dict) -> None:
@@ -821,6 +825,80 @@ class AIToolsCog(commands.Cog):
             await ctx.followup.send(embeds=[embed] + extra, ephemeral=False)      # public by design
         else:
             await ctx.followup.send(embed=embed, ephemeral=False)      # public by design
+
+    async def _delegate_agent_calls(self, ctx, calls: list) -> list:
+        """Replaces an `agent__x` delegation with the (vetted) command calls that agent proposes. Those then take the normal
+        path (allowlist, real permission, hierarchy, daily cap, Confirm, plan runner) -- an agent adds no power. One agent per
+        message, one bounded model call per task, never nested."""
+        agent_calls = [c for c in calls if ai_agents.is_agent_call(c.get("name"))]
+        if not agent_calls:
+            return calls
+        out = [c for c in calls if not ai_agents.is_agent_call(c.get("name"))]
+        first, extra = agent_calls[0], len(agent_calls) - 1
+        agent, msg = ai_agents.get_agent(first.get("name")), None
+        guild = getattr(ctx, "guild", None)
+        task = None
+        if agent is None or guild is None:
+            msg = "I don't know that agent."
+        elif not await ai_agents.is_enabled(guild.id, agent):
+            msg = f"The **{agent.name}** agent is turned off in this server (admins: `/aiagents enable`)."
+        elif not ai_agents.has_needed_perms(agent, ctx.permissions):
+            msg = f"You don't have the permissions the **{agent.name}** agent needs."
+        else:
+            task, bad = ai_agents.clean_task(first.get("arguments"))
+            ok, wait = ai_agents.check_cooldown(ctx.user.id, agent)
+            if task is None:
+                msg = bad
+            elif not ok:
+                msg = f"Please wait {wait}s before using **{agent.name}** again."
+            else:
+                recent = await ai_agents.recent_task_count(guild.id)
+                if recent is None or recent >= ai_agents.SERVER_HOURLY_LIMIT:
+                    msg = "This server has used its agent limit for the hour. Try again later."
+        proposed = []
+        if msg is None:
+            ai_agents.mark_used(ctx.user.id, agent)
+            proposed, msg = await self._run_agent(ctx, agent, task)
+        if msg:
+            logger.info("[ai_agents] %s not run for %s: %s", first.get("name"), getattr(ctx.user, "id", "?"), msg)
+            try:
+                await ctx.followup.send(f"\u26a0\ufe0f {msg}"[:1900], ephemeral=True)
+            except Exception:
+                logger.debug("[ai_agents] couldn't send note", exc_info=True)
+        if extra:
+            try:
+                await ctx.followup.send("\u2139\ufe0f One agent per message -- ask for the rest in a new message.", ephemeral=True)
+            except Exception:
+                logger.debug("[ai_agents] couldn't send the extra-agent note", exc_info=True)
+        return out + proposed
+
+    async def _run_agent(self, ctx, agent, task: str):
+        """(vetted command calls, note-for-the-person-or-None). ONE model call with only this agent's tools."""
+        task_id = await ai_agents.start_task(ctx.guild.id, ctx.user.id, agent, task)
+        try:
+            tools = ai_agents.restricted_tools(agent, await self._build_command_tools(ctx))
+            if not tools:
+                await ai_agents.finish_task(task_id, "refused", note="no usable tools for this person")
+                return [], f"You can't run any of the **{agent.name}** agent's commands right now."
+            tier = await self._tier(ctx.user.id)
+            response = await asyncio.wait_for(
+                ai_chat(ctx.user.id, f"TASK: {task}", tier=tier, history_override=[], guild_id=ctx.guild.id,
+                        command_context=ai_agents.system_context(agent), tools=tools),
+                timeout=ai_agents.TASK_TIMEOUT_SECONDS)
+        except asyncio.TimeoutError:
+            await ai_agents.finish_task(task_id, "timeout")
+            return [], f"The **{agent.name}** agent took too long. Nothing was run."
+        except Exception:
+            logger.exception("[ai_agents] %s failed", agent.name)
+            await ai_agents.finish_task(task_id, "error")
+            return [], f"The **{agent.name}** agent hit an error. Nothing was run."
+        if isinstance(response, dict):
+            kept, dropped = ai_agents.vet_calls(agent, response.get("tool_calls"))
+            note = f"{dropped} proposed action(s) outside the agent's tools were dropped." if dropped else ""
+            await ai_agents.finish_task(task_id, "proposed" if kept else "nothing", kept, note)
+            return kept, (note or ("The agent had nothing it could do for that." if not kept else None))
+        await ai_agents.finish_task(task_id, "answered", note=str(response or "")[:200])
+        return [], (str(response)[:1800] if response else f"The **{agent.name}** agent couldn't answer.")
 
     async def _expand_skill_calls(self, ctx, calls: list) -> list:
         """Replaces each `skill__x` call with the ordinary allow-listed command calls the skill stands for. Those then take
@@ -1008,6 +1086,7 @@ class AIToolsCog(commands.Cog):
         if lookups:
             calls = [c for c in calls if c.get("name") != ai_scam_lookup.TOOL_NAME]
             await self._handle_scam_lookup(ctx, lookups[0].get("arguments") or {})      # one lookup per message
+        calls = await self._delegate_agent_calls(ctx, calls)
         calls = await self._expand_skill_calls(ctx, calls)
         asks = [c for c in calls if c.get("name") == ai_choice.CHOICE_TOOL_NAME]
         if asks:
