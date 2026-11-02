@@ -105,6 +105,31 @@ read-only commands already run immediately), passing a step's output to later st
 - Not done: more built-in skills (add via `register_skill`), skills that pass one step's output to the next, skills combining read-only
   lookups, per-skill daily limits (the existing AI daily cap still counts every expanded command).
 
+## Phase 6 -- specialist sub-agents (built)
+
+- `modules/ai_agents.py`: an agent = developer-defined profile (role, short instructions, a FIXED tool list that must be a subset of the AI
+  allowlist, needed permissions, <=5 actions, cooldown). `register_agent()` validates names/tools; agents can never list another agent, a skill,
+  `scam_lookup` or the choice tool. Built-ins: `server_manager`, `moderation_assistant`, `research_assistant`, `workflow_scheduler`. None has a
+  destructive tool (no ban/kick/purge/bulk-delete/permission edits).
+- Flow: the AI calls `agent__<name>(task)`. `_delegate_agent_calls` (ai_tools.py, runs before skill expansion) checks: enabled in this server,
+  asker holds the agent's permissions, task text valid, 30 s cooldown, server limit 10 tasks/hour (fails CLOSED if it can't count). Then ONE model
+  call (45 s timeout) with only the agent's tools, restricted to what the asker can run right now. What it proposes is vetted (`vet_calls`: own
+  tools only, capped) and sent down the NORMAL path (allowlist, real permission, hierarchy, daily cap, Confirm click, ai_plan runner). One agent
+  per message, no nesting. Agents approve nothing and cannot widen access.
+- OFF by default everywhere. `/aiagents list|enable|disable|history` (Manage Server; history needs it too). `aiagents` is NOT in the AI allowlist and
+  the guard/allowlist/plan modules never import agents (tested). Tables `ai_agent_settings` / `ai_agent_tasks` are created on first use (no
+  migration, no schema bump); task rows (who, agent, task, proposed commands, outcome) keep the latest 50 per server.
+- Tests: `tests/unit/test_ai_agents.py` (16): registration + escalation attempts, vetting, off-by-default, perms, cooldown, hourly limit, timeout,
+  model error, nested agent/skill attempts, storage failure, wiring. NOT run against a real Postgres or Discord.
+
+### Loading fix found while building Phase 6
+`bot.py` never loaded the Phase 3-5 cogs (`ai_jobs`, `ai_memory`, `ai_skills`), so `/aijobs`, `/aimemory`, `/aiskills` did not exist and the
+job poller never ran (and the AI's own `aijobs_*` tools could not resolve). `bot.py` now loads `ai_skills`, `ai_agents`, `ai_memory`, `ai_jobs` LAST,
+each in its own try/except. They add 4 top-level slash groups against Discord's 100 cap: if the cap is hit, only the last ones are skipped (a
+warning is logged) and nothing earlier is displaced. After deploy check the log for `[ai] ... not loaded`; if `ai_jobs`/`ai_memory` were skipped,
+free slots (as was done for archive/heist) or fold them under an existing group.
+- After deploy: `/aiagents enable research_assistant`, then ask the AI "how is the server doing this week?" (should delegate), `/aiagents history`.
+
 ## AI scam lookup (built, outside the numbered phases)
 
 - Admin asks the AI in chat with a Discord user id ("is 123456789012345678 a scammer?"); the bot replies PUBLICLY with an evidence embed.
@@ -127,5 +152,5 @@ read-only commands already run immediately), passing a step's output to later st
 ## Next
 
 - Step outputs passed to later steps (e.g. id of a category just created).
-- Phase 6 sub-agents, 7 security hardening, 8 integration tests and rollout docs.
+- Phase 7 security hardening, 8 integration tests and rollout docs.
 - Pre-existing failing tests on main (not from this work): `test_premium_price_copy`, `test_site_hero_orb::test_every_page_links_the_same_versioned_assets`; CI `test` is red on main because of them.

@@ -408,6 +408,15 @@ class AnimeBotDiscord(commands.Bot):
         await self.load_extension("discord_bot.cogs.data_retention")
         # Loaded last: if the 100-command cap is hit, only /mydata is skipped (it catches CommandLimitReached).
         await self.load_extension("discord_bot.cogs.my_data")
+        # AI skills / agents / memory / scheduler (/aiskills /aiagents /aimemory /aijobs). Loaded after everything else and each one
+        # on its own: Discord caps a bot at 100 global commands, so if the cap is hit only the LAST of these are skipped (logged),
+        # nothing above is displaced and startup never fails because of them.
+        for _ai_ext in ("ai_skills", "ai_agents", "ai_memory", "ai_jobs"):
+            try:
+                await self.load_extension(f"discord_bot.cogs.{_ai_ext}")
+            except Exception as e:
+                logger.warning("[ai] %s not loaded (%s) -- likely the 100-command cap; the rest of the bot is unaffected",
+                               _ai_ext, e.__class__.__name__)
 
         self.join_dm_reminder_loop.start()
         self.payment_reminder_loop.start()
