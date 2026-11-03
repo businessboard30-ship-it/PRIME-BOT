@@ -402,7 +402,7 @@ class AnimeBotDiscord(commands.Bot):
         # solely to the main project owner (see payments_manual.py's
         # discord_clone carve-out in _resolve_approvers).
         await self.load_extension("discord_bot.cogs.clone_admin")
-        await self.load_extension("discord_bot.cogs.clone_transfer")     # /admin clones transfer|status (owner)
+        await self.load_extension("discord_bot.cogs.clone_transfer")     # /admin clonedata transfer|status (owner)
         await self.load_extension("discord_bot.cogs.admin_panel")
         await self.load_extension("discord_bot.cogs.lookup")
         await self.load_extension("discord_bot.cogs._cleanup_giftboost_mentions")
@@ -719,8 +719,8 @@ class AnimeBotDiscord(commands.Bot):
         # clone link), silently carry that data over onto this clone_id
         # before anything else runs — see migrate_guild_data_if_orphaned's
         # docstring. Guild-triggered only, no owner action needed.
-        # GATED (modules/clone_transfer.py): moves data only if the owner confirmed old -> new with /admin clones transfer AND the old
-        # clone is not live. Otherwise it logs a "blocked" row (shown by /admin clones status) and moves nothing.
+        # GATED (modules/clone_transfer.py): moves data only if the owner confirmed old -> new with /admin clonedata transfer AND the old
+        # clone is not live. Otherwise it logs a "blocked" row (shown by /admin clonedata status) and moves nothing.
         migrated_from = await clone_transfer.auto_migrate_on_join(guild.id, self.clone_id)
         if migrated_from:
             logger.info(f"[join] migrated guild {guild.id} data from clone(s) {migrated_from} to #{self.clone_id}")
