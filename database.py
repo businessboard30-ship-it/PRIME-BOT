@@ -8528,6 +8528,17 @@ class Database:
             )
             return result is not None and "DELETE 0" not in result
 
+    async def repoint_reaction_role_message(self, guild_id: int, clone_id: Optional[int], old_message_id: int,
+                                             new_message_id: int, new_channel_id: int) -> int:
+        """After a panel was re-posted by a different bot (see /reactionrole repost): point its role rows at the new message."""
+        pool = await get_pool()
+        async with pool.acquire() as conn:
+            res = await conn.execute(
+                "UPDATE discord_reaction_roles SET message_id = $4, channel_id = $5 "
+                "WHERE guild_id = $1 AND clone_id IS NOT DISTINCT FROM $2 AND message_id = $3",
+                guild_id, clone_id, old_message_id, new_message_id, new_channel_id)
+        return int((res or "UPDATE 0").split()[-1])
+
     async def get_reaction_roles_for_message(self, message_id: int) -> List[Dict]:
         pool = await get_pool()
         async with pool.acquire() as conn:

@@ -174,3 +174,6 @@ Audit result per plan bullet, and what changed:
 - Step outputs passed to later steps (e.g. id of a category just created).
 - Phase 8 is done (see `docs/AI_ROLLOUT.md` for rollout, limits, recovery, rollback and the day-1 smoke test). Remaining: run that smoke test in a real server.
 - Pre-existing failing tests on main (not from this work): `test_premium_price_copy`, `test_site_hero_orb::test_every_page_links_the_same_versioned_assets`; CI `test` is red on main because of them.
+
+## Clone replacement (separate from the AI phases)
+See `docs/CLONE_TRANSFER.md` (`/admin clones transfer|status`, `/reactionrole repost`, gated join-time migration). Next planned: *retirement mode* (the old clone answers every interaction with only the replacer's invite link and a reason).
