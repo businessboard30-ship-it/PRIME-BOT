@@ -130,6 +130,26 @@ warning is logged) and nothing earlier is displaced. After deploy check the log 
 free slots (as was done for archive/heist) or fold them under an existing group.
 - After deploy: `/aiagents enable research_assistant`, then ask the AI "how is the server doing this week?" (should delegate), `/aiagents history`.
 
+## Phase 7 -- security hardening (built)
+
+Audit result per plan bullet, and what changed:
+- **Untrusted content = data.** Already in place and now locked by regression tests: fetched web pages and attached files never get command tools;
+  other bots/webhooks are dropped from context; long-term memory is fenced; the AI cannot run its own control surfaces (skills/agents/verify...).
+  NEW gap closed (`modules/ai_trust.py`): in reply/mention chat, other people's recent channel messages and reply-chain messages used to sit in the
+  model's context as plain "user" turns with command tools on (a stranger could plant "run X" and wait for an admin to reply to the bot). Now command
+  tools are built ONLY when every human message in the context was written by the asker; unknown authorship fails closed. `/aichat` (no ambient
+  context) is unaffected. Trade-off: in a busy channel, replying to the bot answers in chat only -- use `/aichat` (or a fresh @mention with no foreign
+  context) to run commands. One-line switch: `ai_trust.REPLY_TOOLS_REQUIRE_OWN_CONTEXT = False`.
+- **Secrets** (`modules/ai_redact.py`): credential shapes (Discord/GitHub/Groq/OpenAI-style/AWS/Stripe/Slack keys, URL passwords, Bearer tokens,
+  Fernet keys) AND the exact values of this bot's own secret env vars are replaced by `[redacted]` in what a person sends to the AI (so it is not sent
+  to the model provider or saved in chat history), in what the AI replies, and in agent task text. Never raises.
+- **Permissions/hierarchy at execution time, daily caps, Confirm, bounded retries/timeouts:** audited, unchanged (ai_command_guard + ai_plan; agents add a
+  45 s timeout). `ai_command_log` already stores no arguments, so nothing sensitive is kept there.
+- **Audit:** admin scam lookups (not a slash command, so the guard never saw them) now write an `ai_command_log` row, allowed or denied.
+- Tests: `tests/unit/test_ai_hardening.py` (21). A repo scan test fails if a credential-shaped string is committed to source.
+- Known limits: redaction is pattern-based (a secret in an unusual shape can slip through); prompt-injection defence for plain chat text is
+  structural (tools withheld, permissions rechecked, Confirm) and not a guarantee about what the model says.
+
 ## AI scam lookup (built, outside the numbered phases)
 
 - Admin asks the AI in chat with a Discord user id ("is 123456789012345678 a scammer?"); the bot replies PUBLICLY with an evidence embed.
@@ -152,5 +172,5 @@ free slots (as was done for archive/heist) or fold them under an existing group.
 ## Next
 
 - Step outputs passed to later steps (e.g. id of a category just created).
-- Phase 7 security hardening, 8 integration tests and rollout docs.
+- Phase 8 integration tests and rollout docs.
 - Pre-existing failing tests on main (not from this work): `test_premium_price_copy`, `test_site_hero_orb::test_every_page_links_the_same_versioned_assets`; CI `test` is red on main because of them.

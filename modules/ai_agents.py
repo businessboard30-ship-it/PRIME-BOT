@@ -112,7 +112,8 @@ def clean_task(raw) -> Tuple[Optional[str], str]:
     t = re.sub(r"\s+", " ", _CONTROL.sub(" ", str(v))).strip()
     if not t:
         return None, "Missing `task`."
-    return t[:MAX_TASK_CHARS], ""
+    from modules.ai_redact import redact
+    return redact(t[:MAX_TASK_CHARS]), ""
 
 
 def restricted_tools(agent: Agent, tools: List[dict]) -> List[dict]:

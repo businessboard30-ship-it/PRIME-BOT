@@ -52,7 +52,7 @@ from discord.ext import commands
 from database import db
 import re
 
-from modules import leveling, ai_prefs, ai_voice, scam_check, ai_memory, ai_skills, ai_scam_lookup, ai_agents
+from modules import leveling, ai_prefs, ai_voice, scam_check, ai_memory, ai_skills, ai_scam_lookup, ai_agents, ai_trust
 from modules.ai_features import (
     ai_chat, generate_image, check_ai_usage_limit, get_user_ai_usage, AI_USAGE_CAPS,
     get_or_create_active_session, mentions_other_bot, OTHER_BOT_REFUSAL,
@@ -787,11 +787,21 @@ class AIToolsCog(commands.Cog):
             logger.debug("[ai_agents] couldn't add agent tools", exc_info=True)
         return tools
 
+    async def _audit_lookup(self, guild, ctx, args, *, allowed: bool, reason: Optional[str] = None) -> None:
+        """Audit row for the admin-only scam lookup (it is not a slash command, so the command guard never logs it)."""
+        try:
+            from database import db
+            await db.log_ai_command(getattr(guild, "id", None), ctx.user.id, ai_scam_lookup.TOOL_NAME, None,
+                                    allowed=allowed, denial_reason=reason)
+        except Exception:
+            logger.debug("[ai_scam_lookup] audit row failed", exc_info=True)
+
     async def _handle_scam_lookup(self, ctx, args: dict) -> None:
         """Admin-only, public. Permission is re-checked HERE (offering the tool is not the gate). The report is built from the
         database by modules/ai_scam_lookup.py -- the model never writes the evidence."""
         guild = getattr(ctx, "guild", None)
         if guild is None or not getattr(ctx.permissions, ai_scam_lookup.REQUIRED_PERMISSION, False):
+            await self._audit_lookup(guild, ctx, args, allowed=False, reason="missing admin permission")
             logger.info("[ai_scam_lookup] refused for %s (not %s)", getattr(ctx.user, "id", "?"), ai_scam_lookup.REQUIRED_PERMISSION)
             await ctx.followup.send("\u26d4 Only server admins can ask me for scam evidence.", ephemeral=True)
             return
@@ -799,6 +809,7 @@ class AIToolsCog(commands.Cog):
         if target_id is None:
             await ctx.followup.send("Give me the user's Discord ID (the long number) or an @mention.", ephemeral=True)
             return
+        await self._audit_lookup(guild, ctx, {"user_id": target_id}, allowed=True)
         wait = ai_scam_lookup.on_cooldown(ctx.user.id)
         if wait:
             await ctx.followup.send(f"Please wait {wait}s before another scam lookup.", ephemeral=True)
@@ -1549,6 +1560,7 @@ class AIToolsCog(commands.Cog):
         # de-dup against chain_ids to avoid repeating messages already
         # in the reply chain.
         channel_ctx: list[dict] = []
+        human_authors: set = set()      # who wrote the human turns (ai_trust: tools only if it is just the asker)
         root = chain[0] if chain else replied
         try:
             async for m in replied.channel.history(
@@ -1560,17 +1572,26 @@ class AIToolsCog(commands.Cog):
                 c = self._as_chat_message(m)
                 if c:
                     channel_ctx.append(c)
+                    if c["role"] == "user":
+                        human_authors.add(m.author.id)
                 if len(channel_ctx) >= self.CHANNEL_CONTEXT_MAX:
                     break
         except (discord.Forbidden, discord.HTTPException):
             pass
         channel_ctx.reverse()
 
-        chain_msgs = [c for c in (self._as_chat_message(m) for m in chain) if c]
-        return channel_ctx + chain_msgs
+        chain_msgs = []
+        for m in chain:
+            c = self._as_chat_message(m)
+            if c:
+                chain_msgs.append(c)
+                if c["role"] == "user":
+                    human_authors.add(m.author.id)
+        return ai_trust.ChatHistory(channel_ctx + chain_msgs, human_authors)
 
     async def _dm_context(self, message: discord.Message) -> list:
         out = []
+        human_authors: set = set()
         try:
             async for m in message.channel.history(limit=self.DM_CONTEXT_MAX, before=message):
                 # Skip other bots in DM history (shouldn't normally appear,
@@ -1580,10 +1601,12 @@ class AIToolsCog(commands.Cog):
                 c = self._as_chat_message(m)
                 if c:
                     out.append(c)
+                    if c["role"] == "user":
+                        human_authors.add(m.author.id)
         except (discord.Forbidden, discord.HTTPException):
             return []
         out.reverse()
-        return out
+        return ai_trust.ChatHistory(out, human_authors)
 
     async def _capabilities_view(self, user, guild, source):
         """The "what can you do?" panel (Components V2) for THIS asker. `source` is the interaction (/aichat) or the
@@ -1620,7 +1643,10 @@ class AIToolsCog(commands.Cog):
         perms = message.channel.permissions_for(message.author) if guild else None
 
         proxy = ProxyInteraction(message, self.bot) if guild else None
-        tools = await self._build_command_tools(proxy) if proxy is not None else []
+        trusted = ai_trust.tools_allowed(history, message.author.id)      # Phase 7: other people's text never drives commands
+        if not trusted:
+            logger.info("[ai_trust] command tools withheld for %s: the context holds other people's messages", message.author.id)
+        tools = await self._build_command_tools(proxy) if (proxy is not None and trusted) else []
         tools = select_tools_multi(tools, content) if tools else []     # best tools for EACH part of the sentence
         runnable = runnable_labels([t["function"]["name"] for t in tools]) if tools else None
         command_context = await self._command_context(content, user_id, perms, guild, runnable=runnable)
