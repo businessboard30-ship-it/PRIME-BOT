@@ -696,6 +696,8 @@ async def ai_chat(user_id: int, message: str, is_anime_question: bool = False,
     """
     ai_chat.last_error = None
     try:
+        from modules.ai_redact import redact as _redact
+        message = _redact(message)        # Phase 7: a pasted credential is never sent to the model or saved in history
         if not GROQ_API_KEYS:
             ai_chat.last_error = "GROQ_API_KEY is not set in the environment."
             return "⚠️ AI service not configured. Admin needs to set GROQ_API_KEY."
@@ -906,6 +908,7 @@ async def ai_chat(user_id: int, message: str, is_anime_question: bool = False,
             response_text = render_cat_image(response_text)
             response_text = scrub_raw_dashboard_url(response_text)
             response_text = scrub_xp_promo(response_text)
+            response_text = _redact(response_text)      # Phase 7: nothing credential-shaped leaves in a reply
             if mentions_other_bot(response_text):
                 response_text = OTHER_BOT_REFUSAL
                 want_voice = False
