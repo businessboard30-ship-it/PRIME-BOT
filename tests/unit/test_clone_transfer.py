@@ -70,7 +70,7 @@ def test_wiring():
     assert "db.migrate_guild_data_if_orphaned(guild.id" not in bot                      # the unconditional migration is gone
     assert bot.index("cogs.clone_admin") < bot.index("cogs.clone_transfer")             # /admin exists before we mount under it
     cog = (ROOT / "discord_bot/cogs/clone_transfer.py").read_text()
-    assert cog.count("if not _owner(interaction)") == 2 and 'subgroup="clones"' in cog
+    assert cog.count("if not _owner(interaction)") == 2 and 'subgroup="clonedata"' in cog
     assert "async def repost" in (ROOT / "discord_bot/cogs/reaction_roles.py").read_text()
 
 
@@ -358,3 +358,14 @@ def test_repost_replaces_another_bots_panel_and_leaves_its_own_alone(monkeypatch
     assert len(sent) == 1 and sent[0][1] == 2 and sent[0][0].title == "Pick roles"        # same embed, both role buttons
     assert repointed == [(5, 2, 1000, 7000, 50)] and deleted == [1]
     assert "Re-posted **1**" in out[0] and "1 were already mine" in out[0]
+
+
+def test_clone_transfer_subgroup_never_collides_with_an_existing_admin_command():
+    """Startup crash guard: /admin clones is a plain command in admin.py, so a subgroup with that name makes
+    _admin_mount._subgroup raise at load time and every bot dies. The transfer group must use its own name."""
+    import re
+    from pathlib import Path
+    root = Path(__file__).resolve().parents[2]
+    plain = set(re.findall(r'@admin\.command\(name="([\w-]+)"', (root / "discord_bot/cogs/admin.py").read_text()))
+    groups = set(re.findall(r'subgroup="([\w-]+)"', "".join(p.read_text() for p in (root / "discord_bot/cogs").glob("*.py"))))
+    assert plain and not (plain & groups), plain & groups

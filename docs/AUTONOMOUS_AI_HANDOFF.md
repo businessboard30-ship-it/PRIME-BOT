@@ -176,4 +176,4 @@ Audit result per plan bullet, and what changed:
 - Pre-existing failing tests on main (not from this work): `test_premium_price_copy`, `test_site_hero_orb::test_every_page_links_the_same_versioned_assets`; CI `test` is red on main because of them.
 
 ## Clone replacement (separate from the AI phases)
-See `docs/CLONE_TRANSFER.md` (`/admin clones transfer|status`, `/reactionrole repost`, gated join-time migration). Next planned: *retirement mode* (the old clone answers every interaction with only the replacer's invite link and a reason).
+See `docs/CLONE_TRANSFER.md` (`/admin clonedata transfer|status`, `/reactionrole repost`, gated join-time migration). Next planned: *retirement mode* (the old clone answers every interaction with only the replacer's invite link and a reason).

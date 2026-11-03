@@ -9,7 +9,7 @@ Safety rules (all tested):
   * BLOCKER: a source clone that is still LIVE (active and a heartbeat within 20 minutes) can never be migrated from. Two live bots
     in one server would be a real conflict, not a replacement. Shut it down first.
   * CONFIRMATION: when the source is down / inactive / removed, the owner must confirm the pair (old -> new) once with
-    `/admin clones transfer`. Until that is done nothing is moved, not even automatically when the new clone joins a server.
+    `/admin clonedata transfer`. Until that is done nothing is moved, not even automatically when the new clone joins a server.
     After the one-time confirmation, servers where the new clone newly joins are carried over automatically.
   * Tables are DISCOVERED from the database (every table with guild_id + clone_id) so nothing is forgotten, except an explicit
     deny-list: billing/entitlements, public listings/bump network, tokens, per-bot registry rows, caches, retired features.

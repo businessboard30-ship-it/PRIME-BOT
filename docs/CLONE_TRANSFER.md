@@ -1,15 +1,15 @@
 # Replacing a clone (moving a server's data from clone A to clone B)
 
-Per-server data is keyed by (server, clone), so a replacement clone starts empty. `/admin clones transfer` moves it.
+Per-server data is keyed by (server, clone), so a replacement clone starts empty. `/admin clonedata transfer` moves it.
 
 ## Steps
 1. Invite clone B to the servers. (Until you approve, nothing is moved: B sees empty settings.)
 2. **Shut clone A down** (set it inactive / stop it). **Blocker:** while A is online (heartbeat within 20 min) the command refuses, and so does
    the automatic step. Two live bots in one server would be a conflict, not a replacement.
-3. Run `/admin clones transfer source_clone_id:A target_clone_id:B`. It shows how many servers/rows/tables will move and what is never moved,
+3. Run `/admin clonedata transfer source_clone_id:A target_clone_id:B`. It shows how many servers/rows/tables will move and what is never moved,
    then asks you to **Confirm**. The blocker is re-checked at the moment you press Confirm.
 4. Confirming (a) moves every server where B is present, and (b) approves the pair A -> B **once**: servers B joins later are carried over
-   automatically. `/admin clones status` lists approvals, servers waiting for approval (data found under another clone, nothing moved) and
+   automatically. `/admin clonedata status` lists approvals, servers waiting for approval (data found under another clone, nothing moved) and
    recent runs, and can revoke an approval.
 5. In each server, an admin runs `/reactionrole repost` on B: Discord buttons belong to the bot that posted them, so old panels are dead and another
    bot cannot edit them. The command posts a copy from B (same embed and roles) and points the saved roles at it. Other panels (tickets,

@@ -1,6 +1,6 @@
 # path: discord_bot/cogs/clone_transfer.py
 
-"""/admin clones transfer | status  (owner only, DISCORD_CLONE_ADMIN_IDS). Mounted under /admin: one shared slash slot.
+"""/admin clonedata transfer | status  (owner only, DISCORD_CLONE_ADMIN_IDS). Mounted under /admin: one shared slash slot.
 Rules and the safety model live in modules/clone_transfer.py."""
 
 import logging
@@ -66,7 +66,7 @@ class _ConfirmView(discord.ui.View):
         moved, skipped, failed, tables = ct.summarize(results)
         lines = [f"\u2705 **Done.** Clone #{self.old} \u2192 #{self.new}: **{moved}** rows moved across **{len(results)}** servers"
                  f"{f', {skipped} skipped (the new clone already had them)' if skipped else ''}"
-                 f"{f', {failed} table errors (see /admin clones status)' if failed else ''}.",
+                 f"{f', {failed} table errors (see /admin clonedata status)' if failed else ''}.",
                  f"This pair is now approved: when #{self.new} newly joins a server that still has #{self.old} data, it moves automatically."]
         todo = ct.panel_checklist(tables)
         if todo:
@@ -84,9 +84,9 @@ class CloneTransferCog(commands.Cog):
         self.bot = bot
 
     async def cog_load(self):
-        mount_admin_command(self.bot, self.transfer, name="transfer", subgroup="clones",
+        mount_admin_command(self.bot, self.transfer, name="transfer", subgroup="clonedata",
                             description="[Owner] Move a retired clone's server data to its replacement clone")
-        mount_admin_command(self.bot, self.status, name="status", subgroup="clones",
+        mount_admin_command(self.bot, self.status, name="status", subgroup="clonedata",
                             description="[Owner] Approved transfers, servers waiting, recent runs")
 
     @app_commands.describe(source_clone_id="The OLD clone being shut down", target_clone_id="The NEW clone that replaces it")
@@ -127,7 +127,7 @@ class CloneTransferCog(commands.Cog):
         embed.add_field(name="Never moved (by design)", value="\n".join(f"\u2022 {w}: {len(t)} tables" for w, t in denied.items())[:1000] or "-", inline=False)
         embed.add_field(name="Rules", value="If the new clone already has a row, **its row wins** and the old one is skipped. "
                                             "Confirming approves this pair for good: later servers move automatically. "
-                                            "Revoke any time in `/admin clones status`.", inline=False)
+                                            "Revoke any time in `/admin clonedata status`.", inline=False)
         await interaction.followup.send(embed=embed, ephemeral=True,
                                         view=_ConfirmView(self, interaction.user.id, source_clone_id, target_clone_id, tables, guilds))
 
