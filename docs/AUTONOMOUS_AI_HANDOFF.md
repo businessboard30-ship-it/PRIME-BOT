@@ -172,5 +172,5 @@ Audit result per plan bullet, and what changed:
 ## Next
 
 - Step outputs passed to later steps (e.g. id of a category just created).
-- Phase 8 integration tests and rollout docs.
+- Phase 8 is done (see `docs/AI_ROLLOUT.md` for rollout, limits, recovery, rollback and the day-1 smoke test). Remaining: run that smoke test in a real server.
 - Pre-existing failing tests on main (not from this work): `test_premium_price_copy`, `test_site_hero_orb::test_every_page_links_the_same_versioned_assets`; CI `test` is red on main because of them.
