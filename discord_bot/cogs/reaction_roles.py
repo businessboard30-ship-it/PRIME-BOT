@@ -320,6 +320,46 @@ class ReactionRolesCog(GuildOnlyCog):
 
         await interaction.followup.send(f"✅ Removed **{role.name}** from the panel.", ephemeral=True)
 
+    @group.command(name="repost", description="Re-post panels an earlier bot posted (after a bot swap) so their buttons work again")
+    async def repost(self, interaction: discord.Interaction):
+        """After a clone swap the old panels still show, but their buttons belong to the OLD bot and a different bot cannot edit them.
+        This posts a fresh copy from THIS bot (same embed, same roles) and points the saved roles at it."""
+        if not _require_perm(interaction, "manage_roles"):
+            await _deny(interaction, "Manage Roles")
+            return
+        await interaction.response.defer(ephemeral=True)
+        me = self.bot.user.id
+        panels = await db.get_reaction_role_panels_for_guild(interaction.guild_id, clone_id=_clone_id_of(interaction))
+        done = skipped = failed = 0
+        for p in panels:
+            old = await self._find_panel_message(interaction.guild, p["message_id"])
+            if old is not None and old.author.id == me:
+                skipped += 1                                  # already this bot's own panel
+                continue
+            channel = old.channel if old is not None else interaction.guild.get_channel(p["channel_id"])
+            if channel is None:
+                failed += 1
+                continue
+            embed = (discord.Embed.from_dict(old.embeds[0].to_dict()) if old is not None and old.embeds
+                     else discord.Embed(title="Self-assignable roles", description="Tap a button below to get a role.",
+                                        color=discord.Color.blurple()))
+            try:
+                new = await channel.send(embed=embed, view=ReactionRoleView(p["roles"]))
+            except (discord.Forbidden, discord.HTTPException):
+                failed += 1
+                continue
+            await db.repoint_reaction_role_message(interaction.guild_id, _clone_id_of(interaction), p["message_id"], new.id, channel.id)
+            if old is not None:
+                try:
+                    await old.delete()                        # best effort: needs Manage Messages for another bot's message
+                except (discord.Forbidden, discord.HTTPException):
+                    pass
+            done += 1
+        await interaction.followup.send(
+            f"\u2705 Re-posted **{done}** panel(s)" + (f", {skipped} were already mine" if skipped else "") +
+            (f", {failed} could not be posted (check my permissions in that channel)" if failed else "") +
+            (". If an old copy is still visible, delete it by hand." if done else "."), ephemeral=True)
+
     @group.command(name="list", description="List every reaction-role panel in this server")
     async def list_panels(self, interaction: discord.Interaction):
         await interaction.response.defer(ephemeral=True)

@@ -39,6 +39,7 @@ SUBGROUP_DESCRIPTIONS = {
     "payments": "[Admin] Manual payment review and routing",
     "broadcast": "[Owner] DM announcements and delivery status",
     "bump": "[Owner] Controls for the bump network",
+    "clones": "[Owner] Clone replacement and server data transfer",
 }
 
 
