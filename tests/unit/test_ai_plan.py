@@ -247,3 +247,64 @@ def test_budgets_scale_but_stay_bounded():
     assert ai_plan.attempt_budget(10 ** 6) == 2 * ai_plan.MAX_STEPS
     assert ai_plan.time_budget(3) == ai_plan.MAX_PLAN_SECONDS
     assert ai_plan.MAX_PLAN_SECONDS < ai_plan.time_budget(25) <= ai_plan.MAX_PLAN_SECONDS_CAP < 900
+
+
+# ── Phase 2: dependency-aware steps ─────────────────────────────────────────
+def dmake(spec):
+    """spec: [(key, depends_on_or_None)] -> PlanRun"""
+    return ai_plan.PlanRun.from_calls([{"name": f"c{i}", "label": f"/c{i}", "args": {"i": i}, "key": k, "depends_on": d}
+                                       for i, (k, d) in enumerate(spec, 1)])
+
+
+def fails(*bad):
+    async def ex(step):
+        if step.index in bad:
+            raise ai_plan.StepFailed("nope")
+    return ex
+
+
+def test_independent_steps_keep_going_after_a_failure():
+    p = run(run_plan(dmake([("1", []), ("2", []), ("3", []), ("4", [])]), fails(2), sleep=_nosleep))
+    assert [s.status for s in p.steps] == [DONE, FAILED, DONE, DONE]
+
+
+def test_only_dependents_are_skipped_including_transitively():
+    p = run(run_plan(dmake([("1", []), ("2", ["1"]), ("3", ["2"]), ("4", []), ("5", ["4"])]), fails(1), sleep=_nosleep))
+    assert [s.status for s in p.steps] == [FAILED, SKIPPED, SKIPPED, DONE, DONE]
+
+
+def test_unknown_dependencies_stay_fail_fast_like_before():
+    p = run(run_plan(dmake([("1", []), ("2", None), ("3", None), ("4", [])]), fails(1), sleep=_nosleep))
+    assert [s.status for s in p.steps] == [FAILED, SKIPPED, SKIPPED, DONE]       # step 4 declared itself independent
+
+
+def test_retry_reruns_failed_and_skipped_only_then_dependents_follow():
+    p = dmake([("1", []), ("2", ["1"]), ("3", [])])
+    ran = []
+
+    async def ex(step):
+        ran.append(step.index)
+        if step.index == 1 and ran.count(1) == 1:
+            raise ai_plan.StepFailed("first time")
+    run(run_plan(p, ex, sleep=_nosleep))
+    assert [s.status for s in p.steps] == [FAILED, SKIPPED, DONE]
+    assert p.prepare_retry()
+    run(run_plan(p, ex, sleep=_nosleep))
+    assert [s.status for s in p.steps] == [DONE, DONE, DONE] and ran.count(3) == 1       # the done step never ran twice
+
+
+def test_link_dependencies_is_conservative():
+    out = ai_plan.link_dependencies(
+        [("1", []), ("2", ["1"]), ("3", ["9"]), ("4", ["7"]), ("5", ["8"]), ("6", None)],
+        dropped={"9"}, satisfied={"7"}, plan_keys={"1", "2", "3", "4", "5", "6"})
+    assert out[0] == ([], False)
+    assert out[1] == (["1"], False)
+    assert out[2] == ([], True)                 # needs a refused task: pre-skipped
+    assert out[3] == ([], False)                # needs a read-only step that already ran: satisfied
+    assert out[4] == (None, False)              # needs a task we can't place anywhere: unknown -> fail-fast
+    assert out[5] == (None, False)
+
+
+def test_unplaceable_dependency_becomes_unknown_not_satisfied():
+    out = ai_plan.link_dependencies([("1", ["42"])], dropped=set(), satisfied=set(), plan_keys={"1"})
+    assert out == [(None, False)]               # never 'fine': it falls back to fail-fast
