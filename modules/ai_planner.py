@@ -148,6 +148,16 @@ def unresolved(tasks: List[Dict], calls_per_chunk: List[Tuple[List[Dict], int]])
     return out
 
 
+UNRUN_NOTICE = ("\u26a0\ufe0f I didn't actually run anything -- I couldn't turn that into commands, so **nothing was created or changed**. "
+                "Try again in smaller parts (about 5-8 actions at a time), or tell me which part to start with.")
+
+
+def claims_unrun_actions(text: str) -> bool:
+    """True when a plain-text model reply LISTS finished actions (two or more check-marked lines) -- used only when command
+    tools were on offer but no command ran, so that reply is an invention and must not be shown as if it were a result."""
+    return sum(1 for line in str(text or "").splitlines() if line.strip().startswith(("\u2705", "\u2714")) ) >= 2
+
+
 async def decompose(message: str) -> Tuple[List[Dict], Dict]:
     """The single no-tools model call. ([], info) when the model is unreachable or answered something unusable, so the
     caller falls back to the normal path."""

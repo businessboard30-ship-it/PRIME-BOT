@@ -1508,6 +1508,8 @@ class AIToolsCog(commands.Cog):
                                     command_context=command_context, choice_depth=choice_depth)
             return "", warning, session_id
 
+        if tools and ai_planner.claims_unrun_actions(str(response)):
+            response = ai_planner.UNRUN_NOTICE             # no command ran: never show an invented "done" list as a result
         prefix = f"⚠️ {warning}\n\n" if warning else ""
         out = f"{prefix}{response}"
         if getattr(response, "voice", False):
@@ -1896,6 +1898,11 @@ class AIToolsCog(commands.Cog):
         if not trusted:
             logger.info("[ai_trust] command tools withheld for %s: the context holds other people's messages", message.author.id)
         tools = await self._build_command_tools(proxy) if (proxy is not None and trusted) else []
+        if tools and ai_planner.should_plan(content):         # a many-part request: same planner as /aichat (chunked, guarded, ONE confirm)
+            planned = await self._plan_and_resolve(user_id, content, tools, proxy)
+            if planned:
+                await self._run_tool_calls(proxy, planned, real_interaction=False, origin_message=content)
+                return "", None
         tools = select_tools_multi(tools, content) if tools else []     # best tools for EACH part of the sentence
         runnable = runnable_labels([t["function"]["name"] for t in tools]) if tools else None
         command_context = await self._command_context(content, user_id, perms, guild, runnable=runnable)
@@ -1917,6 +1924,8 @@ class AIToolsCog(commands.Cog):
                                     choice_depth=0, real_interaction=False,
                                     ai_kwargs={"guild_id": guild_id, "kind": "reply"})
             return "", None
+        if tools and response and ai_planner.claims_unrun_actions(str(response)):
+            return ai_planner.UNRUN_NOTICE, None             # no command ran: never show an invented "done" list as a result
         return (response or "AI service error. Try again later."), None
 
     @commands.Cog.listener("on_message")
@@ -1929,7 +1938,7 @@ class AIToolsCog(commands.Cog):
         if message.author.bot:
             return
         content = (message.content or "").strip()
-        if (not content and not message.attachments) or len(content) > 1000 or content.startswith(("!", "/")):
+        if (not content and not message.attachments) or len(content) > MAX_AICHAT_CHARS or content.startswith(("!", "/")):
             return
         # "reply to a message + @mention + scam shield" belongs to Scam Shield (discord_bot/cogs/scam_shield.py), always:
         # even if the replied-to message can't be loaded, this must never fall through to AI chat.
