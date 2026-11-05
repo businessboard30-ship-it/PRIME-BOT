@@ -15,7 +15,7 @@ from typing import List, Optional, Tuple
 
 import discord
 
-from modules import ai_bulk
+from modules import ai_bulk, ai_names
 from modules.text_styles import channel_name, plain_name, wrap_brackets
 
 logger = logging.getLogger(__name__)
@@ -152,12 +152,13 @@ def resolve_channels(guild: discord.Guild, names: List[str], current=None) -> di
             ch = guild.get_channel(int(m.group(1) or m.group(2)))
             hits = [ch] if isinstance(ch, _DELETABLE) else []
         else:
-            low = raw.strip().lstrip("#").lower()
+            label, hint = ai_names.split_kind_hint(raw)       # "category gallo" vs "#gallo": same name, different thing
+            low = label.strip().lstrip("#").lower()
             plain = plain_name(low).strip(" -")
             pool = [c for c in guild.channels if isinstance(c, _DELETABLE)]
-            hits = [c for c in pool if c.name.lower() == low]
-            if not hits:
-                hits = [c for c in pool if plain_name(c.name).lower().strip(" -") == plain]
+            hits = ai_names.narrow([c for c in pool if c.name.lower() == low], hint)
+            if len(hits) != 1:
+                hits = ai_names.narrow([c for c in pool if plain_name(c.name).lower().strip(" -") == plain], hint) or hits
         if not hits:
             out["missing"].append(raw)
         elif len(hits) > 1:
