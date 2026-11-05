@@ -356,6 +356,45 @@ class PlanRetryView(discord.ui.View):
         self.stop()
 
 
+class ArgUnresolved(Exception):
+    """A channel/role the person NAMED could not be matched to exactly one real one. The command is not run: dropping the argument
+    would make it fall back to a default (the channel they are typing in, or @everyone) and act on the wrong thing."""
+
+
+_NAMEABLE = {discord.ChannelType.text, discord.ChannelType.voice, discord.ChannelType.news,
+             discord.ChannelType.forum, discord.ChannelType.stage_voice}
+
+
+def find_channel_by_name(channels, label: str):
+    """(channel_or_None, candidates). Exact name, then exact plain name (fonts/brackets/emoji folded away), then ONE channel whose plain
+    name contains the words. More than one match -> (None, matches) so the caller can ask which one."""
+    from modules.text_styles import plain_name
+    want_raw = (label or "").strip().lstrip("#").lower()
+    want = plain_name(want_raw)
+    channels = list(channels)
+    exact = [c for c in channels if c.name.lower() == want_raw]
+    if len(exact) == 1:
+        return exact[0], exact
+    plain = [c for c in channels if want and plain_name(c.name) == want]
+    if len(plain) == 1:
+        return plain[0], plain
+    pool = plain or exact
+    if not pool and want:
+        pool = [c for c in channels if getattr(c, "type", None) in _NAMEABLE and want in plain_name(c.name)]
+        if len(pool) == 1:
+            return pool[0], pool
+    return None, pool
+
+
+def unresolved_message(kind: str, label: str, candidates) -> str:
+    base = f"I couldn't tell which {kind} you mean by **{label}**, so I didn't run that."
+    if candidates:
+        base += " Did you mean: " + ", ".join(f"<#{c.id}>" if kind == "channel" else f"`{c.name}`" for c in list(candidates)[:5]) + "? Mention it with # and try again."
+    else:
+        base += " Mention it with # (or use its exact name) and try again."
+    return base
+
+
 class AIToolsCog(commands.Cog):
     def __init__(self, bot: commands.Bot):
         self.bot = bot
@@ -1002,30 +1041,33 @@ class AIToolsCog(commands.Cog):
             elif type_name == "channel":
                 cid = self._extract_id(value)
                 obj = interaction.guild.get_channel(cid) if (cid and interaction.guild) else None
+                label = str(value).strip().lstrip("#")
                 if obj is None and cid is None and interaction.guild is not None:
-                    # The model often can't see a channel ID — accept "this"/"here"
-                    # (the channel the user is chatting in) or a plain #name.
-                    label = str(value).strip().lstrip("#").lower()
-                    if label in ("this", "here", "current", "this channel", "current channel"):
+                    # The model often can't see a channel ID: accept "this"/"here" (the channel the user is chatting in) or a #name.
+                    if label.lower() in ("this", "here", "current", "this channel", "current channel"):
                         obj = getattr(interaction, "channel", None)
                     else:
-                        obj = discord.utils.find(lambda c: c.name.lower() == label, interaction.guild.channels)
+                        obj, cands = find_channel_by_name(interaction.guild.channels, label)
                         if obj is None:
-                            from modules.text_styles import to_plain, strip_brackets
-                            def _plain(n):
-                                return strip_brackets(to_plain(n)).lower().strip(" -")
-                            want = _plain(label)
-                            hits = [c for c in interaction.guild.channels if _plain(c.name) == want]
-                            obj = hits[0] if len(hits) == 1 else None
+                            raise ArgUnresolved(unresolved_message("channel", f"#{label}", cands))
+                if obj is None and label and interaction.guild is not None:
+                    raise ArgUnresolved(unresolved_message("channel", f"#{label}", []))
                 if obj is not None:
                     resolved[key] = obj
             elif type_name == "role":
                 rid = self._extract_id(value)
                 obj = interaction.guild.get_role(rid) if (rid and interaction.guild) else None
+                label = str(value).strip().lstrip("@")
                 if obj is None and rid is None and interaction.guild is not None:
-                    label = str(value).strip().lstrip("@").lower()
-                    hits = [r for r in interaction.guild.roles if r.name.lower() == label]
-                    obj = hits[0] if len(hits) == 1 else None
+                    if label.lower() == "everyone":
+                        obj = interaction.guild.default_role
+                    else:
+                        hits = [r for r in interaction.guild.roles if r.name.lower() == label.lower()]
+                        obj = hits[0] if len(hits) == 1 else None
+                        if obj is None:
+                            raise ArgUnresolved(unresolved_message("role", f"@{label}", hits))
+                if obj is None and label and interaction.guild is not None:
+                    raise ArgUnresolved(unresolved_message("role", f"@{label}", []))
                 if obj is not None:
                     resolved[key] = obj
             else:
@@ -1140,7 +1182,11 @@ class AIToolsCog(commands.Cog):
             if problem:
                 notes.append(f"\u2022 {problem}")
                 continue
-            args = self._resolve_tool_args(ctx, command, raw)
+            try:
+                args = self._resolve_tool_args(ctx, command, raw)
+            except ArgUnresolved as exc:
+                notes.append(f"\u2022 {exc}")
+                continue
             if not needs_confirmation(spec, args):
                 immediate.append((name, raw))
                 continue
@@ -1233,7 +1279,11 @@ class AIToolsCog(commands.Cog):
         if problem:
             await ctx.followup.send(problem, ephemeral=True)
             return
-        resolved_args = self._resolve_tool_args(ctx, command, raw_args)
+        try:
+            resolved_args = self._resolve_tool_args(ctx, command, raw_args)
+        except ArgUnresolved as exc:
+            await ctx.followup.send(str(exc), ephemeral=True)
+            return
 
         async def _run(confirm_interaction: discord.Interaction):
             # confirm_interaction is always a real Interaction (the button
