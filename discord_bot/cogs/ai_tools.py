@@ -72,7 +72,7 @@ from modules.command_reference import build_context, is_command_question
 from modules.ai_capabilities import is_capabilities_question
 from modules.ai_command_guard import (
     get_qualifying_commands, resolve_and_check, execute_ai_command, _resolve_command,
-    AICommandDenied, send_cap_reached_prompt, AIConfirmView,
+    AICommandDenied, send_cap_reached_prompt, AIConfirmView, get_command_budget,
 )
 from modules.ai_command_allowlist import needs_confirmation, runnable_labels
 from modules import ai_choice, ai_tool_args
@@ -1230,6 +1230,20 @@ class AIToolsCog(commands.Cog):
                 line = text
             confirm.append((spec, name, args, line))
             confirm_meta.append((tid, call.get("depends_on_tasks")))
+
+        # Phase 4: check the WHOLE plan first (daily cap left, too many destructive steps) so it never runs halfway.
+        budget = (None, None, None)
+        try:
+            budget = await get_command_budget(ctx.user.id)
+        except Exception:
+            logger.debug("[ai_command] couldn't read the daily budget; the per-step cap check still applies", exc_info=True)
+        refusal = ai_plan.preflight(len(immediate) + len(confirm), [spec.command_path for (spec, *_r) in confirm],
+                                    used=budget[2], cap=budget[1], tier=budget[0] or "")
+        if refusal:
+            await ctx.followup.send(refusal, ephemeral=True)
+            if notes:
+                await ctx.followup.send("\n".join(notes)[:1900], ephemeral=True)
+            return
 
         for name, raw in immediate:                         # read-only commands: run now, one after another
             await self._dispatch_tool_call(ctx, name, raw, real_interaction=real_interaction)

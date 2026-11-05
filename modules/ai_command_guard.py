@@ -130,6 +130,12 @@ async def get_user_ai_command_usage(user_id: int) -> int:
     return count or 0
 
 
+async def get_command_budget(user_id: int) -> Tuple[str, int, int]:
+    """(tier, daily_cap, used_today) -- for checking a whole multi-step plan against what is left BEFORE it starts."""
+    tier = await _tier(user_id)
+    return tier, AI_COMMAND_DAILY_CAPS[tier], await get_user_ai_command_usage(user_id)
+
+
 async def check_ai_command_cap(user_id: int) -> Tuple[bool, Optional[str]]:
     """Returns (allowed, denial_reason). Call this BEFORE execute_ai_command
     (resolve_and_check already does) — never after, since the point is to
