@@ -109,3 +109,16 @@ def test_cog_never_raises_into_the_chat(monkeypatch):
     cog, ctx, _ = make_cog(monkeypatch, [], [])
     monkeypatch.setattr(at.ai_planner, "decompose", AsyncMock(side_effect=RuntimeError("boom")))
     assert run(cog._plan_and_resolve(1, "x", [tool("role_create")], ctx)) == []
+
+
+def test_cog_tags_calls_with_task_links_only_when_one_call_per_task(monkeypatch):
+    tasks = [{"id": 1, "task": "make category gallo", "depends_on": []},
+             {"id": 2, "task": "add channels in gallo", "depends_on": [1]}]
+    cog, ctx, _ = make_cog(monkeypatch, tasks, [{"tool_calls": [{"name": "channels_bulk_create", "arguments": {"kind": "category"}},
+                                                               {"name": "channels_bulk_create", "arguments": {"names": "a"}}]}])
+    calls = run(cog._plan_and_resolve(1, "x", [tool("channels_bulk_create")], ctx))
+    assert [(c["task_id"], c["depends_on_tasks"]) for c in calls] == [("1", []), ("2", ["1"])]
+
+    cog, ctx, _ = make_cog(monkeypatch, tasks, [{"tool_calls": [{"name": "channels_bulk_create", "arguments": {"kind": "category"}}]}])
+    calls = run(cog._plan_and_resolve(1, "x", [tool("channels_bulk_create")], ctx))
+    assert calls and "task_id" not in calls[0]                    # count mismatch: no link, so the runner stays fail-fast

@@ -1184,8 +1184,11 @@ class AIToolsCog(commands.Cog):
 
     async def _run_command_batch(self, ctx, picked: list, *, real_interaction: bool) -> None:
         immediate, confirm, notes = [], [], []
+        confirm_meta, dropped_tids, satisfied_tids = [], set(), set()      # Phase 2: task links of the planner's calls
         for call in picked:
             name = call["name"]
+            tid = call.get("task_id")
+            drop = (lambda: dropped_tids.add(tid)) if tid else (lambda: None)
             raw = self._clip_args(call.get("arguments") or {})
             spec, command, reason, cap_reached = await resolve_and_check(ctx, name, raw)
             if spec is None:
@@ -1193,21 +1196,27 @@ class AIToolsCog(commands.Cog):
                     await send_cap_reached_prompt(ctx)
                     break                                   # daily cap hit: nothing after this one can run either
                 notes.append(f"\u2022 `{name}` skipped: {reason}")
+                drop()
                 continue
             raw, problem = self._validate_tool_args(spec, command, raw)
             if problem:
                 notes.append(f"\u2022 {problem}")
+                drop()
                 continue
             try:
                 args = self._resolve_tool_args(ctx, command, raw)
             except ArgUnresolved as exc:
                 notes.append(f"\u2022 {exc}")
+                drop()
                 continue
             if not needs_confirmation(spec, args):
                 immediate.append((name, raw))
+                if tid:
+                    satisfied_tids.add(tid)
                 continue
             if ai_bulk.DEDUPER.is_duplicate(ctx.user.id, name, args):
                 notes.append(f"\u2022 `{name}` skipped: I already asked you to confirm exactly that.")
+                drop()
                 continue
             line = f"**/{spec.command_path}** `{args}`"
             hook = ((getattr(command.binding, "AI_CONFIRM_PROMPTS", None) or {}).get(name)
@@ -1216,17 +1225,25 @@ class AIToolsCog(commands.Cog):
                 ok, text = await getattr(command.binding, hook)(ctx, **args)
                 if not ok:
                     notes.append(f"\u2022 `{name}` skipped: {text}")
+                    drop()
                     continue
                 line = text
             confirm.append((spec, name, args, line))
+            confirm_meta.append((tid, call.get("depends_on_tasks")))
 
         for name, raw in immediate:                         # read-only commands: run now, one after another
             await self._dispatch_tool_call(ctx, name, raw, real_interaction=real_interaction)
             await asyncio.sleep(ai_bulk.BATCH_PAUSE_SECONDS)
 
         if confirm:
+            plan_keys = {t for t, _d in confirm_meta if t}
+            links = ai_plan.link_dependencies(confirm_meta, dropped_tids, satisfied_tids, plan_keys)
             plan = ai_plan.PlanRun.from_calls(
-                [{"name": name, "label": f"/{spec.command_path}", "args": args} for (spec, name, args, _l) in confirm])
+                [{"name": name, "label": f"/{spec.command_path}", "args": args, "key": meta[0] or "", "depends_on": link[0]}
+                 for (spec, name, args, _l), meta, link in zip(confirm, confirm_meta, links)])
+            for step, link in zip(plan.steps, links):
+                if link[1]:                                 # a task it needs never made it into the plan
+                    step.status, step.detail = ai_plan.SKIPPED, "a step it depends on was refused before it could run"
 
             async def _exec_for(ci: discord.Interaction):
                 async def _exec(step: ai_plan.PlanStep) -> None:
@@ -1254,7 +1271,8 @@ class AIToolsCog(commands.Cog):
             async def _run_all(ci: discord.Interaction):
                 await run_plan_with_progress(ci, plan, _exec_for)
 
-            lines = [f"{i}. {line}" for i, (_s, _n, _a, line) in enumerate(confirm, 1)]
+            lines = [f"{i}. {line}" + (" -- _will be skipped: a step it needs was refused_" if link[1] else "")
+                     for i, ((_s, _n, _a, line), link) in enumerate(zip(confirm, links), 1)]
             head = f"I'd run these {len(confirm)} commands, in order -- confirm?"
             pages = ai_bulk.chunk_lines([head] + lines)
             for page in pages[:-1]:                         # a long plan is shown IN FULL; nothing is cut off before Confirm
@@ -1448,7 +1466,10 @@ class AIToolsCog(commands.Cog):
                                          guild_id=getattr(interaction.guild, "id", None))
                     if isinstance(resp, dict):
                         got = [c for c in (resp.get("tool_calls") or []) if isinstance(c, dict) and c.get("name")]
-                calls.extend(got)
+                if len(got) == len(chunk):                  # one call per task: remember which task each came from (Phase 2)
+                    got = [{**c, "task_id": str(t["id"]), "depends_on_tasks": [str(d) for d in t["depends_on"]]}
+                           for c, t in zip(got, chunk)]
+                calls.extend(got)                           # any other count: no task link -> the runner stays fail-fast for them
                 per_chunk.append((chunk, len(got)))
                 earlier.extend(chunk)
             missed = ai_planner.unresolved(tasks, per_chunk)

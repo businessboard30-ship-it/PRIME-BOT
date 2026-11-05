@@ -71,6 +71,35 @@ def classify_http_status(status: Optional[int], retry_after: float = 0.0, text: 
     return StepFailed(("Discord rejected it: " + text).strip(": ")[:160] if text else "Discord rejected the request")
 
 
+def link_dependencies(entries: List[tuple], dropped: set, satisfied: set, plan_keys: set) -> List[tuple]:
+    """Turns each planned call's task-level dependencies into plan-level ones, safely.
+
+    entries: [(task_id_or_None, depends_on_task_ids_or_None)] for the calls that made it into the plan, in order.
+    dropped: task ids that never reached the plan (refused, bad arguments, ...): anything depending on them is skipped.
+    satisfied: task ids already done before the plan (read-only commands run up front).
+    plan_keys: task ids that are steps of this plan.
+    Returns [(depends_on_or_None, pre_skipped)]. A dependency we cannot place anywhere (e.g. its call was merged or expanded
+    into other steps) makes the step 'unknown' (None = fail-fast), never 'satisfied': guessing 'fine' could run a step
+    whose prerequisite silently failed."""
+    out = []
+    for _tid, deps in entries:
+        if deps is None:
+            out.append((None, False))
+            continue
+        keep, skip, unknown = [], False, False
+        for d in deps:
+            if d in dropped:
+                skip = True
+            elif d in plan_keys:
+                keep.append(d)
+            elif d in satisfied:
+                continue
+            else:
+                unknown = True
+        out.append((None if unknown else keep, skip))
+    return out
+
+
 @dataclass
 class PlanStep:
     index: int
@@ -80,6 +109,8 @@ class PlanStep:
     status: str = PENDING
     detail: str = ""
     attempts: int = 0
+    key: str = ""                                   # task id from the planner ("" = none)
+    depends_on: Optional[List[str]] = None          # keys of steps this one needs; None = unknown -> after ANY failure, skip (fail-fast)
 
     def fingerprint(self) -> str:
         return self.name + "|" + repr(sorted(self.args.items(), key=lambda kv: kv[0]))
@@ -97,7 +128,9 @@ class PlanRun:
     @classmethod
     def from_calls(cls, calls: List[dict]) -> "PlanRun":
         """calls: [{'name', 'label', 'args'}] in the order to run."""
-        return cls([PlanStep(i, c["name"], c.get("label") or c["name"], dict(c.get("args") or {}))
+        return cls([PlanStep(i, c["name"], c.get("label") or c["name"], dict(c.get("args") or {}),
+                             key=str(c.get("key") or ""),
+                             depends_on=None if c.get("depends_on") is None else [str(d) for d in c["depends_on"]])
                     for i, c in enumerate(calls, 1)])
 
     def count(self, status: str) -> int:
@@ -160,11 +193,17 @@ async def run_plan(run: PlanRun, executor: Callable[[PlanStep], Awaitable[None]]
         for step in run.steps[MAX_STEPS:]:
             if step.status == PENDING:
                 step.status, step.detail = SKIPPED, f"over the {MAX_STEPS}-step limit"
+    by_key = {st.key: st for st in run.steps if st.key}
     for step in run.steps:
         if step.status != PENDING:
             continue
-        if broken is not None:
-            step.status, step.detail = SKIPPED, f"not run, step {broken.index} failed first"
+        if step.depends_on is None:
+            blocker = broken                         # unknown prerequisites: after any failure, don't run half-blind
+        else:                                        # known prerequisites: only what it NEEDS decides; independent steps go on
+            blocker = next((by_key[k] for k in step.depends_on
+                            if k in by_key and by_key[k].status in (FAILED, SKIPPED)), None)
+        if blocker is not None:
+            step.status, step.detail = SKIPPED, f"not run, step {blocker.index} failed first"
             continue
         if run.stopped:
             continue                                # stays PENDING -> reported as "not reached"
