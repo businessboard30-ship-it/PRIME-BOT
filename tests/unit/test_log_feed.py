@@ -73,6 +73,6 @@ def test_find_existing_avoids_duplicate_channels():
 def test_auto_channel_is_private_main_bot_only_and_falls_back_to_a_dm():
     src = open("discord_bot/cogs/log_channel.py").read()
     assert "default_role: discord.PermissionOverwrite(view_channel=False)" in src       # hidden from everyone
-    assert 'getattr(self.bot, "clone_id", None) is not None' in src                      # clones never auto-create
+    assert 'getattr(self.bot, "clone_id", None) is None' in src and "_is_main()" in src  # clones never auto-create
     assert "log_feed.find_existing(guild.text_channels)" in src and "user.send(" in src
     assert "logger." not in src.split("async def flush")[1].split("async def setup")[0]
