@@ -320,18 +320,85 @@ class PlanCancelView(discord.ui.View):
 
 
 async def run_plan_with_progress(interaction: discord.Interaction, plan, exec_factory) -> None:
-    """Runs the plan with a live progress message + Cancel button, then replaces it with the final report."""
+    """Runs the plan with a live progress message + Cancel button, then replaces it with the final report.
+    Progress edits are throttled (a 20-step plan would otherwise hit Discord's message-edit rate limit); the final report is
+    never throttled and is never cut off (extra pages follow as new messages)."""
     plan.cancel.clear()
     cancel_view = PlanCancelView(interaction.user.id, plan)
     msg = await interaction.followup.send(plan.progress()[:1900], view=cancel_view, ephemeral=True, wait=True)
+    throttle = ai_plan.EditThrottle()
+    throttle.ready()                                    # the message just sent counts as the first edit
 
     async def _on_update(run) -> None:
-        await msg.edit(content=run.progress()[:1900], view=cancel_view)
+        if throttle.ready():
+            await msg.edit(content=run.progress()[:1900], view=cancel_view)
 
     await ai_plan.run_plan(plan, await exec_factory(interaction), pause=ai_bulk.BATCH_PAUSE_SECONDS, on_update=_on_update)
     cancel_view.stop()
+    pages = plan.report_pages()
     view = PlanRetryView(interaction.user.id, plan, exec_factory) if plan.retryable() else None
-    await msg.edit(content=plan.report()[:1900], view=view)
+    await msg.edit(content=pages[0], view=None if len(pages) > 1 else view)
+    for i, page in enumerate(pages[1:], 1):
+        await interaction.followup.send(page, view=view if i == len(pages) - 1 else discord.utils.MISSING, ephemeral=True)
+
+
+class PlanPreviewView(discord.ui.LayoutView):
+    """Components V2 preview of a plan BEFORE it runs: every step is listed (paged, nothing cut off) and nothing runs until
+    Confirm is pressed. Only the person who asked can use it."""
+    PAGE = 8
+
+    def __init__(self, owner_id: int, head: str, lines: list, on_confirm, *, timeout: float = 180):
+        super().__init__(timeout=timeout)
+        self.owner_id, self.head, self.lines, self.on_confirm = owner_id, head, list(lines), on_confirm
+        self.page = 0
+        self.pages = max(1, -(-len(self.lines) // self.PAGE))
+        self._render()
+
+    def _render(self, disabled: bool = False) -> None:
+        self.clear_items()
+        chunk = self.lines[self.page * self.PAGE:(self.page + 1) * self.PAGE]
+        body = "\n".join(str(x)[:300] for x in chunk)
+        foot = f"-# page {self.page + 1}/{self.pages} \u2022 {len(self.lines)} steps" if self.pages > 1 else f"-# {len(self.lines)} steps"
+        box = discord.ui.Container(discord.ui.TextDisplay(f"### {self.head}"[:300]), discord.ui.Separator(),
+                                   discord.ui.TextDisplay(body[:3000]), discord.ui.TextDisplay(foot),
+                                   accent_colour=discord.Colour.orange())
+        prev = discord.ui.Button(label="Prev", style=discord.ButtonStyle.secondary, disabled=disabled or self.page == 0)
+        nxt = discord.ui.Button(label="Next", style=discord.ButtonStyle.secondary,
+                                disabled=disabled or self.page >= self.pages - 1)
+        ok = discord.ui.Button(label="Confirm & run all", style=discord.ButtonStyle.danger, emoji="\u2705", disabled=disabled)
+        no = discord.ui.Button(label="Cancel", style=discord.ButtonStyle.secondary, disabled=disabled)
+        prev.callback, nxt.callback, ok.callback, no.callback = self._prev, self._next, self._confirm, self._cancel
+        row = discord.ui.ActionRow(*(([prev, nxt] if self.pages > 1 else []) + [ok, no]))
+        box.add_item(row)
+        self.add_item(box)
+
+    async def interaction_check(self, interaction: discord.Interaction) -> bool:
+        if interaction.user.id != self.owner_id:
+            await interaction.response.send_message("This confirmation isn't for you.", ephemeral=True)
+            return False
+        return True
+
+    async def _prev(self, interaction: discord.Interaction):
+        self.page = max(0, self.page - 1)
+        self._render()
+        await interaction.response.edit_message(view=self)
+
+    async def _next(self, interaction: discord.Interaction):
+        self.page = min(self.pages - 1, self.page + 1)
+        self._render()
+        await interaction.response.edit_message(view=self)
+
+    async def _confirm(self, interaction: discord.Interaction):
+        self._render(disabled=True)
+        await interaction.response.edit_message(view=self)
+        await self.on_confirm(interaction)
+        self.stop()
+
+    async def _cancel(self, interaction: discord.Interaction):
+        self.clear_items()
+        self.add_item(discord.ui.Container(discord.ui.TextDisplay("Cancelled \u2014 nothing was run.")))
+        await interaction.response.edit_message(view=self)
+        self.stop()
 
 
 class PlanRetryView(discord.ui.View):
@@ -347,7 +414,7 @@ class PlanRetryView(discord.ui.View):
             return False
         return True
 
-    @discord.ui.button(label="Retry remaining", style=discord.ButtonStyle.primary)
+    @discord.ui.button(label="Retry failed", style=discord.ButtonStyle.primary)
     async def retry(self, interaction: discord.Interaction, button: discord.ui.Button):
         for item in self.children:
             item.disabled = True
@@ -1288,11 +1355,7 @@ class AIToolsCog(commands.Cog):
             lines = [f"{i}. {line}" + (" -- _will be skipped: a step it needs was refused_" if link[1] else "")
                      for i, ((_s, _n, _a, line), link) in enumerate(zip(confirm, links), 1)]
             head = f"I'd run these {len(confirm)} commands, in order -- confirm?"
-            pages = ai_bulk.chunk_lines([head] + lines)
-            for page in pages[:-1]:                         # a long plan is shown IN FULL; nothing is cut off before Confirm
-                await ctx.followup.send(page, ephemeral=True)
-            last = pages[-1] if len(pages) == 1 else f"(the {len(confirm)} commands are listed above) -- confirm to run them all, in order?"
-            await ctx.followup.send(last, view=AIConfirmView(ctx.user.id, _run_all, timeout=120), ephemeral=True)
+            await ctx.followup.send(view=PlanPreviewView(ctx.user.id, head, lines, _run_all, timeout=180), ephemeral=True)
         if notes:
             try:
                 await ctx.followup.send("\n".join(notes)[:1900], ephemeral=True)

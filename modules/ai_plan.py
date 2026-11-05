@@ -37,8 +37,33 @@ BACKOFF_CAP = 30.0
 _ICON = {DONE: "\u2705", FAILED: "\u274c", SKIPPED: "\u23ed\ufe0f", PENDING: "\u23f8\ufe0f"}
 
 
-MAX_DESTRUCTIVE_PER_PLAN = 6      # kicks/bans/deletes/purges/removals in ONE plan (bulk commands have their own caps too)
+MAX_DESTRUCTIVE_PER_PLAN = 5      # kicks/bans/deletes/purges/removals in ONE plan (bulk commands have their own caps too)
 _DESTRUCTIVE_WORDS = frozenset({"delete", "ban", "kick", "purge", "remove", "cancel", "disconnect", "wipe", "clear"})
+
+
+# Most steps one plan may have, per tier (daily AI-action caps still apply on top; the overall ceiling is MAX_STEPS).
+TIER_MAX_STEPS = {"basic": 5, "pro": 12, "elite": MAX_STEPS, "founder": MAX_STEPS}
+PROGRESS_EDIT_INTERVAL = 2.5      # seconds between live progress edits (20 edits in a row would hit Discord's edit rate limit)
+PROGRESS_WINDOW = 12              # steps shown in the live progress message of a big plan
+
+
+def tier_step_ceiling(tier: str) -> int:
+    """Steps one plan may have for this tier; an unknown tier gets the smallest."""
+    return min(TIER_MAX_STEPS.get(str(tier or "").lower(), min(TIER_MAX_STEPS.values())), MAX_STEPS)
+
+
+class EditThrottle:
+    """Lets a live message be edited at most once per `interval` seconds. The FINAL edit must bypass it (force=True)."""
+
+    def __init__(self, interval: float = PROGRESS_EDIT_INTERVAL, clock=time.monotonic):
+        self.interval, self.clock, self._last = interval, clock, None
+
+    def ready(self, force: bool = False) -> bool:
+        now = self.clock()
+        if force or self._last is None or now - self._last >= self.interval:
+            self._last = now
+            return True
+        return False
 
 
 def is_destructive(command_path: str) -> bool:
@@ -55,6 +80,11 @@ def preflight(n_steps: int, paths: List[str], used: Optional[int] = None, cap: O
     * daily cap: every step is one AI-run action, so a plan needing more than what is left today is refused up front
       instead of running halfway and stopping (used/cap None = unknown -> the per-step cap check still applies);
     * destructive steps: more than MAX_DESTRUCTIVE_PER_PLAN deletes/bans/kicks in one plan is refused."""
+    ceiling = tier_step_ceiling(tier) if tier else MAX_STEPS
+    if n_steps > ceiling:
+        who = f"the **{tier}** tier" if tier else "one plan"
+        return (f"That plan has **{n_steps}** steps, and {who} can run up to {ceiling} at a time, so I didn't run "
+                "any of it. Trim the request" + (", or go Premium for longer plans." if tier else "."))
     if cap is not None and used is not None:
         left = max(cap - used, 0)
         if n_steps > left:
@@ -182,24 +212,48 @@ class PlanRun:
                 s.status, s.detail = PENDING, ""
         return True
 
-    def progress(self) -> str:
-        """Short live status shown while the plan runs."""
-        lines = [f"{_ICON[s.status] if s.status != PENDING else chr(0x23f3)} {s.index}. {s.label}" for s in self.steps]
-        return f"Running {len(self.steps)} step(s)... {self.count(DONE)} done.\n" + "\n".join(lines)
+    def failed_steps(self) -> List[PlanStep]:
+        return [s for s in self.steps if s.status == FAILED]
 
-    def report(self) -> str:
-        lines = [f"{_ICON[s.status]} {s.index}. {s.label}" + (f" -- {s.detail}" if s.detail else "") for s in self.steps]
+    def progress(self) -> str:
+        """Short live status shown while the plan runs. A big plan shows a window around the step in progress."""
+        n = len(self.steps)
+        head = f"Running {n} step(s)... {self.count(DONE)} done."
+        steps = self.steps
+        hidden = ""
+        if n > PROGRESS_WINDOW:
+            first_open = next((i for i, s in enumerate(steps) if s.status == PENDING), n - 1)
+            lo = max(0, min(first_open - 3, n - PROGRESS_WINDOW))
+            steps, hidden = steps[lo:lo + PROGRESS_WINDOW], f" (steps {lo + 1}-{lo + PROGRESS_WINDOW} shown)"
+        lines = [f"{_ICON[s.status] if s.status != PENDING else chr(0x23f3)} {s.index}. {s.label}" for s in steps]
+        return head + hidden + "\n" + "\n".join(lines)
+
+    def report_pages(self, limit: int = 1900) -> List[str]:
+        """The final report split into messages of at most `limit` characters; nothing is cut off."""
         parts = [f"{self.count(DONE)} done"]
         for status in (FAILED, SKIPPED, PENDING):
-            n = self.count(status)
-            if n:
-                parts.append(f"{n} {'not reached' if status == PENDING else status}")
+            c = self.count(status)
+            if c:
+                parts.append(f"{c} {'not reached' if status == PENDING else status}")
         head = "Plan finished: " + ", ".join(parts) + "."
         if self.stopped:
             head += f" Stopped early: {self.stopped}"
         elif self.retryable():
-            head += " Nothing that already succeeded will run again if you retry."
-        return head + "\n" + "\n".join(lines)
+            head += " Nothing that already succeeded will run again if you retry the failed ones."
+        lines = [f"{_ICON[s.status]} {s.index}. {s.label}" + (f" -- {s.detail}" if s.detail else "") for s in self.steps]
+        out, cur = [], head
+        for line in lines:
+            line = line if len(line) <= limit else line[:limit - 1] + "\u2026"
+            if len(cur) + 1 + len(line) > limit:
+                out.append(cur)
+                cur = line
+            else:
+                cur += "\n" + line
+        out.append(cur)
+        return out
+
+    def report(self) -> str:
+        return "\n".join(self.report_pages(limit=10 ** 6))
 
 
 async def run_plan(run: PlanRun, executor: Callable[[PlanStep], Awaitable[None]], *, pause: float = 0.0,

@@ -446,3 +446,16 @@ def test_chunk_lines_never_splits_or_loses_a_line():
     assert "\n".join(pages).split("\n") == lines
     assert ai_bulk.chunk_lines([]) == []
     assert len(ai_bulk.chunk_lines(["y" * 5000], limit=100)[0]) == 100
+
+
+def test_one_message_can_carry_a_full_25_step_plan_and_no_more():
+    from modules import ai_plan
+    calls = [{"name": f"c{i}", "arguments": {"i": i}} for i in range(40)]
+    picked, dropped = ai_bulk.pick_tool_calls(calls)
+    assert len(picked) == ai_bulk.MAX_COMMANDS_PER_MESSAGE == ai_plan.MAX_STEPS == 25 and dropped == 15
+
+
+def test_tier_ceilings_never_exceed_the_per_message_limit():
+    from modules import ai_plan
+    assert all(1 <= n <= ai_bulk.MAX_COMMANDS_PER_MESSAGE for n in ai_plan.TIER_MAX_STEPS.values())
+    assert ai_plan.attempt_budget(25) >= 2 * 25 and ai_plan.time_budget(25) <= ai_plan.MAX_PLAN_SECONDS_CAP

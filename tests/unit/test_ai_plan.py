@@ -308,3 +308,112 @@ def test_link_dependencies_is_conservative():
 def test_unplaceable_dependency_becomes_unknown_not_satisfied():
     out = ai_plan.link_dependencies([("1", ["42"])], dropped=set(), satisfied=set(), plan_keys={"1"})
     assert out == [(None, False)]               # never 'fine': it falls back to fail-fast
+
+
+# ── Phase 3: throttled progress, windowed progress, paged report, retry failed ──
+def test_edit_throttle_spaces_edits_and_never_blocks_the_final_one():
+    now = [100.0]
+    t = ai_plan.EditThrottle(interval=2.5, clock=lambda: now[0])
+    assert t.ready() is True                      # first edit goes
+    now[0] += 1.0
+    assert t.ready() is False                     # too soon
+    now[0] += 1.6
+    assert t.ready() is True                      # 2.6s later
+    now[0] += 0.1
+    assert t.ready() is False and t.ready(force=True) is True
+
+
+def test_a_20_step_plan_makes_far_fewer_progress_edits_than_steps():
+    run_ = make(20)
+    now = [0.0]
+    throttle = ai_plan.EditThrottle(interval=2.5, clock=lambda: now[0])
+    edits = []
+
+    async def ex(step):
+        now[0] += 0.8                              # the cog pauses ~0.8s between steps
+
+    async def on_update(r):
+        if throttle.ready():
+            edits.append(r.count(DONE))
+
+    run(run_plan(run_, ex, on_update=on_update))
+    assert run_.count(DONE) == 20 and 4 <= len(edits) <= 8
+
+
+def test_progress_of_a_big_plan_is_windowed_and_short():
+    r = make(25)
+    for s in r.steps[:14]:
+        s.status = DONE
+    text = r.progress()
+    assert len(text) < 1900 and text.count("\n") <= ai_plan.PROGRESS_WINDOW
+    assert "14. /c14" in text and "25. /c25" not in text and "shown" in text
+    assert "1. /c1\n" in make(5).progress() or "1. /c1" in make(5).progress()      # a small plan is shown whole
+
+
+def test_report_pages_hold_every_step_within_the_message_limit():
+    r = make(25)
+    for s in r.steps:
+        s.status, s.detail = FAILED, "Discord refused: the bot is missing a permission or its role is too low"
+    pages = r.report_pages(limit=500)
+    assert len(pages) > 1 and all(len(p) <= 500 for p in pages)
+    joined = "\n".join(pages)
+    assert all(f"{i}. /c{i}" in joined for i in range(1, 26))
+    assert pages[0].startswith("Plan finished: 0 done, 25 failed.")
+    assert r.report().count("\n") == 25            # report() stays the one-string form
+
+
+def test_failed_steps_lists_only_failures():
+    r = make(4)
+    r.steps[0].status, r.steps[1].status, r.steps[2].status = DONE, FAILED, SKIPPED
+    assert [s.index for s in r.failed_steps()] == [2]
+
+
+# ── dependencies ──
+def calls(deps):
+    return [{"name": f"c{i}", "label": f"/c{i}", "args": {"i": i}, "key": str(i), "depends_on": d}
+            for i, d in enumerate(deps, 1)]
+
+
+def test_failure_skips_only_its_dependents_across_a_20_step_plan():
+    deps = [[]] + [["1"] if i % 2 else [] for i in range(2, 21)]       # odd steps need step 1; even steps are independent
+    r = PlanRun.from_calls(calls(deps))
+    ran = []
+
+    async def ex(step):
+        ran.append(step.index)
+        if step.index == 1:
+            raise StepFailed("nope")
+
+    run(run_plan(r, ex, sleep=_nosleep))
+    assert r.steps[0].status == FAILED
+    for s in r.steps[1:]:
+        assert s.status == (SKIPPED if s.index % 2 else DONE), s.index
+    assert ran == [1] + [i for i in range(2, 21) if i % 2 == 0]
+
+
+def test_a_skipped_step_skips_what_depends_on_it():
+    r = PlanRun.from_calls(calls([[], ["1"], ["2"], []]))
+
+    async def ex(step):
+        if step.index == 1:
+            raise StepFailed("nope")
+
+    run(run_plan(r, ex, sleep=_nosleep))
+    assert [s.status for s in r.steps] == [FAILED, SKIPPED, SKIPPED, DONE]
+
+
+def test_retry_after_a_dependency_failure_runs_only_failed_and_skipped():
+    r = PlanRun.from_calls(calls([[], ["1"], []]))
+    seen = []
+    state = {"fail": True}
+
+    async def ex(step):
+        seen.append(step.index)
+        if step.index == 1 and state["fail"]:
+            raise StepFailed("nope", transient=False)
+
+    run(run_plan(r, ex, sleep=_nosleep))
+    state["fail"] = False
+    assert r.prepare_retry()
+    run(run_plan(r, ex, sleep=_nosleep))
+    assert seen == [1, 3, 1, 2] and all(s.status == DONE for s in r.steps)       # step 3 never ran twice
