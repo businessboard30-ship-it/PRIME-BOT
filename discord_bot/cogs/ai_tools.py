@@ -366,22 +366,28 @@ _NAMEABLE = {discord.ChannelType.text, discord.ChannelType.voice, discord.Channe
              discord.ChannelType.forum, discord.ChannelType.stage_voice}
 
 
-def find_channel_by_name(channels, label: str):
+def find_channel_by_name(channels, label: str, prefer=None):
     """(channel_or_None, candidates). Exact name, then exact plain name (fonts/brackets/emoji folded away), then ONE channel whose plain
-    name contains the words. More than one match -> (None, matches) so the caller can ask which one."""
+    name contains the words. More than one match -> (None, matches) so the caller can ask which one.
+    A category and a channel sharing a name are NOT a tie (modules/ai_names.py): "category gallo" means the category,
+    "#gallo" or plain "gallo" means the channel. `prefer` ("category"/"channel") overrides the wording."""
     from modules.text_styles import plain_name
+    from modules import ai_names
+    label, hint = ai_names.split_kind_hint(label)
+    hint = prefer or hint
     want_raw = (label or "").strip().lstrip("#").lower()
     want = plain_name(want_raw)
     channels = list(channels)
-    exact = [c for c in channels if c.name.lower() == want_raw]
+    exact = ai_names.narrow([c for c in channels if c.name.lower() == want_raw], hint)
     if len(exact) == 1:
         return exact[0], exact
-    plain = [c for c in channels if want and plain_name(c.name) == want]
+    plain = ai_names.narrow([c for c in channels if want and plain_name(c.name) == want], hint)
     if len(plain) == 1:
         return plain[0], plain
     pool = plain or exact
     if not pool and want:
-        pool = [c for c in channels if getattr(c, "type", None) in _NAMEABLE and want in plain_name(c.name)]
+        kinds = _NAMEABLE | ({discord.ChannelType.category} if hint == "category" else set())
+        pool = ai_names.narrow([c for c in channels if getattr(c, "type", None) in kinds and want in plain_name(c.name)], hint)
         if len(pool) == 1:
             return pool[0], pool
     return None, pool
@@ -390,7 +396,8 @@ def find_channel_by_name(channels, label: str):
 def unresolved_message(kind: str, label: str, candidates) -> str:
     base = f"I couldn't tell which {kind} you mean by **{label}**, so I didn't run that."
     if candidates:
-        base += " Did you mean: " + ", ".join(f"<#{c.id}>" if kind == "channel" else f"`{c.name}`" for c in list(candidates)[:5]) + "? Mention it with # and try again."
+        from modules import ai_names
+        base += " Did you mean: " + ", ".join((f"<#{c.id}> ({ai_names.kind_label(c)})" if kind == "channel" else f"`{c.name}`") for c in list(candidates)[:5]) + "? Mention it with # (or say \"category <name>\") and try again."
     else:
         base += " Mention it with # (or use its exact name) and try again."
     return base
