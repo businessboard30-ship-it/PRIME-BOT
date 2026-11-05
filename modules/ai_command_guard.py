@@ -65,6 +65,15 @@ class _AlreadyRespondedResponse:
         return getattr(self._inner, name)
 
 
+def _set_response(interaction, value) -> None:
+    """Swaps `interaction.response`. In discord.py 2.x that attribute is a READ-ONLY cached property (assigning raises
+    AttributeError), so the value is put straight into the slot that backs it. Plain stand-in objects take a normal assignment."""
+    try:
+        interaction.response = value
+    except AttributeError:
+        interaction._cs_response = value
+
+
 def _adapt_used_response(interaction):
     """If this real interaction's response is already used, swap in the adapter. Returns the original response
     (to put back afterwards) or None when nothing was changed (not used yet, or a stand-in object)."""
@@ -77,7 +86,7 @@ def _adapt_used_response(interaction):
     if not used or isinstance(resp, _AlreadyRespondedResponse) or not isinstance(interaction, discord.Interaction):
         return None
     try:
-        interaction.response = _AlreadyRespondedResponse(resp, interaction)
+        _set_response(interaction, _AlreadyRespondedResponse(resp, interaction))
     except Exception:
         logger.debug("swallowed exception in _adapt_used_response", exc_info=True)
         return None
@@ -484,7 +493,7 @@ async def execute_ai_command(interaction: discord.Interaction, command_name: str
             await command._do_call(interaction, kwargs)
         finally:
             if original is not None:
-                interaction.response = original
+                _set_response(interaction, original)
 
 
 class AIConfirmView(discord.ui.View):
