@@ -87,6 +87,7 @@ class _State:
     guild_used: Dict[Tuple[int, Optional[int]], Tuple[str, int]] = {}   # (guild, clone) -> (UTC day, checks used)
     premium: Dict[Tuple[int, Optional[int]], Tuple[float, bool]] = {}   # 60s cache of "is this server Premium"
     plus: Dict[Tuple[int, Optional[int]], Tuple[float, bool]] = {}      # 60s cache of "is this server Premium Plus"
+    loaded: bool = False                                        # saved counts / learned hashes read back after a restart
     last_ok: Optional[bool] = None                              # result of the most recent Gemini call
     last_detail: str = ""
     last_at: float = 0.0                                        # wall-clock time (time.time())
@@ -333,11 +334,36 @@ def _remember(key: str, is_scam: bool) -> None:
         _s.cache.popitem(last=False)
 
 
-def _learn(data: bytes) -> None:
+def _learn(data: bytes) -> Optional[int]:
+    """Remember a flagged picture's dHash. Returns the hash when it was new (so the caller can save it), else None."""
     h = ss.dhash(data)
     if h is not None and all(ss.hamming(h, x) > 1 for x in _s.learned):
         _s.learned.append(h)
         del _s.learned[:-LEARNED_MAX]
+        return h
+    return None
+
+
+async def _ensure_loaded() -> None:
+    """Once per process: bring back today's per-server counts and the learned scam hashes that a restart used to wipe."""
+    if _s.loaded:
+        return
+    _s.loaded = True
+    learned, usage = await shared.load_state(_today())
+    for h in learned:
+        if h not in _s.learned:
+            _s.learned.append(h)
+    del _s.learned[:-LEARNED_MAX]
+    day = _today()
+    for key, (g, o) in usage.items():
+        if g > guild_used_today(*key):
+            _s.guild_used[key] = (day, g)
+        if o > openai_used_today(*key):
+            _s.o_guild_used[key] = (day, o)
+
+
+async def _persist_usage(guild_id: int, clone_id: Optional[int]) -> None:
+    await shared.save_usage(_today(), guild_id, clone_id, guild_used_today(guild_id, clone_id), openai_used_today(guild_id, clone_id))
 
 
 def known_copy(data: bytes) -> bool:
@@ -508,6 +534,7 @@ async def _ask_backup(jpeg: bytes, guild_id: int, user_id: int, clone_id: Option
         return None
     _s.o_calls.append(time.monotonic())
     _spend_openai(guild_id, clone_id)
+    await _persist_usage(guild_id, clone_id)
     return await _ask_openai(jpeg)
 
 
@@ -518,6 +545,7 @@ async def is_scam_image(data: bytes, guild_id: int, user_id: int,
     Gemini call counts against the server's daily cap (free: 10, Premium: 60 by default)."""
     if not available():
         return None
+    await _ensure_loaded()
     key = hashlib.sha256(data).hexdigest()
     if key in _s.cache:
         return ("vision", "AI scan: scam image (seen before)", None) if _s.cache[key] else None
@@ -547,6 +575,7 @@ async def is_scam_image(data: bytes, guild_id: int, user_id: int,
     if gemini_usable:
         _spend()
         _spend_guild(guild_id, clone_id)
+        await _persist_usage(guild_id, clone_id)
         before = _s.last_at
         verdict = await _ask(jpeg)
         gemini_tried_and_failed = verdict is None and _s.last_at != before and _s.last_ok is False
@@ -563,7 +592,9 @@ async def is_scam_image(data: bytes, guild_id: int, user_id: int,
         return None                                              # unknown: not cached, never deletes
     _remember(key, verdict)
     if verdict:
-        _learn(data)
+        new_hash = _learn(data)
+        if new_hash is not None:
+            await shared.save_learned(new_hash)
         return "vision", "AI scan: scam image", None
     return None
 
