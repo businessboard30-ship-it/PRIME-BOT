@@ -153,3 +153,40 @@ def test_parse_tasks_survives_a_25_task_answer_and_drops_forward_dependencies():
     tasks, info = P.parse_tasks(json.dumps({"tasks": items}))
     assert len(tasks) == P.MAX_TASKS == ai_plan.MAX_STEPS and info["dropped_over_limit"] == 5
     assert all(d < t["id"] for t in tasks for d in t["depends_on"])
+
+
+# ── the model must never be allowed to INVENT a finished plan ──
+BIG = ('Set up my test server. First create a category called "Test Hub". Then create 4 text channels inside Test Hub named '
+       'announcements, rules, general-chat and bot-commands. Then create a category called "Voice Zone" and create 3 voice '
+       'channels inside it named Lounge, Gaming and Music. Then create these roles: Admin Test, Mod Test, Member Test, VIP Test. '
+       'Next lock the rules channel. Also set slowmode on general-chat to 10 seconds. Then post a welcome message in announcements. '
+       'Finally show me the server stats.')
+
+
+def test_the_big_test_prompt_goes_to_the_planner():
+    assert P.should_plan(BIG)
+
+
+def test_an_invented_done_list_is_detected_and_a_real_answer_is_not():
+    fake = "\u2705 created category **Test Hub**\n\u2705 created roles: `A`, `B`\n\U0001F4CA Server stats: 1 member"
+    assert P.claims_unrun_actions(fake)
+    assert not P.claims_unrun_actions("Sure! I can create a category and channels. Want me to go ahead?")
+    assert not P.claims_unrun_actions("\u2705 done")                              # one tick alone is ordinary chat
+    assert "nothing was created" in P.UNRUN_NOTICE
+
+
+def test_reply_path_plans_a_many_part_request_and_runs_it_on_the_guarded_path(monkeypatch):
+    cog = at.AIToolsCog(N())
+    calls = [{"name": "cat_make", "arguments": {}}]
+    cog._plan_and_resolve = AsyncMock(return_value=calls)
+    cog._run_tool_calls = AsyncMock()
+    seen = {}
+
+    async def fake_chat(*a, **k):
+        seen["chat"] = True
+        return "plain"
+
+    monkeypatch.setattr(at, "ai_chat", fake_chat)
+    src = open(at.__file__, encoding="utf-8").read()
+    assert "planned = await self._plan_and_resolve(user_id, content, tools, proxy)" in src
+    assert "real_interaction=False, origin_message=content)\n                return \"\", None" in src
