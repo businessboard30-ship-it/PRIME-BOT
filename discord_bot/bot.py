@@ -301,6 +301,7 @@ class AnimeBotDiscord(commands.Bot):
         await self.load_extension("discord_bot.cogs.anime_feed")
         await self.load_extension("discord_bot.cogs.birthdays")
         await self.load_extension("discord_bot.cogs.clone_health")
+        await self.load_extension("discord_bot.cogs.log_channel")   # posts logs to LOG_CHANNEL_ID (off when unset)
         await self.load_extension("discord_bot.cogs.help")
         await self.load_extension("discord_bot.cogs.dashboard")
         # archive / archive_automation dropped: feature retired to free up
