@@ -23,14 +23,26 @@ def test_preflight_refuses_a_plan_bigger_than_what_is_left():
     msg = ai_plan.preflight(5, ["role_create"] * 5, used=17, cap=20, tier="pro")
     assert msg and "needs **5**" in msg and "**3** left" in msg and "didn't run any of it" in msg
     assert ai_plan.preflight(3, ["role_create"] * 3, used=17, cap=20, tier="pro") is None      # exactly what is left: fine
-    assert ai_plan.preflight(30, [], used=None, cap=None) is None                              # unknown budget: per-step check decides
+    assert ai_plan.preflight(25, [], used=None, cap=None) is None                              # unknown budget: per-step check decides
 
 
 def test_preflight_limits_destructive_steps():
-    assert ai_plan.preflight(6, ["ban"] * 6, used=0, cap=50) is None
-    msg = ai_plan.preflight(7, ["ban"] * 7, used=0, cap=50)
-    assert msg and "**7**" in msg and "smaller batches" in msg
-    assert ai_plan.preflight(12, ["ban"] * 6 + ["role_create"] * 6, used=0, cap=50) is None     # only destructive ones count
+    assert ai_plan.MAX_DESTRUCTIVE_PER_PLAN == 5
+    assert ai_plan.preflight(5, ["ban"] * 5, used=0, cap=50) is None
+    msg = ai_plan.preflight(6, ["ban"] * 6, used=0, cap=50)
+    assert msg and "**6**" in msg and "smaller batches" in msg
+    assert ai_plan.preflight(12, ["ban"] * 5 + ["role_create"] * 7, used=0, cap=50) is None     # only destructive ones count
+
+
+def test_preflight_per_tier_step_ceiling():
+    assert ai_plan.tier_step_ceiling("basic") == 5 and ai_plan.tier_step_ceiling("pro") == 12
+    assert ai_plan.tier_step_ceiling("elite") == ai_plan.tier_step_ceiling("founder") == ai_plan.MAX_STEPS
+    assert ai_plan.tier_step_ceiling("???") == 5                                  # unknown tier: smallest ceiling
+    msg = ai_plan.preflight(6, ["role_create"] * 6, used=0, cap=100, tier="basic")
+    assert msg and "**6** steps" in msg and "up to 5" in msg and "didn't run any of it" in msg
+    assert ai_plan.preflight(12, ["role_create"] * 12, used=0, cap=100, tier="pro") is None
+    assert ai_plan.preflight(13, ["role_create"] * 13, used=0, cap=100, tier="pro")
+    assert ai_plan.preflight(25, ["role_create"] * 25, used=0, cap=1000, tier="elite") is None
 
 
 # ── _run_command_batch, driven for real ─────────────────────────────────────
@@ -63,7 +75,15 @@ def calls_for(names, **extra):
 
 
 def sent(ctx):
-    return [c.args[0] for c in ctx.followup.send.await_args_list]
+    """Every text the cog sent; the plan preview is a Components V2 view, so its head + step lines are read off the view."""
+    out = []
+    for c in ctx.followup.send.await_args_list:
+        view = c.kwargs.get("view")
+        if isinstance(view, at.PlanPreviewView):
+            out.append("\n".join([view.head] + view.lines))
+        if c.args:
+            out.append(c.args[0])
+    return out
 
 
 def test_batch_refused_up_front_when_the_cap_is_too_low(monkeypatch):
@@ -81,7 +101,7 @@ def test_batch_that_fits_gets_one_confirm(monkeypatch):
     cog, ctx = make_batch(monkeypatch, names, budget=("pro", 20, 0))
     run(cog._run_command_batch(ctx, calls_for(names), real_interaction=True))
     last = ctx.followup.send.await_args_list[-1]
-    assert last.kwargs.get("view") is not None and "I'd run these 4 commands" in sent(ctx)[0]
+    assert isinstance(last.kwargs.get("view"), at.PlanPreviewView) and "I'd run these 4 commands" in sent(ctx)[0]
 
 
 def test_a_budget_lookup_failure_does_not_block_the_plan(monkeypatch):
@@ -102,3 +122,30 @@ def test_dependent_of_a_refused_task_is_marked_skipped_in_the_confirm_text(monke
     prompt = sent(ctx)[0]
     assert "chan_make" in prompt and "will be skipped" in prompt.split("chan_make")[1].split("\n")[0]
     assert "will be skipped" not in prompt.split("role_make")[1]
+
+
+# ── Phase 3: the V2 preview ──
+def test_preview_pages_hold_every_step_and_only_the_owner_can_use_it():
+    lines = [f"{i}. /role create" for i in range(1, 21)]
+    view = at.PlanPreviewView(42, "I'd run these 20 commands, in order -- confirm?", lines, AsyncMock())
+    assert view.pages == 3 and view.PAGE == 8
+    seen = []
+    for _ in range(view.pages):
+        seen.extend(x for x in view.lines[view.page * view.PAGE:(view.page + 1) * view.PAGE])
+        view.page = min(view.page + 1, view.pages - 1)
+    assert seen == lines                                       # nothing is cut off before Confirm
+    ok = N(user=N(id=42))
+    other = N(user=N(id=7), response=N(send_message=AsyncMock()))
+    assert run(view.interaction_check(ok)) is True
+    assert run(view.interaction_check(other)) is False
+    other.response.send_message.assert_awaited_once()
+
+
+def test_confirm_runs_the_plan_once_and_locks_the_buttons():
+    on_confirm = AsyncMock()
+    view = at.PlanPreviewView(42, "head", ["1. a", "2. b"], on_confirm)
+    inter = N(user=N(id=42), response=N(edit_message=AsyncMock()))
+    run(view._confirm(inter))
+    on_confirm.assert_awaited_once_with(inter)
+    inter.response.edit_message.assert_awaited_once()
+    assert all(getattr(c, "disabled", True) for c in view.walk_children() if hasattr(c, "disabled"))

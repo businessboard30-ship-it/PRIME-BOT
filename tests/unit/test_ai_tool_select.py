@@ -43,3 +43,11 @@ def test_capped_and_within_token_budget():
     out = select_tools(many, "level xp card")
     assert 0 < len(out) <= MAX_TOOLS
     assert len(json.dumps(out)) // 4 <= MAX_TOOL_TOKENS + len(json.dumps(out[0])) // 4
+
+
+def test_each_chunk_of_a_big_plan_gets_its_own_small_tool_list():
+    from modules import ai_planner
+    tasks = ["show my level card", "ban a member from the server", "set up welcome messages", "check my coin balance"]
+    picked = select_tools(TOOLS, " ; ".join(tasks), limit=ai_planner.CHUNK_TOOLS)
+    assert len(picked) <= ai_planner.CHUNK_TOOLS
+    assert {"level", "ban", "welcome_setup", "balance"} <= set(names(picked))

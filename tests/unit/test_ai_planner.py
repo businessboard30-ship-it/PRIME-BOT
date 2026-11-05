@@ -122,3 +122,34 @@ def test_cog_tags_calls_with_task_links_only_when_one_call_per_task(monkeypatch)
     cog, ctx, _ = make_cog(monkeypatch, tasks, [{"tool_calls": [{"name": "channels_bulk_create", "arguments": {"kind": "category"}}]}])
     calls = run(cog._plan_and_resolve(1, "x", [tool("channels_bulk_create")], ctx))
     assert calls and "task_id" not in calls[0]                    # count mismatch: no link, so the runner stays fail-fast
+
+
+# ── Phase 3 additions: chunking and dependency order for 20+ tasks ──
+def _tasks(n, dep_on_prev=False):
+    return [{"id": i, "task": f"task {i}", "depends_on": ([i - 1] if dep_on_prev and i > 1 else [])} for i in range(1, n + 1)]
+
+
+def test_twenty_five_tasks_chunk_into_small_ordered_groups():
+    chunks = P.chunk_tasks(_tasks(25))
+    assert [len(c) for c in chunks] == [4, 4, 4, 4, 4, 4, 1]
+    assert [t["id"] for c in chunks for t in c] == list(range(1, 26))
+
+
+def test_a_task_never_lands_in_an_earlier_chunk_than_what_it_depends_on():
+    tasks = _tasks(22, dep_on_prev=True)
+    where = {t["id"]: n for n, c in enumerate(P.chunk_tasks(tasks, size=3)) for t in c}
+    assert all(where[d] <= where[t["id"]] for t in tasks for d in t["depends_on"])
+
+
+def test_chunk_prompt_names_earlier_tasks_but_only_the_last_few():
+    tasks = _tasks(20)
+    prompt = P.chunk_prompt("do all of it", tasks[12:16], tasks[:12])
+    assert "13. task 13" in prompt and "16. task 16" in prompt
+    assert "12. task 12" in prompt and "6. task 6" not in prompt         # only the last 6 earlier tasks are named
+
+
+def test_parse_tasks_survives_a_25_task_answer_and_drops_forward_dependencies():
+    items = [{"id": i, "task": f"make thing {i}", "depends_on": [i - 1, i + 5]} for i in range(1, 31)]
+    tasks, info = P.parse_tasks(json.dumps({"tasks": items}))
+    assert len(tasks) == P.MAX_TASKS == ai_plan.MAX_STEPS and info["dropped_over_limit"] == 5
+    assert all(d < t["id"] for t in tasks for d in t["depends_on"])

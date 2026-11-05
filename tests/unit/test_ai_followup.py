@@ -42,3 +42,9 @@ def test_repeats_of_one_command_with_different_args_are_kept():
     got = f.remaining_calls(more, f.done_names(first), first_calls=first)
     assert [c["arguments"]["name"] for c in got] == ["B", "C"]          # only the identical call is dropped
     assert f.remaining_calls(more, ["role_create"]) == []                # old name-only behaviour unchanged without first_calls
+
+
+def test_a_twenty_part_request_with_one_call_still_gets_a_second_turn():
+    twenty = "; ".join(f"create channel number {i}" for i in range(1, 21))
+    assert f.needs_followup(twenty, [{"name": "serveranalytics"}])
+    assert not f.needs_followup(twenty, [{"name": f"c{i}"} for i in range(20)])
