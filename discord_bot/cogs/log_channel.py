@@ -7,7 +7,7 @@ import logging
 import discord
 from discord.ext import commands, tasks
 
-from modules import log_feed
+from modules import build_info, log_feed
 
 logger = logging.getLogger(__name__)
 MAX_MESSAGES_PER_FLUSH = 3          # a log storm becomes at most 3 messages every 10 s
@@ -38,7 +38,9 @@ class LogChannelCog(commands.Cog):
         try:
             if not self._announced:
                 self._announced = True
-                await channel.send(f"✅ Log feed on for **{self._label()}**. WARNING/ERROR lines and AI-tool activity will appear here.")
+                await channel.send(f"✅ Log feed on for **{self._label()}**. WARNING/ERROR lines and AI-tool activity will appear here. "
+                                   f"Type `version` here any time to see which code is running.\n{build_info.summary(self._label())}",
+                                   allowed_mentions=discord.AllowedMentions.none())
             lines = self.handler.drain()
             if not lines:
                 return
@@ -49,6 +51,18 @@ class LogChannelCog(commands.Cog):
                 await channel.send(f"... {len(msgs) - MAX_MESSAGES_PER_FLUSH} more log message(s) skipped.")
         except Exception:
             pass        # never log here (it could feed itself); a missing permission just means no posts
+
+    @commands.Cog.listener()
+    async def on_message(self, message: discord.Message):
+        """`version` typed in the log channel -> which commit this process runs. Ignores bots and every other channel."""
+        if message.author.bot or message.channel.id != log_feed.channel_id():
+            return
+        if (message.content or "").strip().lower() not in ("version", "!version"):
+            return
+        try:
+            await message.channel.send(build_info.summary(self._label()), allowed_mentions=discord.AllowedMentions.none())
+        except Exception:
+            pass
 
     @flush.before_loop
     async def _wait(self):
