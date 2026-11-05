@@ -77,10 +77,11 @@ def test_only_the_first_tool_call_is_ever_picked():
     assert ai_bulk.pick_tool_call([]) == (None, 0) and ai_bulk.pick_tool_call(None) == (None, 0)
 
 
-def test_pick_tool_calls_keeps_up_to_ten_distinct_and_merges_repeats():
-    calls = [{"name": f"cmd{i}", "arguments": {"a": i}} for i in range(12)] + [{"name": "cmd0", "arguments": {"a": 0}}, "junk"]
+def test_pick_tool_calls_keeps_up_to_the_limit_distinct_and_merges_repeats():
+    n = ai_bulk.MAX_COMMANDS_PER_MESSAGE
+    calls = [{"name": f"cmd{i}", "arguments": {"a": i}} for i in range(n + 2)] + [{"name": "cmd0", "arguments": {"a": 0}}, "junk"]
     picked, dropped = ai_bulk.pick_tool_calls(calls)
-    assert [c["name"] for c in picked] == [f"cmd{i}" for i in range(10)] and dropped == 2
+    assert [c["name"] for c in picked] == [f"cmd{i}" for i in range(n)] and dropped == 2
     assert ai_bulk.pick_tool_calls(None) == ([], 0)
 
 
@@ -390,14 +391,14 @@ def _ai_cog():
     return cog
 
 
-def test_ai_runs_several_tool_calls_as_one_batch_up_to_ten_and_says_what_was_skipped():
+def test_ai_runs_several_tool_calls_as_one_batch_up_to_the_limit_and_says_what_was_skipped():
     cog = _ai_cog()
     cog._run_command_batch = AsyncMock()
     ctx = SimpleNamespace(followup=SimpleNamespace(send=AsyncMock()))
-    calls = [{"name": f"cmd{i}", "arguments": {"n": i}} for i in range(12)]
+    calls = [{"name": f"cmd{i}", "arguments": {"n": i}} for i in range(ai_bulk.MAX_COMMANDS_PER_MESSAGE + 2)]
     run(cog._run_tool_calls(ctx, calls, real_interaction=True))
     cog._dispatch_tool_call.assert_not_awaited()
-    assert len(cog._run_command_batch.await_args.args[1]) == 10
+    assert len(cog._run_command_batch.await_args.args[1]) == ai_bulk.MAX_COMMANDS_PER_MESSAGE
     assert "skipped 2" in ctx.followup.send.await_args.args[0]
 
 
@@ -436,3 +437,12 @@ def test_ai_does_not_stack_a_second_confirm_for_an_identical_request(monkeypatch
     run(cog._dispatch_tool_call(ctx, "setup_bulk_delete", {"names": "a,b"}, real_interaction=True))
     assert "already asked" in ctx.followup.send.await_args.args[0]                # repeat: no second prompt
     assert ctx.followup.send.await_count == 2
+
+
+def test_chunk_lines_never_splits_or_loses_a_line():
+    lines = [f"{i}. /role create `{{'name': 'x{i}'}}`" for i in range(1, 41)]
+    pages = ai_bulk.chunk_lines(lines, limit=300)
+    assert len(pages) > 1 and all(len(p) <= 300 for p in pages)
+    assert "\n".join(pages).split("\n") == lines
+    assert ai_bulk.chunk_lines([]) == []
+    assert len(ai_bulk.chunk_lines(["y" * 5000], limit=100)[0]) == 100

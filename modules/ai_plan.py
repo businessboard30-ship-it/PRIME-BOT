@@ -26,13 +26,26 @@ from typing import Awaitable, Callable, List, Optional
 PENDING, DONE, FAILED, SKIPPED = "pending", "done", "failed", "skipped"
 MAX_RETRY_ROUNDS = 2          # "Retry remaining" can be used this many times per plan
 STEP_TIMEOUT = 120            # seconds one step may take before it counts as failed
-MAX_STEPS = 10                # hard ceiling on steps in one plan (matches ai_bulk.MAX_COMMANDS_PER_MESSAGE)
+MAX_STEPS = 25                # hard ceiling on steps in one plan (must equal ai_bulk.MAX_COMMANDS_PER_MESSAGE; a test checks)
 MAX_AUTO_RETRIES = 2          # automatic re-tries of ONE step, transient errors only
-MAX_TOTAL_ATTEMPTS = 16       # every execution attempt across the plan, retries included
-MAX_PLAN_SECONDS = 600        # wall-clock budget for one run_plan call
+MAX_TOTAL_ATTEMPTS = 16       # BASE for every execution attempt across the plan, retries included (see attempt_budget)
+MAX_PLAN_SECONDS = 600        # BASE wall-clock budget for one run_plan call (see time_budget)
+PLAN_SECONDS_PER_STEP = 30    # a long plan gets more time, up to the cap below
+MAX_PLAN_SECONDS_CAP = 840    # stays inside Discord's 15-minute interaction token
 BACKOFF_BASE = 2.0            # seconds; doubles per automatic retry, capped below
 BACKOFF_CAP = 30.0
 _ICON = {DONE: "\u2705", FAILED: "\u274c", SKIPPED: "\u23ed\ufe0f", PENDING: "\u23f8\ufe0f"}
+
+
+def attempt_budget(n_steps: int) -> int:
+    """Attempts allowed for a plan of n_steps: at least the base, and always room for every step plus one retry each
+    (a flat 16 would stop a 20-step plan at step 17 with nothing having gone wrong)."""
+    return max(MAX_TOTAL_ATTEMPTS, 2 * min(max(n_steps, 0), MAX_STEPS))
+
+
+def time_budget(n_steps: int) -> int:
+    """Seconds one run_plan call may take: the base, growing with the plan, never past the interaction-token lifetime."""
+    return min(MAX_PLAN_SECONDS_CAP, max(MAX_PLAN_SECONDS, PLAN_SECONDS_PER_STEP * min(max(n_steps, 0), MAX_STEPS)))
 
 
 class StepFailed(Exception):
@@ -140,6 +153,7 @@ async def run_plan(run: PlanRun, executor: Callable[[PlanStep], Awaitable[None]]
                 pass
 
     started = clock()
+    attempts_allowed, seconds_allowed = attempt_budget(len(run.steps)), time_budget(len(run.steps))
     broken: Optional[PlanStep] = None
     first = True
     if len(run.steps) > MAX_STEPS:
@@ -157,8 +171,8 @@ async def run_plan(run: PlanRun, executor: Callable[[PlanStep], Awaitable[None]]
         if run.cancel.is_set():
             run.stopped = "cancelled"
             continue
-        if clock() - started > MAX_PLAN_SECONDS:
-            run.stopped = f"time budget ({MAX_PLAN_SECONDS}s) used up"
+        if clock() - started > seconds_allowed:
+            run.stopped = f"time budget ({seconds_allowed}s) used up"
             continue
         if step.fingerprint() in run.dead_actions:
             step.status, step.detail = FAILED, "same action already failed for good earlier in this run; not repeating it"
@@ -169,7 +183,7 @@ async def run_plan(run: PlanRun, executor: Callable[[PlanStep], Awaitable[None]]
         first = False
         auto = 0
         while True:
-            if run.total_attempts >= MAX_TOTAL_ATTEMPTS:
+            if run.total_attempts >= attempts_allowed:
                 step.status, step.detail = FAILED, "attempt budget used up"
                 run.stopped = step.detail
                 broken = step

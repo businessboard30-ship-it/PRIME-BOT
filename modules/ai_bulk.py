@@ -32,7 +32,7 @@ PAUSE_SECONDS = 1.2             # between two channel create/delete calls
 CALL_TIMEOUT = 15               # seconds a single Discord call may take before the job stops
 JOB_COOLDOWN_SECONDS = 20       # after a job, the same server waits this long before the next one
 MAX_RUNNING_JOBS = 3            # across the whole bot
-MAX_COMMANDS_PER_MESSAGE = 10   # different commands the AI may run from ONE sentence
+MAX_COMMANDS_PER_MESSAGE = 25   # different commands the AI may run from ONE sentence (ai_plan.MAX_STEPS must equal this)
 BATCH_PAUSE_SECONDS = 0.8       # between two commands of one batch (keeps Discord's rate limiter calm)
 MAX_BULK_ASSIGN = 3000          # members one 'give/remove a role to many' request may touch
 ASSIGN_PAUSE_SECONDS = 0.6      # between two role changes (discord.py also honours Discord's own rate limits)
@@ -251,6 +251,24 @@ def pick_tool_calls(calls: List[dict], limit: int = MAX_COMMANDS_PER_MESSAGE) ->
         else:
             dropped += 1
     return picked, dropped
+
+
+def chunk_lines(lines: Iterable[str], limit: int = 1900) -> List[str]:
+    """Packs lines into messages of at most `limit` characters, never splitting a line (a longer line is cut with an
+    ellipsis). Used so a long plan is shown IN FULL before its Confirm button instead of being cut off mid-list."""
+    out, cur = [], ""
+    for line in lines:
+        line = str(line)
+        if len(line) > limit:
+            line = line[:limit - 1] + "\u2026"
+        if cur and len(cur) + 1 + len(line) > limit:
+            out.append(cur)
+            cur = line
+        else:
+            cur = f"{cur}\n{line}" if cur else line
+    if cur:
+        out.append(cur)
+    return out
 
 
 def summarize(items: List[str], limit: int = 12) -> str:

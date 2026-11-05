@@ -228,3 +228,22 @@ def test_progress_text_lists_every_step():
     p.steps[0].status = DONE
     txt = p.progress()
     assert "1 done" in txt and "/c1" in txt and "/c2" in txt
+
+
+# ── Phase 0 of the 20+ task upgrade ─────────────────────────────────────────
+def test_step_ceilings_agree_and_allow_twenty_plus():
+    from modules import ai_bulk
+    assert ai_plan.MAX_STEPS == ai_bulk.MAX_COMMANDS_PER_MESSAGE >= 20
+
+
+def test_a_twenty_five_step_plan_finishes_with_no_retries():
+    p = run(run_plan(make(25), lambda s: _ok(), sleep=_nosleep))
+    assert p.count(DONE) == 25 and not p.stopped          # the flat 16-attempt budget used to stop this at step 17
+
+
+def test_budgets_scale_but_stay_bounded():
+    assert ai_plan.attempt_budget(3) == ai_plan.MAX_TOTAL_ATTEMPTS
+    assert ai_plan.attempt_budget(25) == 50
+    assert ai_plan.attempt_budget(10 ** 6) == 2 * ai_plan.MAX_STEPS
+    assert ai_plan.time_budget(3) == ai_plan.MAX_PLAN_SECONDS
+    assert ai_plan.MAX_PLAN_SECONDS < ai_plan.time_budget(25) <= ai_plan.MAX_PLAN_SECONDS_CAP < 900

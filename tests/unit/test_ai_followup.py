@@ -33,3 +33,12 @@ def test_reply_and_mention_chat_also_get_the_second_turn():
     src = open("discord_bot/cogs/ai_tools.py").read()
     reply = src.split('kind="reply", tools=None if atts')[1].split("@commands.Cog.listener")[0]
     assert "await self._second_turn(" in reply and "real_interaction=False" in reply and '"kind": "reply"' in reply
+
+
+def test_repeats_of_one_command_with_different_args_are_kept():
+    first = [{"name": "role_create", "arguments": {"name": "A"}}]
+    more = [{"name": "role_create", "arguments": {"name": "A"}}, {"name": "role_create", "arguments": {"name": "B"}},
+            {"name": "role_create", "arguments": {"name": "C"}}]
+    got = f.remaining_calls(more, f.done_names(first), first_calls=first)
+    assert [c["arguments"]["name"] for c in got] == ["B", "C"]          # only the identical call is dropped
+    assert f.remaining_calls(more, ["role_create"]) == []                # old name-only behaviour unchanged without first_calls

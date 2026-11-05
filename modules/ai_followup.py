@@ -5,7 +5,8 @@ rest of "check stats, lock #general, schedule X, reopen" never even reached the 
 we ask the model ONCE more for the remaining steps. Pure helpers here; the loop lives in discord_bot/cogs/ai_tools.py.
 Safety is unchanged: whatever comes back goes down the normal path (allowlist, real permission, daily cap, Confirm, plan runner).
 """
-from typing import Dict, List
+import json
+from typing import Dict, List, Optional
 
 from modules.ai_tool_select import split_clauses
 
@@ -28,6 +29,22 @@ def followup_prompt(message: str, done: List[str]) -> str:
             "If a remaining step has no tool, skip it. Don't write a plan or ask a question; just make the calls.")
 
 
-def remaining_calls(calls: List[Dict], done: List[str]) -> List[Dict]:
-    """The second reply's tool calls minus anything already run."""
-    return [c for c in (calls or []) if isinstance(c, dict) and c.get("name") and c.get("name") not in set(done)]
+def _key(call: Dict) -> str:
+    try:
+        body = json.dumps(call.get("arguments") or {}, sort_keys=True, default=str)
+    except (TypeError, ValueError):
+        body = repr(call.get("arguments"))
+    return f"{call.get('name')}|{body}"
+
+
+def remaining_calls(calls: List[Dict], done: List[str], first_calls: Optional[List[Dict]] = None) -> List[Dict]:
+    """The second reply's tool calls minus anything already run.
+    With `first_calls` (the calls that already ran) only an IDENTICAL call (same command, same arguments) is dropped, so
+    the 2nd..nth use of one command with different arguments (make role A, then role B) is kept. Without it, the old
+    behaviour: drop by command name."""
+    calls = [c for c in (calls or []) if isinstance(c, dict) and c.get("name")]
+    if first_calls is not None:
+        ran = {_key(c) for c in first_calls if isinstance(c, dict) and c.get("name")}
+        return [c for c in calls if _key(c) not in ran]
+    names = set(done)
+    return [c for c in calls if c.get("name") not in names]
