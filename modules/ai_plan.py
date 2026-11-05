@@ -37,6 +37,37 @@ BACKOFF_CAP = 30.0
 _ICON = {DONE: "\u2705", FAILED: "\u274c", SKIPPED: "\u23ed\ufe0f", PENDING: "\u23f8\ufe0f"}
 
 
+MAX_DESTRUCTIVE_PER_PLAN = 6      # kicks/bans/deletes/purges/removals in ONE plan (bulk commands have their own caps too)
+_DESTRUCTIVE_WORDS = frozenset({"delete", "ban", "kick", "purge", "remove", "cancel", "disconnect", "wipe", "clear"})
+
+
+def is_destructive(command_path: str) -> bool:
+    """True for commands whose name says they delete/remove/ban/kick (name based: the allowlist has no flag for it).
+    'unban' undoes a ban, so it is not counted."""
+    words = [w for w in str(command_path or "").lower().replace("-", "_").replace(" ", "_").split("_") if w]
+    return any(w in _DESTRUCTIVE_WORDS for w in words)
+
+
+def preflight(n_steps: int, paths: List[str], used: Optional[int] = None, cap: Optional[int] = None,
+              tier: str = "") -> Optional[str]:
+    """Checks a whole plan BEFORE anything runs. Returns the reason to refuse it (plain English), or None if it may go on.
+
+    * daily cap: every step is one AI-run action, so a plan needing more than what is left today is refused up front
+      instead of running halfway and stopping (used/cap None = unknown -> the per-step cap check still applies);
+    * destructive steps: more than MAX_DESTRUCTIVE_PER_PLAN deletes/bans/kicks in one plan is refused."""
+    if cap is not None and used is not None:
+        left = max(cap - used, 0)
+        if n_steps > left:
+            who = f" on the **{tier}** tier" if tier else ""
+            return (f"That plan needs **{n_steps}** AI actions but you have **{left}** left today{who} (limit {cap}, resets at "
+                    "midnight UTC), so I didn't run any of it. Trim the request, or go Premium for a higher limit.")
+    bad = [p for p in paths if is_destructive(p)]
+    if len(bad) > MAX_DESTRUCTIVE_PER_PLAN:
+        return (f"That plan has **{len(bad)}** delete/ban/kick-type steps, and I only do up to {MAX_DESTRUCTIVE_PER_PLAN} in one go, "
+                "so I didn't run any of it. Ask for them in smaller batches.")
+    return None
+
+
 def attempt_budget(n_steps: int) -> int:
     """Attempts allowed for a plan of n_steps: at least the base, and always room for every step plus one retry each
     (a flat 16 would stop a 20-step plan at step 17 with nothing having gone wrong)."""
