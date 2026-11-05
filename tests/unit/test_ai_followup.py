@@ -1,0 +1,29 @@
+from modules import ai_followup as f
+
+DRILL = 'check the server stats, lock #general, schedule a message in #announcements, then reopen #general'
+
+
+def test_single_call_for_a_multi_part_request_gets_a_second_turn():
+    assert f.needs_followup(DRILL, [{"name": "serveranalytics"}])
+
+
+def test_no_second_turn_when_not_needed():
+    assert not f.needs_followup(DRILL, [{"name": "a"}, {"name": "b"}])        # model already made several calls
+    assert not f.needs_followup("lock #general", [{"name": "a"}])             # simple request
+    assert not f.needs_followup(DRILL, [])
+
+
+def test_second_turn_never_repeats_or_adds_junk():
+    calls = [{"name": "serveranalytics"}, {"name": "skill__lockdown_channel", "arguments": {}}, {"x": 1}, "bad"]
+    assert [c["name"] for c in f.remaining_calls(calls, ["serveranalytics"])] == ["skill__lockdown_channel"]
+    assert f.remaining_calls(None, []) == []
+
+
+def test_prompt_names_what_is_done():
+    p = f.followup_prompt(DRILL, ["serveranalytics"])
+    assert "serveranalytics" in p and "do NOT call these again" in p and DRILL in p
+
+
+def test_wired_into_chat_turn_and_never_raises():
+    src = open("discord_bot/cogs/ai_tools.py").read()
+    assert "await self._second_turn(" in src and "except Exception:\n            logger.exception(\"[aichat] second turn" in src

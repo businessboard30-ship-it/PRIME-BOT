@@ -42,6 +42,7 @@ import asyncio
 import logging
 import io
 from modules import ai_bulk, ai_plan
+from modules import ai_followup
 from modules.ai_tool_select import select_tools, select_tools_multi
 from typing import Optional
 
@@ -1331,8 +1332,11 @@ class AIToolsCog(commands.Cog):
             return "AI service error. Try again later.", warning, session_id
 
         if isinstance(response, dict):
-            await self._run_tool_calls(interaction, response["tool_calls"], real_interaction=True,
+            first_calls = response["tool_calls"]
+            await self._run_tool_calls(interaction, first_calls, real_interaction=True,
                                        origin_message=message, choice_depth=choice_depth)
+            await self._second_turn(user_id, message, first_calls, interaction, tools=tools,
+                                    command_context=command_context, choice_depth=choice_depth)
             return "", warning, session_id
 
         prefix = f"⚠️ {warning}\n\n" if warning else ""
@@ -1340,6 +1344,26 @@ class AIToolsCog(commands.Cog):
         if getattr(response, "voice", False):
             out = ai_voice.VoiceReply(out)
         return out, warning, session_id
+
+    async def _second_turn(self, user_id: int, message: str, first_calls: list, interaction, *, tools,
+                           command_context, choice_depth: int) -> None:
+        """ONE extra model turn when a several-part request got a single tool call (see modules/ai_followup.py).
+        Never raises: a failure here must not hurt the first call's result. The new calls take the normal guarded path."""
+        try:
+            if choice_depth or not tools or not ai_followup.needs_followup(message, first_calls):
+                return
+            done = ai_followup.done_names(first_calls)
+            prompt = ai_followup.followup_prompt(message, done)
+            more = await ai_chat(user_id, prompt, command_context=command_context, tools=tools,
+                                 history_override=[{"role": "user", "content": message}])
+            if not isinstance(more, dict):
+                return
+            calls = ai_followup.remaining_calls(more.get("tool_calls"), done)
+            if calls:
+                await self._run_tool_calls(interaction, calls, real_interaction=True,
+                                           origin_message=message, choice_depth=choice_depth)
+        except Exception:
+            logger.exception("[aichat] second turn for remaining steps failed")
 
     @app_commands.command(name="aichat", description="Chat with the AI (anime questions, recommendations, or anything)")
     @app_commands.describe(message="What do you want to ask or say?",
