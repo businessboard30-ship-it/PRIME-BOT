@@ -80,7 +80,11 @@ def make_cog(monkeypatch, tasks, replies):
     monkeypatch.setattr(at.ai_planner, "CHUNK_PAUSE_SECONDS", 0)
     monkeypatch.setattr(at.ai_planner, "TASK_PAUSE_SECONDS", 0)
     chat = AsyncMock(side_effect=replies)
-    monkeypatch.setattr(at, "ai_chat", chat)
+
+    async def fake_resolve(prompt, tools, **_kw):            # the lean planner call; `replies` script what the model returns
+        r = await chat(prompt, tools)
+        return list(r.get("tool_calls") or []) if isinstance(r, dict) else []
+    monkeypatch.setattr(at.ai_planner, "resolve_calls", fake_resolve)
     ctx = N(guild=N(id=1), followup=N(send=AsyncMock()))
     return cog, ctx, chat
 
@@ -215,3 +219,55 @@ def test_reply_path_plans_a_many_part_request_and_runs_it_on_the_guarded_path(mo
     src = open(at.__file__, encoding="utf-8").read()
     assert "planned = await self._plan_and_resolve(user_id, content, tools, proxy)" in src
     assert "real_interaction=False, origin_message=content)\n                return \"\", None" in src
+
+
+# ── Groq rate limits (8000 tokens/minute): wait and retry, lean calls ──
+def test_parse_retry_after_reads_groqs_hint():
+    assert P.parse_retry_after("Please try again in 9.81s. Need more tokens?") == 9.81
+    assert P.parse_retry_after("try again in 250ms") == 0.25
+    assert abs(P.parse_retry_after("try again in 1m5.2s") - 65.2) < 1e-9
+    assert P.parse_retry_after("something else") == 0.0 and P.parse_retry_after(None) == 0.0
+
+
+def _body(*calls):
+    msg = {"tool_calls": [{"function": {"name": n, "arguments": json.dumps(a)}} for n, a in calls]}
+    return {"choices": [{"message": msg}]}
+
+
+def test_resolve_calls_waits_out_a_429_then_succeeds(monkeypatch):
+    from modules import ai_features as af
+    post = AsyncMock(side_effect=[(429, None, "Please try again in 9.81s"), (429, None, "try again in 2s"),
+                                  (200, _body(("role_create", {"name": "A", "color": None})), None)])
+    monkeypatch.setattr(af, "_groq_post", post)
+    slept = []
+
+    async def nosleep(sec):
+        slept.append(sec)
+
+    calls = run(P.resolve_calls("p", [tool("role_create")], sleep=nosleep))
+    assert calls == [{"name": "role_create", "arguments": {"name": "A"}}]          # null argument dropped
+    assert post.await_count == 3 and abs(slept[0] - 10.31) < 1e-6 and slept[1] == 2.5
+
+
+def test_resolve_calls_gives_up_after_a_bounded_number_of_waits(monkeypatch):
+    from modules import ai_features as af
+    post = AsyncMock(return_value=(429, None, "try again in 60s"))
+    monkeypatch.setattr(af, "_groq_post", post)
+    slept = []
+
+    async def nosleep(sec):
+        slept.append(sec)
+
+    assert run(P.resolve_calls("p", [tool("role_create")], sleep=nosleep)) == []
+    assert post.await_count == P.MAX_RATE_WAITS + 1 and max(slept) <= P.MAX_RATE_WAIT_SECONDS
+
+
+def test_resolve_calls_request_is_lean_and_other_errors_do_not_loop(monkeypatch):
+    from modules import ai_features as af
+    post = AsyncMock(return_value=(500, None, "boom"))
+    monkeypatch.setattr(af, "_groq_post", post)
+    assert run(P.resolve_calls("task text", [tool("role_create")])) == []
+    assert post.await_count == 1
+    payload = post.await_args.args[0]
+    assert [m["role"] for m in payload["messages"]] == ["system", "user"] and len(payload["messages"][0]["content"]) < 400
+    assert payload["tools"] and payload["tool_choice"] == "auto"

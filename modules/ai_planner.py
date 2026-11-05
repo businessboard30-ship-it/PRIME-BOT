@@ -16,6 +16,7 @@ Everything here is pure (no Discord, no database) except `decompose`, which does
 Task text is UNTRUSTED model output: it is only ever used as a prompt for the next model call, never executed.
 """
 
+import asyncio
 import json
 import re
 from typing import Dict, List, Optional, Tuple
@@ -28,7 +29,7 @@ CHUNK_SIZE = 4                  # tasks resolved per model call
 CHUNK_TOOLS = 8                 # tools offered for one chunk
 CHUNK_PAUSE_SECONDS = 3.0       # between chunk calls (Groq's tokens-per-minute cap)
 TASK_PAUSE_SECONDS = 1.5        # between single-task calls when a chunk has to be redone one task at a time
-MAX_PLANNING_SECONDS = 240      # wall clock for the whole decompose+resolve phase
+MAX_PLANNING_SECONDS = 300      # wall clock for the whole decompose+resolve phase
 MAX_TASK_CHARS = 300
 MAX_MESSAGE_CHARS = 2000
 
@@ -159,13 +160,76 @@ def claims_unrun_actions(text: str) -> bool:
     return sum(1 for line in str(text or "").splitlines() if line.strip().startswith(("\u2705", "\u2714")) ) >= 2
 
 
+RESOLVE_SYSTEM = ("You route Discord server-admin tasks to tools. For EACH numbered task make exactly one tool call, in order, all in this "
+                  "one reply. Use the person's names and numbers exactly. If a task has no matching tool, skip it. No prose, no questions.")
+MAX_RATE_WAITS = 4              # times one planner call may wait out a Groq rate limit before giving up
+MAX_RATE_WAIT_SECONDS = 25.0    # longest single wait
+
+
+def parse_retry_after(error_text) -> float:
+    """Seconds Groq asks us to wait, from text like 'Please try again in 9.81s', '250ms' or '1m5.2s'. 0.0 when not stated."""
+    m = re.search(r"try again in\s+(?:(\d+)m(?!s))?\s*(?:(\d+(?:\.\d+)?)(ms|s))?", str(error_text or ""), re.I)
+    if not m or (m.group(1) is None and m.group(2) is None):
+        return 0.0
+    secs = int(m.group(1) or 0) * 60
+    if m.group(2) is not None:
+        secs += float(m.group(2)) / (1000.0 if m.group(3).lower() == "ms" else 1.0)
+    return secs
+
+
+async def post_waiting(payload: dict, *, timeout_seconds: int = 45, sleep=asyncio.sleep) -> Tuple[Optional[int], Optional[dict], Optional[str]]:
+    """Groq call that WAITS OUT a tokens-per-minute 429 (the hint says how long) and tries again, a few times, instead of
+    giving up -- a plan makes many calls in a row and the free tier allows only ~8000 tokens a minute."""
+    from modules import ai_features as af
+    status, data, err = None, None, None
+    for attempt in range(MAX_RATE_WAITS + 1):
+        status, data, err = await af._groq_post(payload, timeout_seconds=timeout_seconds)
+        if status != 429 or attempt == MAX_RATE_WAITS:
+            break
+        await sleep(min(max(parse_retry_after(err), 2.0) + 0.5, MAX_RATE_WAIT_SECONDS))
+    return status, data, err
+
+
+def parse_calls(data) -> List[Dict]:
+    """Tool calls out of a Groq 200 body as [{'name','arguments'}]; null arguments are left out (null = 'not given')."""
+    try:
+        raw = data["choices"][0]["message"].get("tool_calls") or []
+    except (KeyError, IndexError, TypeError, AttributeError):
+        return []
+    out = []
+    for tc in raw:
+        fn = (tc or {}).get("function") or {}
+        try:
+            args = json.loads(fn.get("arguments") or "{}")
+        except (ValueError, TypeError):
+            args = {}
+        if isinstance(args, dict) and fn.get("name"):
+            out.append({"name": fn["name"], "arguments": {k: v for k, v in args.items() if v is not None}})
+    return out
+
+
+async def resolve_calls(prompt: str, tools: List[Dict], *, sleep=asyncio.sleep) -> List[Dict]:
+    """ONE lean model call for a chunk of tasks: a tiny system prompt + the chunk's own short tool list (the normal chat call
+    also carries the whole persona prompt and chat history, ~3,500 tokens -- too heavy to repeat 10+ times a minute).
+    Waits out rate limits, retries once for a malformed tool call, and returns [] when it cannot get calls."""
+    from modules import ai_features as af
+    payload = {"model": af.AI_CHAT_MODEL, "temperature": 0.1, "max_completion_tokens": 1500, "reasoning_effort": "low",
+               "top_p": 1.0, "tools": tools, "tool_choice": "auto",
+               "messages": [{"role": "system", "content": RESOLVE_SYSTEM}, {"role": "user", "content": prompt}]}
+    status, data, err = await post_waiting(payload, sleep=sleep)
+    if status == 400 and af._is_tool_validation_error(err):
+        again = dict(payload, messages=payload["messages"] + [{"role": "system", "content": af.TOOL_FORMAT_REMINDER}])
+        status, data, err = await post_waiting(again, sleep=sleep)
+    return parse_calls(data) if status == 200 and data else []
+
+
 async def decompose(message: str) -> Tuple[List[Dict], Dict]:
     """The single no-tools model call. ([], info) when the model is unreachable or answered something unusable, so the
     caller falls back to the normal path."""
     from modules import ai_features as af
     payload = {"model": af.AI_CHAT_MODEL, "messages": decompose_messages(message), "temperature": 0.1,
                "max_completion_tokens": 1800, "reasoning_effort": "low", "top_p": 1.0}
-    status, data, _err = await af._groq_post(payload, timeout_seconds=45)
+    status, data, _err = await post_waiting(payload)
     if status != 200 or not data:
         return [], {"dropped_over_limit": 0, "duplicates": 0, "bad": 0}
     try:
