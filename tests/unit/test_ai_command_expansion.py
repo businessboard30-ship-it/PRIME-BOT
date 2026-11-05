@@ -192,6 +192,22 @@ def test_adapter_turns_a_second_response_into_a_followup():
         run(i.response.send_modal(object()))
 
 
+def test_adapter_works_on_a_REAL_interaction_whose_response_is_read_only():
+    """discord.py 2.x makes Interaction.response read-only; assigning to it used to fail silently, so the adapter never installed
+    and any command that deferred/responded after the Confirm click raised InteractionResponded (seen live: /welcome message)."""
+    i = discord.Interaction.__new__(discord.Interaction)
+    real = i.response
+    real._response_type = discord.InteractionResponseType.deferred_message_update      # the Confirm click already used it
+    with pytest.raises(AttributeError):
+        i.response = object()                                                          # proves the premise
+    assert real.is_done()
+    original = guard._adapt_used_response(i)
+    assert original is real and isinstance(i.response, guard._AlreadyRespondedResponse)
+    assert run(i.response.defer(ephemeral=True)) is None                               # no InteractionResponded any more
+    guard._set_response(i, original)
+    assert i.response is real                                                          # put back exactly as it was
+
+
 def test_adapter_leaves_fresh_and_standin_interactions_alone():
     fresh = _used_interaction()
     fresh.response.is_done.return_value = False
