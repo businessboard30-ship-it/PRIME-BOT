@@ -5,6 +5,7 @@ from modules import command_reference as cr
 def test_runnable_context_tells_the_model_to_act_not_ask():
     ctx = cr.build_context(runnable={"serveranalytics"})
     assert "ACT, don't ask" in ctx and "Confirm" in ctx and "call all the tools" in ctx
+    assert "ALL IN THIS ONE REPLY" in ctx and "no second turn" in ctx
 
 
 def test_describe_only_context_does_not_promise_actions():

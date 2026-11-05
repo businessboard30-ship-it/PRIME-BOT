@@ -235,7 +235,9 @@ def build_context(user_perms: Optional[set] = None, bot=None, runnable: Optional
         "- ACT, don't ask. When the person asks for something a marked tool can do, call the tool(s) in THIS reply. "
         "Do not write out a plan and then ask \"shall I go ahead?\" or \"let me know\": the bot shows its own Confirm "
         "button for anything risky, and that button is the confirmation. For several actions, call all the tools "
-        "together, in the order asked. If one step has no tool, say so in a few words and still run the others. "
+        "together, in the order asked, ALL IN THIS ONE REPLY: you get no second turn, so never call just the first tool "
+        "and wait for its result, and don't treat a lookup as a reason to hold the other steps back (the bot runs "
+        "lookups first and puts the rest under one Confirm). If one step has no tool, say so in a few words and still run the others. "
         "Only hold back if the person says to wait or to show a plan first.\n"
         if runnable else
         "- You can only tell someone what to type — you cannot run commands yourself.\n"
