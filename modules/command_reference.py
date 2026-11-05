@@ -138,6 +138,8 @@ _COMMAND_QUESTION_HINTS = (
     "premium", "economy", "leaderboard", "level up", "leveling",
     "help menu", "/help",
     "font", "fonts", "rename", "restyle", "fancy text",
+    "lock", "unlock", "lockdown", "schedule", "remind", "announce", "post ", "channel", "role",
+    "set up", "setup", "create ", "delete ", "remove ", "drill", "welcome", "clean ", "purge",
 )
 
 
@@ -230,6 +232,11 @@ def build_context(user_perms: Optional[set] = None, bot=None, runnable: Optional
         "- Some commands below are marked \"I can run this for you\" — for THOSE, call the matching "
         "tool instead of just telling the person to type the command; only fall back to describing "
         "the command as text for one that ISN'T marked that way.\n"
+        "- ACT, don't ask. When the person asks for something a marked tool can do, call the tool(s) in THIS reply. "
+        "Do not write out a plan and then ask \"shall I go ahead?\" or \"let me know\": the bot shows its own Confirm "
+        "button for anything risky, and that button is the confirmation. For several actions, call all the tools "
+        "together, in the order asked. If one step has no tool, say so in a few words and still run the others. "
+        "Only hold back if the person says to wait or to show a plan first.\n"
         if runnable else
         "- You can only tell someone what to type — you cannot run commands yourself.\n"
     )
