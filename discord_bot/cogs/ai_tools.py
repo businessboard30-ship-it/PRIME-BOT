@@ -357,6 +357,9 @@ class PlanRetryView(discord.ui.View):
         self.stop()
 
 
+MAX_AICHAT_CHARS = 2000      # room for a 20+ task request (was 1000)
+
+
 class ArgUnresolved(Exception):
     """A channel/role the person NAMED could not be matched to exactly one real one. The command is not run: dropping the argument
     would make it fall back to a default (the channel they are typing in, or @everyone) and act on the wrong thing."""
@@ -1249,11 +1252,13 @@ class AIToolsCog(commands.Cog):
             async def _run_all(ci: discord.Interaction):
                 await run_plan_with_progress(ci, plan, _exec_for)
 
-            body = "\n".join(f"{i}. {line}" for i, (_s, _n, _a, line) in enumerate(confirm, 1))
-            prompt = f"I'd run these {len(confirm)} commands, in order -- confirm?\n{body}"
-            if len(prompt) > 1900:
-                prompt = prompt[:1890] + "\n\u2026"
-            await ctx.followup.send(prompt, view=AIConfirmView(ctx.user.id, _run_all, timeout=120), ephemeral=True)
+            lines = [f"{i}. {line}" for i, (_s, _n, _a, line) in enumerate(confirm, 1)]
+            head = f"I'd run these {len(confirm)} commands, in order -- confirm?"
+            pages = ai_bulk.chunk_lines([head] + lines)
+            for page in pages[:-1]:                         # a long plan is shown IN FULL; nothing is cut off before Confirm
+                await ctx.followup.send(page, ephemeral=True)
+            last = pages[-1] if len(pages) == 1 else f"(the {len(confirm)} commands are listed above) -- confirm to run them all, in order?"
+            await ctx.followup.send(last, view=AIConfirmView(ctx.user.id, _run_all, timeout=120), ephemeral=True)
         if notes:
             try:
                 await ctx.followup.send("\n".join(notes)[:1900], ephemeral=True)
@@ -1421,7 +1426,7 @@ class AIToolsCog(commands.Cog):
                                  history_override=[{"role": "user", "content": message}], **(ai_kwargs or {}))
             if not isinstance(more, dict):
                 return
-            calls = ai_followup.remaining_calls(more.get("tool_calls"), done)
+            calls = ai_followup.remaining_calls(more.get("tool_calls"), done, first_calls=first_calls)
             if calls:
                 await self._run_tool_calls(interaction, calls, real_interaction=real_interaction,
                                            origin_message=message, choice_depth=choice_depth)
@@ -1433,8 +1438,8 @@ class AIToolsCog(commands.Cog):
                            file="Optional: an image, PDF, Word (.docx) or text/code file for me to read")
     async def aichat(self, interaction: discord.Interaction, message: str, file: Optional[discord.Attachment] = None):
         message = message.strip()
-        if not message or len(message) > 1000:
-            await interaction.response.send_message("Message must be 1-1000 characters.", ephemeral=True)
+        if not message or len(message) > MAX_AICHAT_CHARS:
+            await interaction.response.send_message(f"Message must be 1-{MAX_AICHAT_CHARS} characters.", ephemeral=True)
             return
 
         quick = self._quick_answer(message, interaction.guild is not None, interaction.guild)
