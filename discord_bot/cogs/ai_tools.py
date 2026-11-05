@@ -1327,6 +1327,7 @@ class AIToolsCog(commands.Cog):
         tools, command_context = self._with_choice_tool(tools, command_context, choice_depth)
         response = await ai_chat(user_id, message, is_anime_question=is_anime, tier=tier,
                                   session_id=session_id, command_context=command_context, tools=tools or None,
+                                  guild_id=getattr(guild, "id", None),     # server memory + the server's own AI name, same as replies
                                   voice=voice, file_block=file_block, image_urls=image_urls or None)
         if not response:
             return "AI service error. Try again later.", warning, session_id
