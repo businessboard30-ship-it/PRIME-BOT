@@ -1346,7 +1346,8 @@ class AIToolsCog(commands.Cog):
         return out, warning, session_id
 
     async def _second_turn(self, user_id: int, message: str, first_calls: list, interaction, *, tools,
-                           command_context, choice_depth: int) -> None:
+                           command_context, choice_depth: int, real_interaction: bool = True,
+                           ai_kwargs: Optional[dict] = None) -> None:
         """ONE extra model turn when a several-part request got a single tool call (see modules/ai_followup.py).
         Never raises: a failure here must not hurt the first call's result. The new calls take the normal guarded path."""
         try:
@@ -1355,12 +1356,12 @@ class AIToolsCog(commands.Cog):
             done = ai_followup.done_names(first_calls)
             prompt = ai_followup.followup_prompt(message, done)
             more = await ai_chat(user_id, prompt, command_context=command_context, tools=tools,
-                                 history_override=[{"role": "user", "content": message}])
+                                 history_override=[{"role": "user", "content": message}], **(ai_kwargs or {}))
             if not isinstance(more, dict):
                 return
             calls = ai_followup.remaining_calls(more.get("tool_calls"), done)
             if calls:
-                await self._run_tool_calls(interaction, calls, real_interaction=True,
+                await self._run_tool_calls(interaction, calls, real_interaction=real_interaction,
                                            origin_message=message, choice_depth=choice_depth)
         except Exception:
             logger.exception("[aichat] second turn for remaining steps failed")
@@ -1685,7 +1686,12 @@ class AIToolsCog(commands.Cog):
             file_block=file_block, image_urls=image_urls or None,
         )
         if isinstance(response, dict):
-            await self._run_tool_calls(proxy, response["tool_calls"], real_interaction=False, origin_message=content)
+            first_calls = response["tool_calls"]
+            await self._run_tool_calls(proxy, first_calls, real_interaction=False, origin_message=content)
+            # Replying to / mentioning the bot is the common way to chat: it needs the same extra turn as /aichat.
+            await self._second_turn(user_id, content, first_calls, proxy, tools=tools, command_context=command_context,
+                                    choice_depth=0, real_interaction=False,
+                                    ai_kwargs={"guild_id": guild_id, "kind": "reply"})
             return "", None
         return (response or "AI service error. Try again later."), None
 

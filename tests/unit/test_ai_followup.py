@@ -27,3 +27,9 @@ def test_prompt_names_what_is_done():
 def test_wired_into_chat_turn_and_never_raises():
     src = open("discord_bot/cogs/ai_tools.py").read()
     assert "await self._second_turn(" in src and "except Exception:\n            logger.exception(\"[aichat] second turn" in src
+
+
+def test_reply_and_mention_chat_also_get_the_second_turn():
+    src = open("discord_bot/cogs/ai_tools.py").read()
+    reply = src.split('kind="reply", tools=None if atts')[1].split("@commands.Cog.listener")[0]
+    assert "await self._second_turn(" in reply and "real_interaction=False" in reply and '"kind": "reply"' in reply
