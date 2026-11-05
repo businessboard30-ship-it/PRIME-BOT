@@ -1,0 +1,111 @@
+"""Phase 1 planner: decompose -> chunked resolve. Pure parsing/chunking plus the cog path with the model mocked out."""
+import asyncio
+import json
+from types import SimpleNamespace as N
+from unittest.mock import AsyncMock
+
+from discord_bot.cogs import ai_tools as at
+from modules import ai_plan, ai_planner as P
+
+
+def run(coro):
+    return asyncio.get_event_loop_policy().new_event_loop().run_until_complete(coro)
+
+
+def test_ceiling_matches_the_plan_runner():
+    assert P.MAX_TASKS == ai_plan.MAX_STEPS
+
+
+def test_should_plan_only_for_many_part_requests():
+    assert not P.should_plan("lock general and then make a role")
+    assert not P.should_plan("create channels gallo, news, memes, staff, music, games, art and chat")      # ONE bulk command's names
+    assert P.should_plan("make a category gallo. add 3 channels. lock general. create role mod. give mod to sam. rename the server")
+    assert P.should_plan("1. make category gallo\n2. add channels\n3. lock general\n4. create role mod")
+    assert P.should_plan("ban sam, kick joe, mute ann, lock chat, pin rules, make role mod, add emoji fox, set slowmode, rename lobby, hide logs, open news")                                                 # 10+ comma parts: plan it
+    assert not P.should_plan("")
+
+
+def test_parse_clean_json_renumbers_and_keeps_order():
+    raw = json.dumps({"tasks": [{"id": 7, "task": "create category gallo"},
+                                {"id": 9, "task": "create channels a, b in gallo", "depends_on": [7]}]})
+    tasks, info = P.parse_tasks(raw)
+    assert [t["id"] for t in tasks] == [1, 2] and tasks[1]["depends_on"] == [1]
+
+
+def test_parse_survives_fences_prose_and_bare_lists():
+    raw = "Sure!\n```json\n[\"lock general\", {\"task\": \"make role mod\"}]\n```"
+    tasks, _ = P.parse_tasks(raw)
+    assert [t["task"] for t in tasks] == ["lock general", "make role mod"]
+    assert P.parse_tasks("no json here") == ([], {"dropped_over_limit": 0, "duplicates": 0, "bad": 0})
+    assert P.parse_tasks(None)[0] == []
+
+
+def test_parse_drops_forward_unknown_and_self_dependencies():
+    raw = json.dumps({"tasks": [{"id": 1, "task": "a", "depends_on": [2, 99, 1]}, {"id": 2, "task": "b", "depends_on": [1]}]})
+    tasks, _ = P.parse_tasks(raw)
+    assert tasks[0]["depends_on"] == [] and tasks[1]["depends_on"] == [1]          # no forward refs, so no cycles
+
+
+def test_parse_bounds_duplicates_blanks_and_length():
+    raw = json.dumps({"tasks": [{"task": f"task {i}"} for i in range(40)] + [{"task": "task 1"}, {"task": "  "}, 5]})
+    tasks, info = P.parse_tasks(raw)
+    assert len(tasks) == P.MAX_TASKS and info["dropped_over_limit"] == 15 and info["duplicates"] == 1 and info["bad"] == 2
+    assert len(P.parse_tasks(json.dumps(["x" * 900]))[0][0]["task"]) == P.MAX_TASK_CHARS
+
+
+def test_chunks_keep_order_and_cover_everything():
+    tasks = [{"id": i, "task": f"t{i}", "depends_on": []} for i in range(1, 24)]
+    chunks = P.chunk_tasks(tasks)
+    assert [t["id"] for c in chunks for t in c] == list(range(1, 24)) and all(len(c) <= P.CHUNK_SIZE for c in chunks)
+
+
+def test_chunk_prompt_names_tasks_and_earlier_work():
+    text = P.chunk_prompt("do things", [{"id": 5, "task": "lock general"}], [{"id": 1, "task": "make category gallo"}])
+    assert "5. lock general" in text and "do NOT call tools" in text and "1. make category gallo" in text
+
+
+def test_unresolved_reports_chunks_with_no_calls():
+    a, b = [{"id": 1, "task": "x"}], [{"id": 2, "task": "y"}]
+    assert P.unresolved(a + b, [(a, 1), (b, 0)]) == b
+
+
+# ── the cog path ────────────────────────────────────────────────────────────
+def tool(name):
+    return {"type": "function", "function": {"name": name, "description": f"{name} things", "parameters": {"type": "object", "properties": {}}}}
+
+
+def make_cog(monkeypatch, tasks, replies):
+    cog = at.AIToolsCog.__new__(at.AIToolsCog)
+    monkeypatch.setattr(at.ai_planner, "decompose", AsyncMock(return_value=(tasks, {"dropped_over_limit": 0, "duplicates": 0, "bad": 0})))
+    monkeypatch.setattr(at.ai_planner, "CHUNK_PAUSE_SECONDS", 0)
+    chat = AsyncMock(side_effect=replies)
+    monkeypatch.setattr(at, "ai_chat", chat)
+    ctx = N(guild=N(id=1), followup=N(send=AsyncMock()))
+    return cog, ctx, chat
+
+
+def test_cog_resolves_each_chunk_separately_and_merges_in_order(monkeypatch):
+    tasks = [{"id": i, "task": f"create role r{i}", "depends_on": []} for i in range(1, 10)]     # 9 tasks -> 3 chunks of 4,4,1
+    replies = [{"tool_calls": [{"name": "role_create", "arguments": {"name": f"r{i}"}} for i in range(s, e)]} for s, e in ((1, 5), (5, 9), (9, 10))]
+    cog, ctx, chat = make_cog(monkeypatch, tasks, replies)
+    calls = run(cog._plan_and_resolve(1, "make roles", [tool("role_create")], ctx))
+    assert [c["arguments"]["name"] for c in calls] == [f"r{i}" for i in range(1, 10)] and chat.await_count == 3
+
+
+def test_cog_tells_the_person_which_tasks_found_no_command(monkeypatch):
+    tasks = [{"id": 1, "task": "create role mod", "depends_on": []}, {"id": 2, "task": "create role admin", "depends_on": []}]
+    cog, ctx, _ = make_cog(monkeypatch, tasks, ["just chat, no tools"])
+    assert run(cog._plan_and_resolve(1, "x", [tool("role_create")], ctx)) == []
+    notes = " ".join(str(c.args[0]) for c in ctx.followup.send.await_args_list)
+    assert "create role mod" in notes and "left them out" in notes
+
+
+def test_cog_falls_back_when_planning_yields_too_little(monkeypatch):
+    cog, ctx, chat = make_cog(monkeypatch, [{"id": 1, "task": "only one", "depends_on": []}], [])
+    assert run(cog._plan_and_resolve(1, "x", [tool("role_create")], ctx)) == [] and chat.await_count == 0
+
+
+def test_cog_never_raises_into_the_chat(monkeypatch):
+    cog, ctx, _ = make_cog(monkeypatch, [], [])
+    monkeypatch.setattr(at.ai_planner, "decompose", AsyncMock(side_effect=RuntimeError("boom")))
+    assert run(cog._plan_and_resolve(1, "x", [tool("role_create")], ctx)) == []
