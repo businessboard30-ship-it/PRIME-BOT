@@ -39,12 +39,14 @@ i18n: bot-authored strings go through discord_bot.i18n_helpers.tr().
 """
 
 import asyncio
+import time
 import logging
 import io
 from modules import ai_bulk, ai_plan
 from modules import ai_followup
 from modules.ai_tool_schema import nullable
 from modules.ai_tool_select import select_tools, select_tools_multi
+from modules import ai_planner
 from typing import Optional
 
 import discord
@@ -1387,6 +1389,11 @@ class AIToolsCog(commands.Cog):
 
         file_block, image_urls = await ai_attachments.build_attachment_context(attachments) if attachments else (None, [])
         tools = await self._build_command_tools(interaction) if (interaction is not None and not attachments) else None
+        if tools and not choice_depth and ai_planner.should_plan(message):
+            planned = await self._plan_and_resolve(user_id, message, tools, interaction)
+            if planned:                                     # a many-part request: planned, resolved in chunks, run on the guarded path
+                await self._run_tool_calls(interaction, planned, real_interaction=True, origin_message=message, choice_depth=choice_depth)
+                return "", warning, session_id
         tools = select_tools_multi(tools, message) if tools else None   # best tools for EACH part of the sentence (Groq token cap)
         runnable = runnable_labels([t["function"]["name"] for t in tools]) if tools else None
         command_context = await self._command_context(message, user_id, perms, guild, runnable=runnable)
@@ -1411,6 +1418,58 @@ class AIToolsCog(commands.Cog):
         if getattr(response, "voice", False):
             out = ai_voice.VoiceReply(out)
         return out, warning, session_id
+
+    async def _plan_and_resolve(self, user_id: int, message: str, all_tools: list, interaction) -> list:
+        """Phase 1 planner for a request with MANY parts: decompose into tasks, then resolve them a few at a time, each
+        chunk with its own short tool list. Returns the resolved tool calls in order, or [] (so the caller falls back to the
+        normal single-reply path). It only PLANS: every call still goes through _run_tool_calls (allowlist, permission,
+        daily cap, one Confirm, plan runner)."""
+        started = time.monotonic()
+        try:
+            tasks, info = await ai_planner.decompose(message)
+            if len(tasks) < 2:
+                return []
+            try:
+                await interaction.followup.send(f"\U0001f9e0 Planning {len(tasks)} task(s)\u2026", ephemeral=True)
+            except Exception:
+                logger.debug("[ai_planner] couldn't send the planning note", exc_info=True)
+            calls, per_chunk, earlier = [], [], []
+            for n, chunk in enumerate(ai_planner.chunk_tasks(tasks)):
+                if time.monotonic() - started > ai_planner.MAX_PLANNING_SECONDS:
+                    per_chunk.append((chunk, 0))
+                    continue
+                if n:
+                    await asyncio.sleep(ai_planner.CHUNK_PAUSE_SECONDS)
+                prompt = ai_planner.chunk_prompt(message, chunk, earlier)
+                chunk_tools = select_tools(all_tools, " ; ".join(t["task"] for t in chunk), limit=ai_planner.CHUNK_TOOLS)
+                got = []
+                if chunk_tools:
+                    resp = await ai_chat(user_id, prompt, tools=chunk_tools, history_override=[{"role": "user", "content": prompt}],
+                                         guild_id=getattr(interaction.guild, "id", None))
+                    if isinstance(resp, dict):
+                        got = [c for c in (resp.get("tool_calls") or []) if isinstance(c, dict) and c.get("name")]
+                calls.extend(got)
+                per_chunk.append((chunk, len(got)))
+                earlier.extend(chunk)
+            missed = ai_planner.unresolved(tasks, per_chunk)
+            if missed:
+                try:
+                    await interaction.followup.send(
+                        "\u2139\ufe0f I couldn't match these to a command, so I left them out:\n"
+                        + "\n".join(f"\u2022 {t['task']}" for t in missed)[:1800], ephemeral=True)
+                except Exception:
+                    logger.debug("[ai_planner] couldn't send the unmatched-tasks note", exc_info=True)
+            if info.get("dropped_over_limit"):
+                try:
+                    await interaction.followup.send(
+                        f"\u2139\ufe0f I plan up to {ai_planner.MAX_TASKS} tasks per message -- {info['dropped_over_limit']} more were left out. "
+                        "Ask for them in a new message.", ephemeral=True)
+                except Exception:
+                    logger.debug("[ai_planner] couldn't send the over-limit note", exc_info=True)
+            return calls
+        except Exception:
+            logger.exception("[ai_planner] planning failed; falling back to the normal path")
+            return []
 
     async def _second_turn(self, user_id: int, message: str, first_calls: list, interaction, *, tools,
                            command_context, choice_depth: int, real_interaction: bool = True,
