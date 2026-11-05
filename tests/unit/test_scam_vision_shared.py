@@ -126,3 +126,70 @@ def test_scan_skips_gemini_when_another_bot_paused_the_fleet(monkeypatch):
 def test_defaults_are_lower_and_shared_in_the_docs():
     assert sv.DEFAULT_RPM == 8 and sv.DEFAULT_DAILY == 200
     assert "SHARED" in open("modules/scam_vision.py", encoding="utf-8").read()
+
+
+# ── survives a restart ──
+
+class SConn:
+    def __init__(self):
+        self.usage, self.learned = {}, {}
+
+    async def execute(self, sql, *a):
+        if sql.startswith("INSERT INTO scam_vision_usage"):
+            self.usage[(a[0], a[1], a[2])] = (a[3], a[4])
+        elif sql.startswith("INSERT INTO scam_vision_learned"):
+            self.learned[a[0]] = len(self.learned)
+        elif sql.startswith("DELETE FROM scam_vision_usage"):
+            self.usage = {k: v for k, v in self.usage.items() if k[0] >= a[0]}
+
+    async def fetch(self, sql, *a):
+        if "FROM scam_vision_learned" in sql:
+            return [{"dhash": h} for h, _ in sorted(self.learned.items(), key=lambda kv: kv[1])]
+        return [{"guild_id": k[1], "clone_key": k[2], "gemini_used": v[0], "openai_used": v[1]} for k, v in self.usage.items() if k[0] == a[0]]
+
+
+def sdb(monkeypatch):
+    conn = SConn()
+
+    async def pool(): return Pool(conn)
+    monkeypatch.setattr(sh, "_pool", pool)
+    return conn
+
+
+def test_hash_conversion_roundtrips_unsigned_64_bit():
+    for h in (0, 1, (1 << 63) - 1, 1 << 63, (1 << 64) - 1, 0xDEADBEEFCAFEBABE):
+        assert sh.from_db_hash(sh.to_db_hash(h)) == h and -(1 << 63) <= sh.to_db_hash(h) < (1 << 63)
+
+
+def test_usage_and_learned_hashes_come_back_after_a_restart(monkeypatch):
+    conn = sdb(monkeypatch)
+    run(sh.save_usage("2026-11-05", 111, None, 4, 1))
+    run(sh.save_usage("2026-11-05", 222, 7, 2, 0))
+    run(sh.save_usage("2026-11-04", 333, None, 5, 5))                         # yesterday: dropped on load
+    run(sh.save_learned(0xDEADBEEFCAFEBABE))
+    learned, usage = run(sh.load_state("2026-11-05"))
+    assert learned == [0xDEADBEEFCAFEBABE]
+    assert usage == {(111, None): (4, 1), (222, 7): (2, 0)}
+
+
+def test_scanner_restores_its_counts_so_a_deploy_does_not_hand_out_a_fresh_quota(monkeypatch):
+    conn = sdb(monkeypatch)
+    today = sv._today()
+    run(sh.save_usage(today, 555, None, 5, 1))
+    run(sh.save_learned(12345))
+    sv._s.loaded = False
+    sv._s.guild_used.clear(); sv._s.o_guild_used.clear(); sv._s.learned.clear()
+    run(sv._ensure_loaded())
+    assert sv.guild_used_today(555, None) == 5 and sv.openai_used_today(555, None) == 1 and 12345 in sv._s.learned
+    run(sv._ensure_loaded())                                                  # only once per process
+    assert sv.guild_used_today(555, None) == 5
+
+
+def test_learn_returns_only_new_hashes_and_database_failure_changes_nothing(monkeypatch):
+    sv._s.learned.clear()
+    monkeypatch.setattr(sv.ss, "dhash", lambda data: 42)
+    assert sv._learn(b"a") == 42 and sv._learn(b"a") is None
+    async def boom(): raise RuntimeError("db down")
+    monkeypatch.setattr(sh, "_pool", boom)
+    run(sh.save_usage("d", 1, None, 1, 0)); run(sh.save_learned(1))           # never raise
+    assert run(sh.load_state("d")) == ([], {})

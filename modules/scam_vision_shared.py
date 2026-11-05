@@ -149,3 +149,69 @@ async def clear_block() -> None:
             await conn.execute("UPDATE scam_vision_shared SET blocked_until = NULL, fail_count = 0 WHERE id = 1")
     except Exception:
         pass
+
+
+# ── survive a restart ──────────────────────────────────────────────────────
+# Per-server daily check counts and the dHashes of images already flagged used to live only in memory: every deploy reset every
+# server's daily cap (more API calls, more 429s) and made the scanner forget scams it had already learned. They are saved now and
+# loaded once per process. Same rules as above: tables created on first use, any database trouble is ignored (memory still works).
+_USAGE_DDL = ("CREATE TABLE IF NOT EXISTS scam_vision_usage (day TEXT NOT NULL, guild_id BIGINT NOT NULL, clone_key BIGINT NOT NULL DEFAULT -1, "
+              "gemini_used INT NOT NULL DEFAULT 0, openai_used INT NOT NULL DEFAULT 0, PRIMARY KEY (day, guild_id, clone_key))")
+_LEARNED_DDL = ("CREATE TABLE IF NOT EXISTS scam_vision_learned (dhash BIGINT PRIMARY KEY, learned_at TIMESTAMPTZ NOT NULL DEFAULT NOW())")
+LEARNED_KEEP = 300
+_loaded = False
+
+
+def to_db_hash(h: int) -> int:
+    """dHashes are unsigned 64-bit; Postgres BIGINT is signed."""
+    return h - (1 << 64) if h >= (1 << 63) else h
+
+
+def from_db_hash(h: int) -> int:
+    return h + (1 << 64) if h < 0 else h
+
+
+def _ck(clone_id) -> int:
+    return -1 if clone_id is None else int(clone_id)
+
+
+async def save_usage(day: str, guild_id: int, clone_id, gemini_used: int, openai_used: int) -> None:
+    try:
+        pool = await _pool()
+        async with pool.acquire() as conn:
+            await conn.execute(_USAGE_DDL)
+            await conn.execute(
+                "INSERT INTO scam_vision_usage (day, guild_id, clone_key, gemini_used, openai_used) VALUES ($1, $2, $3, $4, $5) "
+                "ON CONFLICT (day, guild_id, clone_key) DO UPDATE SET gemini_used = EXCLUDED.gemini_used, openai_used = EXCLUDED.openai_used",
+                day, guild_id, _ck(clone_id), gemini_used, openai_used)
+    except Exception:
+        pass
+
+
+async def save_learned(h: int) -> None:
+    try:
+        pool = await _pool()
+        async with pool.acquire() as conn:
+            await conn.execute(_LEARNED_DDL)
+            await conn.execute("INSERT INTO scam_vision_learned (dhash) VALUES ($1) ON CONFLICT (dhash) DO NOTHING", to_db_hash(h))
+            await conn.execute("DELETE FROM scam_vision_learned WHERE dhash NOT IN "
+                               "(SELECT dhash FROM scam_vision_learned ORDER BY learned_at DESC LIMIT $1)", LEARNED_KEEP)
+    except Exception:
+        pass
+
+
+async def load_state(day: str):
+    """(learned hashes, {(guild, clone_or_None): (gemini_used, openai_used)}) for today. ([], {}) on any trouble."""
+    try:
+        pool = await _pool()
+        async with pool.acquire() as conn:
+            await conn.execute(_USAGE_DDL)
+            await conn.execute(_LEARNED_DDL)
+            await conn.execute("DELETE FROM scam_vision_usage WHERE day < $1", day)         # keep today only
+            learned = await conn.fetch("SELECT dhash FROM scam_vision_learned ORDER BY learned_at ASC")
+            usage = await conn.fetch("SELECT guild_id, clone_key, gemini_used, openai_used FROM scam_vision_usage WHERE day = $1", day)
+        return ([from_db_hash(int(r["dhash"])) for r in learned],
+                {(int(r["guild_id"]), None if int(r["clone_key"]) < 0 else int(r["clone_key"])): (int(r["gemini_used"]), int(r["openai_used"]))
+                 for r in usage})
+    except Exception:
+        return [], {}
