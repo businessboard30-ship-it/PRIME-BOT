@@ -13,6 +13,8 @@ Cost / safety rules (the free Gemini tier has tight limits):
   * Results are cached by file hash; near-copies of an image Gemini already flagged are caught from memory
     (perceptual hash) without another API call.
   * A per-minute and a per-day budget plus a short per-user limit. Over budget = skipped, never queued.
+    The per-minute / per-day budget and the pause after a 429 are SHARED by the main bot and all clones through the
+    database (modules/scam_vision_shared.py), because they all use one Gemini key. Without that, N processes sent N x the quota.
   * Fails open: any error, timeout, missing key or odd answer means "not a scam". It never deletes on doubt.
   * Backup: when Gemini can't answer (no key, error, rate limit, timeout or its pause after one), the same picture
     can go to OpenAI instead (OPENAI_API_KEY), with its own much smaller daily cap per server.
@@ -32,6 +34,7 @@ from typing import Deque, Dict, List, Optional, Tuple
 import httpx
 
 from modules import scam_shield as ss
+from modules import scam_vision_shared as shared
 
 logger = logging.getLogger(__name__)
 
@@ -51,6 +54,8 @@ OPENAI_DEFAULT_MODEL = "gpt-4o-mini"    # cheap and reads images; SCAM_VISION_OP
 OPENAI_FREE_DAILY = 1                   # backup (OpenAI) checks per server per day on a free server
 OPENAI_PREMIUM_DAILY = 3                # same, for a Premium server
 CACHE_MAX = 3000
+DEFAULT_RPM = 8                         # Gemini calls per minute, shared by ALL bots (was 12 per process)
+DEFAULT_DAILY = 200                     # per day, shared by ALL bots (was 250 per process); SCAM_VISION_RPM / _DAILY override
 LEARNED_MAX = 300
 
 PROMPT = (
@@ -302,8 +307,8 @@ def _budget_ok(guild_id: int, user_id: int) -> bool:
     now = time.monotonic()
     if now < _s.blocked_until:
         return False
-    rpm = _int_env("SCAM_VISION_RPM", 12)
-    daily = _int_env("SCAM_VISION_DAILY", 250)
+    rpm = _int_env("SCAM_VISION_RPM", DEFAULT_RPM)
+    daily = _int_env("SCAM_VISION_DAILY", DEFAULT_DAILY)
     while _s.calls and now - _s.calls[0] > 60:
         _s.calls.popleft()
     if len(_s.calls) >= rpm:
@@ -415,10 +420,11 @@ async def _ask(jpeg: bytes) -> Optional[bool]:
         _note(False, f"can't reach Gemini ({type(e).__name__})")
         return None
     if resp.status_code == 429 or resp.status_code >= 500:
-        logger.warning("[scam-vision] Gemini answered %s; pausing AI scan for 60s", resp.status_code)
-        _s.blocked_until = time.monotonic() + 60
-        _note(False, "rate limit hit (429), free quota used up" if resp.status_code == 429
-              else f"Gemini server error {resp.status_code}")
+        secs = await shared.block(shared.parse_retry_after(resp.headers.get("retry-after")))     # pauses EVERY bot, with backoff
+        logger.warning("[scam-vision] Gemini answered %s; pausing the AI scan for all bots for %ss", resp.status_code, secs)
+        _s.blocked_until = time.monotonic() + secs
+        _note(False, (f"rate limit hit (429), free quota used up; all bots paused {secs}s" if resp.status_code == 429
+                      else f"Gemini server error {resp.status_code}; all bots paused {secs}s"))
         return None
     if resp.status_code in (400, 401, 403, 404):
         logger.error("[scam-vision] Gemini rejected the request (%s): check GEMINI_API_KEY / SCAM_VISION_MODEL. %s",
@@ -433,6 +439,7 @@ async def _ask(jpeg: bytes) -> Optional[bool]:
         parts = (data.get("candidates") or [{}])[0].get("content", {}).get("parts", [])
         verdict = parse_verdict("".join(p.get("text", "") for p in parts))
         _note(True, "ok")
+        await shared.success()
         return verdict
     except Exception:
         logger.debug("[scam-vision] couldn't read Gemini's answer", exc_info=True)
@@ -521,7 +528,7 @@ async def is_scam_image(data: bytes, guild_id: int, user_id: int,
     verdict: Optional[bool] = None
     user_checked = False
     gemini_tried_and_failed = False
-    gemini_usable = bool(api_key()) and time.monotonic() >= _s.blocked_until
+    gemini_usable = bool(api_key()) and time.monotonic() >= _s.blocked_until and await shared.blocked_for() <= 0
     if gemini_usable:
         cap, _ = await guild_cap(guild_id, clone_id)
         if guild_used_today(guild_id, clone_id) >= cap:
@@ -532,6 +539,12 @@ async def is_scam_image(data: bytes, guild_id: int, user_id: int,
         jpeg = prepare(data)
         if jpeg is None:
             return None
+        slot, why = await shared.acquire(_int_env("SCAM_VISION_RPM", DEFAULT_RPM), _int_env("SCAM_VISION_DAILY", DEFAULT_DAILY))
+        if not slot:
+            if why != "paused":
+                return None                                      # the whole fleet is at its per-minute / per-day budget: skip, never queue
+            gemini_usable = False                                # another bot just hit a 429: use the backup like a local pause would
+    if gemini_usable:
         _spend()
         _spend_guild(guild_id, clone_id)
         before = _s.last_at
@@ -587,6 +600,7 @@ async def self_test() -> Tuple[bool, str]:
         else:
             gemini_ok = True
             _s.blocked_until = 0.0
+            await shared.clear_block()                    # the owner just proved it works: lift the fleet-wide pause too
             parts.append("Gemini " + answer(verdict) + " for the test picture.")
     openai_ok = False
     if openai_key():
