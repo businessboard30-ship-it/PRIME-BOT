@@ -43,6 +43,7 @@ import logging
 import io
 from modules import ai_bulk, ai_plan
 from modules import ai_followup
+from modules.ai_tool_schema import nullable
 from modules.ai_tool_select import select_tools, select_tools_multi
 from typing import Optional
 
@@ -791,6 +792,8 @@ class AIToolsCog(commands.Cog):
             prop = {"type": json_type, "description": str(d.get("description") or d["name"])[:200]}
             if d.get("enum"):
                 prop["enum"] = list(d["enum"])
+            if not d.get("required"):
+                nullable(prop)                      # models send null for fields they skip; Groq rejects the WHOLE call if null isn't allowed
             properties[d["name"]] = prop
             if d.get("required"):
                 required.append(d["name"])
@@ -1076,8 +1079,9 @@ class AIToolsCog(commands.Cog):
 
     @staticmethod
     def _clip_args(args: dict) -> dict:
-        """The model's arguments, with any runaway string cut down (bulk commands take lists, not essays)."""
-        return {k: (v[:1000] if isinstance(v, str) else v) for k, v in (args or {}).items()}
+        """The model's arguments, with any runaway string cut down (bulk commands take lists, not essays) and nulls dropped
+        (null means 'not given', never a value)."""
+        return {k: (v[:1000] if isinstance(v, str) else v) for k, v in (args or {}).items() if v is not None}
 
     @staticmethod
     def _with_choice_tool(tools, command_context, choice_depth: int):

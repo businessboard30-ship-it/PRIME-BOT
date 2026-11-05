@@ -103,6 +103,9 @@ def tool_schema(skill: Skill) -> dict:
         p = {"type": "integer" if f.kind == "int" else "string", "description": (f.description or f.name)[:200]}
         if f.kind == "choice":
             p["enum"] = list(f.choices)
+        if not f.required:
+            from modules.ai_tool_schema import nullable
+            nullable(p)
         props[f.name] = p
         if f.required:
             required.append(f.name)
