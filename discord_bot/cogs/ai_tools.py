@@ -1527,7 +1527,7 @@ class AIToolsCog(commands.Cog):
             if len(tasks) < 2:
                 return []
             try:
-                await interaction.followup.send(f"\U0001f9e0 Planning {len(tasks)} task(s)\u2026", ephemeral=True)
+                await interaction.followup.send(f"\U0001f9e0 Planning {len(tasks)} task(s)\u2026 (a big plan can take a minute or two)", ephemeral=True)
             except Exception:
                 logger.debug("[ai_planner] couldn't send the planning note", exc_info=True)
             calls, per_chunk, earlier = [], [], []
@@ -1539,11 +1539,8 @@ class AIToolsCog(commands.Cog):
                 tools_for = select_tools(all_tools, " ; ".join(t["task"] for t in task_list), limit=ai_planner.CHUNK_TOOLS)
                 if not tools_for:
                     return []
-                resp = await ai_chat(user_id, prompt, tools=tools_for, history_override=[{"role": "user", "content": prompt}],
-                                     guild_id=guild_id)
-                if isinstance(resp, dict):
-                    return [c for c in (resp.get("tool_calls") or []) if isinstance(c, dict) and c.get("name")]
-                return []
+                got_calls = await ai_planner.resolve_calls(prompt, tools_for)
+                return [c for c in got_calls if isinstance(c, dict) and c.get("name")]
 
             def _link(call_list: list, task_list: list) -> list:
                 return [{**c, "task_id": str(t["id"]), "depends_on_tasks": [str(d) for d in t["depends_on"]]}
