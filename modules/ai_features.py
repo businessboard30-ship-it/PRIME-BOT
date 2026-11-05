@@ -647,6 +647,15 @@ def wants_web_search(text: str) -> bool:
     return bool(text and len(text) <= 1000 and _SEARCH_Q.search(text))
 
 
+TOOL_FORMAT_REMINDER = ("Tool call format: for any optional argument you are not using, leave it OUT completely. "
+                        "Never send null, an empty string or a placeholder for it.")
+
+
+def _is_tool_validation_error(error_text) -> bool:
+    t = (error_text or "").lower()
+    return "tool call validation failed" in t or "did not match schema" in t
+
+
 async def ai_chat(user_id: int, message: str, is_anime_question: bool = False,
                    tier: str = "basic", session_id: int = None,
                    command_context: Optional[str] = None,
@@ -845,6 +854,14 @@ async def ai_chat(user_id: int, message: str, is_anime_question: bool = False,
         # primary key comes back with an auth/rate-limit/server error.
         status, data, error_text = await _groq_post(payload, timeout_seconds=30)
 
+        # The model sent a malformed tool call (typically null for an optional field). That is the model's slip, not a reason to give
+        # up on tools: retry ONCE with the same tools and a one-line reminder before degrading to plain chat below.
+        if status == 400 and tools and _is_tool_validation_error(error_text):
+            logger.warning("[aichat] tool call failed validation, retrying once with a format reminder: %s", (error_text or "")[:200])
+            again = dict(payload)
+            again["messages"] = list(payload.get("messages") or []) + [{"role": "system", "content": TOOL_FORMAT_REMINDER}]
+            status, data, error_text = await _groq_post(again, timeout_seconds=30)
+
         # Tool-calling failures (400 tool_use_failed, 413 request too large
         # because the tool schema list is big, 429 TPM on both keys, ...)
         # would fail identically on the backup key. Degrade gracefully:
@@ -882,6 +899,8 @@ async def ai_chat(user_id: int, message: str, is_anime_question: bool = False,
                         args = _json.loads(fn.get('arguments') or '{}')
                     except (ValueError, TypeError):
                         args = {}
+                    if isinstance(args, dict):
+                        args = {k: v for k, v in args.items() if v is not None}      # null = "not given"
                     name = fn.get('name')
                     if name:
                         parsed.append({"name": name, "arguments": args})
