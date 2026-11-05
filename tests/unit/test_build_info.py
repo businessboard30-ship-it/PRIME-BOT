@@ -31,4 +31,4 @@ def test_uptime_text():
 
 def test_log_channel_wiring():
     src = open("discord_bot/cogs/log_channel.py").read()
-    assert "build_info.summary" in src and "message.channel.id != log_feed.channel_id()" in src and "message.author.bot" in src
+    assert "build_info.summary" in src and "message.channel.id != target" in src and "message.author.bot" in src

@@ -23,6 +23,15 @@ IGNORED_PREFIXES = ("discord", "modules.log_feed", "discord_bot.cogs.log_channel
 INFO_KEYS = ("[aichat]", "[ai_command]", "[ai_plan]", "[aijobs]", "Logged in as")
 
 
+AUTO_NAME = "bot-logs"
+AUTO_TOPIC = "Private live log feed from the bot (auto-created). Type `version` to see which code is running."
+
+
+def find_existing(channels) -> Optional[object]:
+    """The auto-created channel if it already exists (so a restart never makes a second one)."""
+    return next((c for c in channels if getattr(c, "name", "") == AUTO_NAME), None)
+
+
 def channel_id() -> Optional[int]:
     raw = (os.getenv("LOG_CHANNEL_ID") or "").strip()
     return int(raw) if raw.isdigit() else None
