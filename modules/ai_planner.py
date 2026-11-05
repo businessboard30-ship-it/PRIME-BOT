@@ -27,7 +27,8 @@ MIN_DEMANDS_FOR_PLANNER = 6     # fewer parts than this keep using the normal si
 CHUNK_SIZE = 4                  # tasks resolved per model call
 CHUNK_TOOLS = 8                 # tools offered for one chunk
 CHUNK_PAUSE_SECONDS = 3.0       # between chunk calls (Groq's tokens-per-minute cap)
-MAX_PLANNING_SECONDS = 120      # wall clock for the whole decompose+resolve phase
+TASK_PAUSE_SECONDS = 1.5        # between single-task calls when a chunk has to be redone one task at a time
+MAX_PLANNING_SECONDS = 240      # wall clock for the whole decompose+resolve phase
 MAX_TASK_CHARS = 300
 MAX_MESSAGE_CHARS = 2000
 

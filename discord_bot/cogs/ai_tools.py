@@ -1352,7 +1352,7 @@ class AIToolsCog(commands.Cog):
             async def _run_all(ci: discord.Interaction):
                 await run_plan_with_progress(ci, plan, _exec_for)
 
-            lines = [f"{i}. {line}" + (" -- _will be skipped: a step it needs was refused_" if link[1] else "")
+            lines = [f"{i}. {str(line).replace(chr(10) + 'Go ahead?', '').strip()}" + (" -- _will be skipped: a step it needs was refused_" if link[1] else "")
                      for i, ((_s, _n, _a, line), link) in enumerate(zip(confirm, links), 1)]
             head = f"I'd run these {len(confirm)} commands, in order -- confirm?"
             await ctx.followup.send(view=PlanPreviewView(ctx.user.id, head, lines, _run_all, timeout=180), ephemeral=True)
@@ -1529,25 +1529,49 @@ class AIToolsCog(commands.Cog):
             except Exception:
                 logger.debug("[ai_planner] couldn't send the planning note", exc_info=True)
             calls, per_chunk, earlier = [], [], []
+            guild_id = getattr(interaction.guild, "id", None)
+
+            async def _resolve(task_list: list) -> list:
+                """One model call for these tasks with their own short tool list; only well-formed calls come back."""
+                prompt = ai_planner.chunk_prompt(message, task_list, earlier)
+                tools_for = select_tools(all_tools, " ; ".join(t["task"] for t in task_list), limit=ai_planner.CHUNK_TOOLS)
+                if not tools_for:
+                    return []
+                resp = await ai_chat(user_id, prompt, tools=tools_for, history_override=[{"role": "user", "content": prompt}],
+                                     guild_id=guild_id)
+                if isinstance(resp, dict):
+                    return [c for c in (resp.get("tool_calls") or []) if isinstance(c, dict) and c.get("name")]
+                return []
+
+            def _link(call_list: list, task_list: list) -> list:
+                return [{**c, "task_id": str(t["id"]), "depends_on_tasks": [str(d) for d in t["depends_on"]]}
+                        for c, t in zip(call_list, task_list)]
+
             for n, chunk in enumerate(ai_planner.chunk_tasks(tasks)):
                 if time.monotonic() - started > ai_planner.MAX_PLANNING_SECONDS:
                     per_chunk.append((chunk, 0))
                     continue
                 if n:
                     await asyncio.sleep(ai_planner.CHUNK_PAUSE_SECONDS)
-                prompt = ai_planner.chunk_prompt(message, chunk, earlier)
-                chunk_tools = select_tools(all_tools, " ; ".join(t["task"] for t in chunk), limit=ai_planner.CHUNK_TOOLS)
-                got = []
-                if chunk_tools:
-                    resp = await ai_chat(user_id, prompt, tools=chunk_tools, history_override=[{"role": "user", "content": prompt}],
-                                         guild_id=getattr(interaction.guild, "id", None))
-                    if isinstance(resp, dict):
-                        got = [c for c in (resp.get("tool_calls") or []) if isinstance(c, dict) and c.get("name")]
+                got = await _resolve(chunk)
                 if len(got) == len(chunk):                  # one call per task: remember which task each came from (Phase 2)
-                    got = [{**c, "task_id": str(t["id"]), "depends_on_tasks": [str(d) for d in t["depends_on"]]}
-                           for c, t in zip(got, chunk)]
-                calls.extend(got)                           # any other count: no task link -> the runner stays fail-fast for them
-                per_chunk.append((chunk, len(got)))
+                    calls.extend(_link(got, chunk))
+                    per_chunk.append((chunk, len(got)))
+                else:
+                    # The model made too few (or too many) calls for this chunk -- it used to be accepted as is, which silently
+                    # dropped tasks. Resolve each task on its own instead: slower, but one task per call is the reliable shape,
+                    # and it restores the task -> step link that dependencies need.
+                    logger.info("[ai_planner] chunk %s: %s call(s) for %s task(s); resolving them one by one", n, len(got), len(chunk))
+                    for k, task in enumerate(chunk):
+                        if time.monotonic() - started > ai_planner.MAX_PLANNING_SECONDS:
+                            per_chunk.append(([task], 0))
+                            continue
+                        if k:
+                            await asyncio.sleep(ai_planner.TASK_PAUSE_SECONDS)
+                        one = await _resolve([task])
+                        one = one[:1]
+                        calls.extend(_link(one, [task]))
+                        per_chunk.append(([task], len(one)))
                 earlier.extend(chunk)
             missed = ai_planner.unresolved(tasks, per_chunk)
             if missed:

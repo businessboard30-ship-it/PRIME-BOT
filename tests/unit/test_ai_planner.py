@@ -78,6 +78,7 @@ def make_cog(monkeypatch, tasks, replies):
     cog = at.AIToolsCog.__new__(at.AIToolsCog)
     monkeypatch.setattr(at.ai_planner, "decompose", AsyncMock(return_value=(tasks, {"dropped_over_limit": 0, "duplicates": 0, "bad": 0})))
     monkeypatch.setattr(at.ai_planner, "CHUNK_PAUSE_SECONDS", 0)
+    monkeypatch.setattr(at.ai_planner, "TASK_PAUSE_SECONDS", 0)
     chat = AsyncMock(side_effect=replies)
     monkeypatch.setattr(at, "ai_chat", chat)
     ctx = N(guild=N(id=1), followup=N(send=AsyncMock()))
@@ -94,7 +95,7 @@ def test_cog_resolves_each_chunk_separately_and_merges_in_order(monkeypatch):
 
 def test_cog_tells_the_person_which_tasks_found_no_command(monkeypatch):
     tasks = [{"id": 1, "task": "create role mod", "depends_on": []}, {"id": 2, "task": "create role admin", "depends_on": []}]
-    cog, ctx, _ = make_cog(monkeypatch, tasks, ["just chat, no tools"])
+    cog, ctx, _ = make_cog(monkeypatch, tasks, ["just chat, no tools"] * 3)       # the chunk, then each task on its own
     assert run(cog._plan_and_resolve(1, "x", [tool("role_create")], ctx)) == []
     notes = " ".join(str(c.args[0]) for c in ctx.followup.send.await_args_list)
     assert "create role mod" in notes and "left them out" in notes
@@ -112,16 +113,40 @@ def test_cog_never_raises_into_the_chat(monkeypatch):
 
 
 def test_cog_tags_calls_with_task_links_only_when_one_call_per_task(monkeypatch):
-    tasks = [{"id": 1, "task": "make category gallo", "depends_on": []},
+    tasks = [{"id": 1, "task": "make channels category gallo", "depends_on": []},
              {"id": 2, "task": "add channels in gallo", "depends_on": [1]}]
     cog, ctx, _ = make_cog(monkeypatch, tasks, [{"tool_calls": [{"name": "channels_bulk_create", "arguments": {"kind": "category"}},
                                                                {"name": "channels_bulk_create", "arguments": {"names": "a"}}]}])
     calls = run(cog._plan_and_resolve(1, "x", [tool("channels_bulk_create")], ctx))
     assert [(c["task_id"], c["depends_on_tasks"]) for c in calls] == [("1", []), ("2", ["1"])]
 
-    cog, ctx, _ = make_cog(monkeypatch, tasks, [{"tool_calls": [{"name": "channels_bulk_create", "arguments": {"kind": "category"}}]}])
+    # too few calls for the chunk: every task is resolved on its OWN, so nothing is dropped and each step is linked to its task
+    one = {"tool_calls": [{"name": "channels_bulk_create", "arguments": {"kind": "category"}}]}
+    two = {"tool_calls": [{"name": "channels_bulk_create", "arguments": {"names": "a"}}]}
+    cog, ctx, chat = make_cog(monkeypatch, tasks, [one, one, two])
     calls = run(cog._plan_and_resolve(1, "x", [tool("channels_bulk_create")], ctx))
-    assert calls and "task_id" not in calls[0]                    # count mismatch: no link, so the runner stays fail-fast
+    assert chat.await_count == 3 and [(c["task_id"], c["depends_on_tasks"]) for c in calls] == [("1", []), ("2", ["1"])]
+
+
+def test_a_chunk_that_resolves_only_some_tasks_no_longer_drops_the_rest(monkeypatch):
+    """The 14-task bug: the model answered 2 calls for a 4-task chunk and the other 2 tasks vanished without a word."""
+    tasks = [{"id": i, "task": f"create role r{i}", "depends_on": []} for i in range(1, 5)]
+    partial = {"tool_calls": [{"name": "role_create", "arguments": {"name": "r1"}}, {"name": "role_create", "arguments": {"name": "r3"}}]}
+    singles = [{"tool_calls": [{"name": "role_create", "arguments": {"name": f"r{i}"}}]} for i in range(1, 5)]
+    cog, ctx, _ = make_cog(monkeypatch, tasks, [partial] + singles)
+    calls = run(cog._plan_and_resolve(1, "make roles", [tool("role_create")], ctx))
+    assert [c["arguments"]["name"] for c in calls] == ["r1", "r2", "r3", "r4"]
+
+
+def test_a_task_that_still_finds_no_command_is_reported_not_silently_dropped(monkeypatch):
+    tasks = [{"id": i, "task": f"create role r{i}", "depends_on": []} for i in range(1, 4)]
+    partial = {"tool_calls": [{"name": "role_create", "arguments": {"name": "r1"}}]}
+    ok = lambda n: {"tool_calls": [{"name": "role_create", "arguments": {"name": n}}]}
+    cog, ctx, _ = make_cog(monkeypatch, tasks, [partial, ok("r1"), "no tool for this", ok("r3")])
+    calls = run(cog._plan_and_resolve(1, "x", [tool("role_create")], ctx))
+    assert [c["arguments"]["name"] for c in calls] == ["r1", "r3"]
+    notes = " ".join(str(c.args[0]) for c in ctx.followup.send.await_args_list)
+    assert "create role r2" in notes and "left them out" in notes
 
 
 # ── Phase 3 additions: chunking and dependency order for 20+ tasks ──
