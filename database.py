@@ -7,8 +7,10 @@
 import asyncio
 import json
 import logging
+import os
 import random
 import secrets
+import sys
 import time
 from datetime import datetime, timedelta, timezone
 from typing import Optional, List, Dict, Any, Tuple
@@ -444,6 +446,28 @@ ULTRA_TRIAL_ENABLED = True  # owner decision: enable the one-time 3-day Customiz
 # bump-or-it-never-runs trap as above.
 
 
+
+def _pool_limits(is_using_pooler: bool, argv=None, env=None) -> Tuple[int, int]:
+    """(min, max) connections for THIS process's pool.
+
+    Every process (main bot, API, each clone) has its own pool against one Postgres with a hard connection cap, so
+    clone processes default to a smaller pool (3). DB_POOL_MAX / DB_POOL_MIN override it per service on Railway."""
+    argv = sys.argv if argv is None else argv
+    env = os.environ if env is None else env
+    default_max = 20 if is_using_pooler else 5
+    if "--clone-id" in argv:
+        default_max = min(default_max, 3)
+
+    def _int(name: str, default: int) -> int:
+        try:
+            return max(0, int((env.get(name) or "").strip()))
+        except ValueError:
+            return default
+    mx = max(1, _int("DB_POOL_MAX", default_max))
+    mn = min(_int("DB_POOL_MIN", 1), mx)
+    return mn, mx
+
+
 async def get_pool():
     """
     Get or create the asyncpg connection pool for serverless (Issue 1.4).
@@ -480,13 +504,12 @@ async def get_pool():
         # For serverless: 1 connection per instance is sufficient
         # (a single serverless invocation doesn't run concurrent queries)
         # If using a pooler, it's even safer (pooler handles connection fan-in)
-        min_pool_size = 1
         # Was max_pool_size=2 for the non-pooler case — dangerously low
         # for the persistent bot process, which shares this one pool with
         # ~25+ background @tasks.loop pollers and every concurrent slash
         # command/component interaction. Non-pooler case bumped to 5
         # (see below for the pooler case, now 20).
-        max_pool_size = 20 if is_using_pooler else 5
+        min_pool_size, max_pool_size = _pool_limits(is_using_pooler)
         # NOTE: 20 (not 5) when a pooler is present. Supavisor/PgBouncer in
         # transaction mode is built to safely multiplex far more client-side
         # connections than that — it fans them into a much smaller number of
@@ -522,7 +545,10 @@ async def get_pool():
             min_size=min_pool_size,
             max_size=max_pool_size,
             statement_cache_size=0,  # Required for PgBouncer compatibility
-            command_timeout=10
+            command_timeout=10,
+            # Hand idle connections back to Postgres: the main bot, the API and every clone process each hold their own pool,
+            # and Postgres has a hard connection cap ("too many clients already").
+            max_inactive_connection_lifetime=60.0,
         )
         _pool_loop = current_loop
     return _pool
