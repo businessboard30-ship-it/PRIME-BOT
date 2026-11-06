@@ -74,3 +74,22 @@
 .owner-credit{display:flex;align-items:center;gap:12px;margin-top:20px}.owner-credit img,.owner-avatar-placeholder{width:42px;height:42px;border-radius:50%;object-fit:cover;background:#e8e9df;display:grid;place-items:center;font:20px var(--serif);color:#526b2f}.owner-credit small,.owner-credit strong{display:block}.owner-credit small{font:9px var(--mono);letter-spacing:1px;color:#85877f}.owner-credit strong{font-size:12px;margin-top:3px}
 .submit-shell{max-width:760px;margin:auto;padding:52px 24px 90px}.submit-shell h1{font:700 clamp(38px,6vw,64px)/1.05 var(--sans);letter-spacing:-2.5px;margin:20px 0}.submit-intro{max-width:620px;color:#6c7067;line-height:1.8}.article-submit-form{display:grid;gap:18px;margin-top:32px}.article-submit-form label{display:grid;gap:8px;font-size:12px;font-weight:700}.article-submit-form input,.article-submit-form select,.article-submit-form textarea{width:100%;padding:13px 14px;border:1px solid var(--line);border-radius:4px;background:#fff;font:13px var(--sans);color:var(--ink)}.article-submit-form textarea{resize:vertical;line-height:1.6}.article-submit-form .submit-honeypot{position:absolute;left:-9999px}.submit-status{font-size:12px;color:#526b2f;min-height:20px}
 @media(max-width:650px){.visit-bar{gap:8px;flex-wrap:wrap}.visit-label{font-size:8px}.journal-submit{align-items:flex-start;flex-direction:column}.submit-article-link{padding:8px 10px}}
+
+/* Bot profile art and transparent business estimates */
+.archive-card{position:relative;padding-top:18px;padding-left:104px;min-height:164px}
+.archive-bot-avatar{position:absolute;left:18px;top:48px;width:68px;height:68px;border-radius:19px;object-fit:cover;background:#e5e6dd;border:1px solid #deded7}
+.archive-avatar-fallback{display:grid;place-items:center;font:700 24px var(--serif);color:#4d5d39;background:linear-gradient(145deg,#e5e8dc,#d5dacb)}
+.archive-card h3{margin-top:10px}
+.bot-financials{display:grid;grid-template-columns:1fr 1fr;gap:7px;margin-top:14px;padding-top:11px;border-top:1px solid #deded7}
+.bot-financials span{display:block;font:9px var(--mono);letter-spacing:.4px;color:#7b7e75;text-transform:uppercase}
+.bot-financials strong{display:block;margin-top:4px;font:600 11px var(--sans);color:#30332c}
+.bot-financials em{font:9px var(--sans);font-style:normal;color:#85877e}
+.bot-estimate-note{grid-column:1/-1;font:9px/1.5 var(--sans);color:#8b8d84;margin-top:3px}
+.bot-profile-panel{margin:30px 0;padding:24px;background:#e8e9df;border-radius:6px}
+.bot-profile-panel h2{font:600 25px var(--serif);margin:8px 0 5px}
+.bot-profile-grid{display:grid;grid-template-columns:repeat(3,1fr);gap:15px;margin-top:18px}
+.bot-profile-grid div{background:#f7f7f2;padding:14px;border-radius:4px}
+.bot-profile-grid small{display:block;font:9px var(--mono);color:#77796f;text-transform:uppercase}
+.bot-profile-grid strong{display:block;margin-top:6px;font-size:15px}
+.bot-profile-grid p{font-size:10px;line-height:1.55;color:#77796f;margin:5px 0 0}
+@media(max-width:650px){.archive-card{padding-left:88px;min-height:155px}.archive-bot-avatar{left:12px;width:62px;height:62px}.bot-profile-grid{grid-template-columns:1fr}.bot-financials{grid-template-columns:1fr 1fr}}
