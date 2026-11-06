@@ -39,6 +39,7 @@ def armed(monkeypatch):
     monkeypatch.setattr(config, "TEST_GUILD_ID", TEST_GUILD, raising=False)
     monkeypatch.setattr(config, "DISCORD_CLONE_ADMIN_IDS", {OWNER})
     monkeypatch.setattr(cogmod.modx, "log_action", AsyncMock())
+    monkeypatch.setattr(cogmod.db, "th_latest_run", AsyncMock(return_value=None), raising=False)
     monkeypatch.setattr(guard, "_AI_ONLY_COMMANDS", {})
     guard.register_hidden_cog(TestHarnessCog(MagicMock()))
     monkeypatch.setattr(guard.db, "log_ai_command", AsyncMock())

@@ -159,7 +159,7 @@ _pool_loop = None  # the asyncio event loop _pool's connections belong to
 # Do NOT bump it for unrelated changes — an unnecessary bump forces every
 # bot/clone's next cold start to run the full DDL pass again, which is
 # exactly the schema-reload storm this version check exists to avoid.
-SCHEMA_VERSION = "143"
+SCHEMA_VERSION = "144"
 # "142" -> "143" adds 098_premium_trial.sql (discord_guild_subscriptions.is_trial / trial_started_at: one free Premium trial per server). ALTER TABLE ADD COLUMN IF NOT EXISTS only. Bump-or-it-never-runs trap: tests/unit/test_schema_version_guard.py
 # "141" -> "142" adds 097_scam_hit_evidence_ref.sql (scam_shield_hits.evidence_channel_id / evidence_message_id: pointer to the archived copy, used by the AI scam lookup to show the scam link + image). ALTER TABLE ADD COLUMN IF NOT EXISTS only. Bump-or-it-never-runs trap: tests/unit/test_schema_version_guard.py
 # "140" -> "141" adds 096_ai_scheduled_jobs.sql (ai_scheduled_jobs + ai_job_runs: persistent AI scheduler, Phase 3). CREATE TABLE / CREATE INDEX IF NOT EXISTS only. Bump-or-it-never-runs trap: tests/unit/test_schema_version_guard.py
@@ -2312,6 +2312,29 @@ class Database:
         await conn.execute("""
             CREATE INDEX IF NOT EXISTS idx_ai_command_log_guild
             ON ai_command_log (guild_id, created_at DESC)
+        """)
+
+        # Bot test harness runs (docs/BOT_TEST_HARNESS_PLAN.md, phase 2): one snapshot + dead-man deadline per run.
+        # Touches no payments/premium/economy tables. At most ONE unfinished run per guild (partial unique index).
+        await conn.execute("""
+            CREATE TABLE IF NOT EXISTS test_harness_runs (
+                id SERIAL PRIMARY KEY,
+                guild_id BIGINT NOT NULL,
+                owner_id BIGINT NOT NULL,
+                status TEXT NOT NULL,
+                snapshot_json TEXT NOT NULL,
+                snapshot_hash TEXT NOT NULL,
+                report_channel_id BIGINT,
+                started_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+                deadline_at TIMESTAMPTZ NOT NULL,
+                finished_at TIMESTAMPTZ,
+                result_json TEXT
+            )
+        """)
+        await conn.execute("""
+            CREATE UNIQUE INDEX IF NOT EXISTS ux_test_harness_one_active
+            ON test_harness_runs (guild_id)
+            WHERE status IN ('armed', 'running', 'restoring')
         """)
 
         await conn.execute("""
@@ -17941,6 +17964,65 @@ class Database:
                 guild_id, user_id, command_name,
                 None, allowed, denial_reason,  # arguments are not kept (privacy)
             )
+
+    # ── bot test harness runs (modules/test_harness.py, discord_bot/cogs/test_harness.py) ──────────────
+    async def th_create_run(self, guild_id: int, owner_id: int, snapshot_json: str, snapshot_hash: str,
+                            deadline_at, report_channel_id: Optional[int] = None) -> Optional[int]:
+        """Insert an 'armed' run. Returns its id, or None when this guild already has an unfinished run."""
+        pool = await get_pool()
+        async with pool.acquire() as conn:
+            return await conn.fetchval(
+                """
+                INSERT INTO test_harness_runs (guild_id, owner_id, status, snapshot_json, snapshot_hash, deadline_at, report_channel_id)
+                VALUES ($1, $2, 'armed', $3, $4, $5, $6)
+                ON CONFLICT DO NOTHING
+                RETURNING id
+                """,
+                guild_id, owner_id, snapshot_json, snapshot_hash, deadline_at, report_channel_id,
+            )
+
+    async def th_get_run(self, run_id: int) -> Optional[Dict]:
+        pool = await get_pool()
+        async with pool.acquire() as conn:
+            row = await conn.fetchrow("SELECT * FROM test_harness_runs WHERE id = $1", run_id)
+        return dict(row) if row else None
+
+    async def th_unfinished_runs(self, guild_id: Optional[int] = None) -> List[Dict]:
+        pool = await get_pool()
+        async with pool.acquire() as conn:
+            rows = await conn.fetch(
+                """
+                SELECT * FROM test_harness_runs
+                WHERE status IN ('armed', 'running', 'restoring') AND ($1::BIGINT IS NULL OR guild_id = $1)
+                ORDER BY id
+                """,
+                guild_id,
+            )
+        return [dict(r) for r in rows]
+
+    async def th_latest_run(self, guild_id: int) -> Optional[Dict]:
+        pool = await get_pool()
+        async with pool.acquire() as conn:
+            row = await conn.fetchrow(
+                "SELECT id, guild_id, status, started_at, deadline_at, finished_at FROM test_harness_runs "
+                "WHERE guild_id = $1 ORDER BY id DESC LIMIT 1", guild_id)
+        return dict(row) if row else None
+
+    async def th_claim_run(self, run_id: int, from_statuses: List[str], to_status: str) -> bool:
+        """Atomic status change: True only for the caller that actually moved the run (stops a double restore)."""
+        pool = await get_pool()
+        async with pool.acquire() as conn:
+            got = await conn.fetchval(
+                "UPDATE test_harness_runs SET status = $3 WHERE id = $1 AND status = ANY($2::TEXT[]) RETURNING id",
+                run_id, list(from_statuses), to_status)
+        return got is not None
+
+    async def th_finish_run(self, run_id: int, status: str, result_json: Optional[str] = None) -> None:
+        pool = await get_pool()
+        async with pool.acquire() as conn:
+            await conn.execute(
+                "UPDATE test_harness_runs SET status = $2, finished_at = NOW(), result_json = $3 WHERE id = $1",
+                run_id, status, result_json)
 
     async def log_manual_verify(self, admin_id: int, user_id: int, payment_type: str, chat_id: int, reason: str) -> None:
         """Audit trail for /verify (admin-only manual grant that bypasses

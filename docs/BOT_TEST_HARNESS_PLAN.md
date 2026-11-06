@@ -93,3 +93,10 @@ Each phase is its own PR with tests, a handoff note (built / next), and no READM
   `discord_bot/cogs/test_harness.py` (AI-only, never on the slash tree, never loaded on clones), one read-only op `testharness status`,
   audit via `log_action`. Tests: `tests/unit/test_test_harness_gates.py` (wrong guild, non-owner, clone, ID unset, direct handler call). No scenarios, no destructive code.
 - TEST_GUILD_ID is now set (test server). Next: owner picks the first protections; then phase 2 (snapshot/restore + dead-man timer + restart recovery) as its own PR.
+- Built (phase 2, snapshot/restore): `modules/guild_snapshot.py` (capture, sha256-sealed snapshot, diff-based restore, verify = re-capture and re-plan must be empty; matches
+  items by id, then by name/type/parent so anti-nuke's recreated copies are fixed, not duplicated), `test_harness_runs` table + `Database.th_*` (one unfinished run per guild,
+  atomic claim), AI-only `testharness snapshot` (Confirm click; read-back verified before it arms) and `testharness stop` (kill switch, no confirm), dead-man timer (default 15 min,
+  max 60) and restart recovery (first tick after a restart restores every unfinished run). Handler gate is re-checked before every Discord call during a restore.
+  Tests: fake guild (`tests/unit/test_guild_snapshot.py`, `test_test_harness_runs.py`) and real Postgres (`tests/integration/test_test_harness_postgres.py`).
+- Not covered by phase 2: member role assignments (no test members exist; simulated events only), threads, managed roles, webhooks/integrations.
+- Next: phase 3, simulated scenarios + report (join burst, scam links, mass mention, dangerous role grant). Needs the owner's pick of which protections first.

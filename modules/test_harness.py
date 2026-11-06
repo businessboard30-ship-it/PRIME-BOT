@@ -53,3 +53,60 @@ def check_gates(guild_id, user_id, clone_id=None, *, test_guild: Optional[int] =
     if user_id is None or user_id not in admins:
         return "asker is not the owner"
     return None
+
+
+# ── run state (phase 2) ───────────────────────────────────────────────────
+# A run is one snapshot plus its dead-man deadline. States: armed -> restoring -> restored | restore_failed.
+# ("running" is reserved for the scenario phases; it is treated exactly like "armed" for the timer and recovery.)
+DEADMAN_DEFAULT_MINUTES = 15
+DEADMAN_MAX_MINUTES = 60
+UNFINISHED = ("armed", "running", "restoring")
+
+CANNOT_RESTORE = ("Not restorable by design: message history and deleted messages, bans of real users, webhook tokens, "
+                  "integrations, threads, member role assignments, managed (bot/integration) roles, and channel types "
+                  "other than text, announcement, voice, stage and forum.")
+
+
+def clamp_minutes(value) -> int:
+    n = _int_or_zero(value)
+    if n <= 0:
+        return DEADMAN_DEFAULT_MINUTES
+    return min(n, DEADMAN_MAX_MINUTES)
+
+
+def check_guild(guild_id, clone_id=None, *, test_guild: Optional[int] = None) -> Optional[str]:
+    """Gate for code that has no interaction (the dead-man timer, restart recovery): enabled, main bot, test guild.
+    There is no asker to check; these paths only ever restore a run the owner already armed."""
+    configured = _int_or_zero(test_guild) if test_guild is not None else test_guild_id()
+    if configured <= 0:
+        return "harness disabled (TEST_GUILD_ID unset)"
+    if clone_id is not None:
+        return "clones never run the harness"
+    if guild_id is None or _int_or_zero(guild_id) != configured:
+        return "not the test guild"
+    return None
+
+
+def format_report(result: dict, *, why: str) -> str:
+    """Plain-text restore report posted in the test server (and kept in the DB)."""
+    head = "✅ **Restore verified**" if result.get("ok") else "⚠️ **Restore incomplete**"
+    lines = [f"{head} ({why}). Applied {result.get('done', 0)} of {result.get('planned', 0)} planned change(s)."]
+    if result.get("error"):
+        lines.append(f"Error: {result['error']}")
+    for label, key in (("Failed", "failed"), ("Skipped", "skipped")):
+        items = result.get(key) or []
+        if items:
+            lines.append(f"{label} ({len(items)}):")
+            lines += [f"• {a} — {b}" for a, b in items[:8]]
+            if len(items) > 8:
+                lines.append(f"• …and {len(items) - 8} more")
+    rem = result.get("remaining") or []
+    if rem:
+        lines.append(f"Still different from the snapshot ({len(rem)}):")
+        lines += [f"• {r}" for r in rem[:8]]
+        if len(rem) > 8:
+            lines.append(f"• …and {len(rem) - 8} more")
+    for n in (result.get("notes") or [])[:5]:
+        lines.append(f"• note: {n}")
+    lines.append(CANNOT_RESTORE)
+    return "\n".join(lines)[:1990]
