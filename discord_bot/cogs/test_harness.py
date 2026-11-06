@@ -1,13 +1,14 @@
 # path: discord_bot/cogs/test_harness.py
 
 """
-AI-ONLY bot test harness -- phases 1-2 (docs/BOT_TEST_HARNESS_PLAN.md).
+AI-ONLY bot test harness -- phases 1-3 (docs/BOT_TEST_HARNESS_PLAN.md).
 
 Like discord_bot/cogs/ai_server_ops.py this cog is NEVER added to the slash tree: setup() hands the commands to the
 AI-only registry, so nothing shows in Discord's command list and no command slot is used. Do NOT add it to the tree,
 do NOT mention it in the README or help text.
 
 Commands (all test-guild-only, owner-only, main-bot-only):
+  testharness simulate  phase 3: simulated scenarios, no server changes (no confirm, no snapshot)
   testharness status    read-only
   testharness snapshot  saves + verifies a snapshot, arms the dead-man timer. NEEDS A CONFIRM CLICK, because the restore
                         that follows removes anything added to the server after the snapshot.
@@ -36,6 +37,7 @@ from database import db
 from modules import guild_snapshot as gs
 from modules import moderation_extra as modx
 from modules import test_harness as th
+from modules import th_scenarios as scen
 
 logger = logging.getLogger(__name__)
 
@@ -188,7 +190,7 @@ class TestHarnessCog(commands.Cog):
         else:
             extra = " No runs yet."
         await self._audit(interaction.guild.id, "ai_testharness_status", interaction.user.id, "status check")
-        await _say(interaction, f"🧪 Test harness: **armed** in this server (phase 2: snapshot/restore, no scenarios yet).{extra}")
+        await _say(interaction, f"🧪 Test harness: **armed** in this server (phase 3: snapshot/restore + simulated scenarios).{extra}")
 
     async def ai_snapshot_prompt(self, interaction, minutes=None, **_):
         """Confirm text + early refusal. (ok, text)."""
@@ -244,6 +246,37 @@ class TestHarnessCog(commands.Cog):
         async def go(ci):
             await self.ai_snapshot(ci, minutes=minutes)
         await _say(interaction, text, view=ConfirmActionView(interaction.user.id, go, confirm_label="Snapshot & arm", danger=True))
+
+    @harness_g.command(name="simulate", description="Run simulated protection scenarios (no changes to the server)")
+    @app_commands.describe(scenario="join_burst or scam_links (default: both)", count="Join-burst size (max 15)")
+    async def harness_simulate(self, interaction: discord.Interaction, scenario: Optional[str] = None,
+                               count: Optional[int] = None):
+        """Phase 3, category A. Pure decision-function checks: no Discord writes, no DB writes, so no confirm and no snapshot."""
+        if not handler_gate(interaction):
+            return await _say(interaction, REFUSAL)
+        if not interaction.response.is_done():
+            await interaction.response.defer(ephemeral=True)
+        name = (scenario or "").strip().lower() or None
+        if name and name not in scen.SCENARIOS:
+            return await _say(interaction, f"Unknown scenario. Choose from: {', '.join(scen.SCENARIOS)}.")
+        try:
+            from modules import scam_shield
+            await scam_shield.load()                    # make sure the live rules are in memory before testing them
+        except Exception:
+            logger.exception("[test_harness] could not load Scam Shield rules")
+        n = max(1, min(int(count or 10), scen.MAX_JOINERS))
+        results = [scen.run(name, **({"n": n} if name == "join_burst" else {}))] if name else scen.run_all(n=n)
+        if not handler_gate(interaction):               # re-check before reporting (plan rule 2, layer 3)
+            return await _say(interaction, REFUSAL)
+        summary = ", ".join(f"{r['name']}={'pass' if r['pass'] else 'FAIL'}" for r in results)
+        await self._audit(interaction.guild_id, "ai_testharness_simulate", interaction.user.id, summary)
+        text = scen.format_results(results)
+        await _say(interaction, text)
+        try:
+            if interaction.channel is not None:
+                await interaction.channel.send(text, allowed_mentions=NO_PINGS)     # report posted in the test server
+        except Exception:
+            logger.exception("[test_harness] could not post the simulation report")
 
     @harness_g.command(name="stop", description="Kill switch: stop the run and restore this test server now")
     async def harness_stop(self, interaction: discord.Interaction):
