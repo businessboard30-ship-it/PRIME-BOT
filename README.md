@@ -55,6 +55,7 @@ Set these in Railway (or your host)'s environment settings — there's no
 **Recommended:**
 - `GROQ_API_KEY` — enables AI features (recommendations, scam-risk classifier, category suggestions). Everything degrades gracefully without it.
 - `AI_TTS_MODEL` — optional; text-to-speech model for AI voice replies (default `canopylabs/orpheus-v1-english`, uses the same `GROQ_API_KEY`)
+- `DB_POOL_MAX` / `DB_POOL_MIN` — optional; Postgres connections per process (defaults: 5 direct / 20 via pooler, 3 for each clone process). Lower `DB_POOL_MAX` on a service if you see "too many clients already"
 - `AI_STT_MODEL` — optional; speech-to-text model that transcribes voice notes sent to the AI (default `whisper-large-v3-turbo`, same `GROQ_API_KEY`)
 - `ENCRYPTION_KEY` — used by `utils/crypto.py` to encrypt stored clone bot tokens
 - `PAYSTACK_SECRET_KEY` / `PAYSTACK_PUBLIC_KEY` — payments (premium, clone registration fees, boosts)
