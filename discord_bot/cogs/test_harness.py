@@ -1,7 +1,7 @@
 # path: discord_bot/cogs/test_harness.py
 
 """
-AI-ONLY bot test harness -- phases 1-3 (docs/BOT_TEST_HARNESS_PLAN.md).
+AI-ONLY bot test harness -- phases 1-4 (docs/BOT_TEST_HARNESS_PLAN.md).
 
 Like discord_bot/cogs/ai_server_ops.py this cog is NEVER added to the slash tree: setup() hands the commands to the
 AI-only registry, so nothing shows in Discord's command list and no command slot is used. Do NOT add it to the tree,
@@ -9,6 +9,8 @@ do NOT mention it in the README or help text.
 
 Commands (all test-guild-only, owner-only, main-bot-only):
   testharness simulate  phase 3: simulated scenarios, no server changes (no confirm, no snapshot)
+  testharness wave      phase 4, REAL: create then delete <=25 throw-away channels, check audit log + anti-nuke, restore.
+                        Needs an armed snapshot and a CONFIRM CLICK.
   testharness status    read-only
   testharness snapshot  saves + verifies a snapshot, arms the dead-man timer. NEEDS A CONFIRM CLICK, because the restore
                         that follows removes anything added to the server after the snapshot.
@@ -27,6 +29,7 @@ import asyncio
 import json
 import logging
 from datetime import datetime, timedelta, timezone
+from types import SimpleNamespace
 from typing import Optional
 
 import discord
@@ -46,6 +49,9 @@ NO_PINGS = discord.AllowedMentions.none()
 REFUSAL = "That isn't something I'm able to run."
 # Seconds between Discord calls during a restore (plan rule 10: never parallel bursts). Tests set this to 0.
 RESTORE_PAUSE = 0.5
+# Seconds between Discord calls during a real wave (plan rule 10). Tests set this to 0.
+WAVE_PAUSE = 0.7
+AUDIT_SETTLE = 3.0   # seconds to let Discord write the audit entries before reading them back
 
 
 def handler_gate(interaction) -> bool:
@@ -73,8 +79,8 @@ class TestHarnessCog(commands.Cog):
     __test__ = False  # not a pytest class
 
     # The guard calls the prompt hook before showing Confirm, then the handler after the click (and re-runs its own gate).
-    AI_CONFIRM_PROMPTS = {"testharness_snapshot": "ai_snapshot_prompt"}
-    AI_CONFIRMED_HANDLERS = {"testharness_snapshot": "ai_snapshot"}
+    AI_CONFIRM_PROMPTS = {"testharness_snapshot": "ai_snapshot_prompt", "testharness_wave": "ai_wave_prompt"}
+    AI_CONFIRMED_HANDLERS = {"testharness_snapshot": "ai_snapshot", "testharness_wave": "ai_wave"}
 
     def __init__(self, bot):
         self.bot = bot
@@ -277,6 +283,139 @@ class TestHarnessCog(commands.Cog):
                 await interaction.channel.send(text, allowed_mentions=NO_PINGS)     # report posted in the test server
         except Exception:
             logger.exception("[test_harness] could not post the simulation report")
+
+    # ── phase 4: real channel-delete wave ─────────────────────────────────
+    async def _armed_run(self, guild_id):
+        runs = [r for r in await db.th_unfinished_runs(guild_id) if r["status"] == "armed"]
+        return runs[0] if runs else None
+
+    async def ai_wave_prompt(self, interaction, count=None, **_):
+        """Confirm text + early refusal. (ok, text). Refuses unless a verified snapshot is armed (plan rule 7)."""
+        if not handler_gate(interaction):
+            return False, REFUSAL
+        run = await self._armed_run(interaction.guild_id)
+        if run is None:
+            return False, "No armed snapshot here. Run `testharness snapshot` first; nothing destructive starts without one."
+        n = scen.clamp_wave(count)
+        left = max(0, int((run["deadline_at"] - datetime.now(timezone.utc)).total_seconds() // 60))
+        return True, (f"🧪 REAL wave in this test server: I'll create **{n}** throw-away channels, delete them one by one "
+                      f"(~{WAVE_PAUSE}s apart), check the audit log and anti-nuke, then restore the server from snapshot run "
+                      f"#{run['id']} (its timer has ~{left} min left; the run ends when I finish). Stops at the first Discord error. Confirm?")
+
+    async def ai_wave(self, interaction, count=None, **_):
+        """Runs after the Confirm click. Handler gate re-checked before EVERY Discord call."""
+        if not handler_gate(interaction):
+            return await _say(interaction, REFUSAL)
+        if not interaction.response.is_done():
+            await interaction.response.defer(ephemeral=True)
+        gid, n, guild = interaction.guild_id, scen.clamp_wave(count), interaction.guild
+        run = await self._armed_run(gid)
+        if run is None or not await db.th_claim_run(run["id"], ["armed"], "running"):
+            return await _say(interaction, "No armed snapshot (or a run is already going), so nothing was started.")
+        import time as _time
+        t0, created, deleted, aborted = _time.perf_counter(), [], 0, None
+        bot_id = getattr(self.bot.user, "id", None)
+        prev = await db.get_antinuke_config(gid, self._clone_id)
+        listener = self.bot.get_cog("AntiNukeCog")
+        synth, own_trips, audit_seen, restored_cfg = None, 0, None, False
+        started = datetime.now(timezone.utc)
+        await self._audit(gid, "ai_testharness_wave_start", interaction.user.id, f"run {run['id']}, {n} channels")
+        try:
+            # Anti-nuke on for the test, pointed at this channel, with the default threshold.
+            report_ch = getattr(interaction.channel, "id", None)
+            await db.set_antinuke_config(gid, self._clone_id, enabled=True, threshold=3, window_seconds=10, action="contain",
+                                         log_channel_id=report_ch)
+            if listener:
+                listener.invalidate(gid)
+            trips_before = (await db.get_antinuke_config(gid, self._clone_id)).get("triggered_count", 0)
+            for i in range(n):
+                if not handler_gate(interaction):
+                    aborted = "the gates no longer allow this server"
+                    break
+                try:
+                    ch = await guild.create_text_channel(f"th-wave-{run['id']}-{i + 1}", reason=f"test harness run #{run['id']}")
+                except discord.HTTPException as exc:
+                    aborted = f"Discord refused creating channel {i + 1}: {type(exc).__name__}"
+                    break
+                created.append(ch)
+                await asyncio.sleep(WAVE_PAUSE)
+            for ch in list(created):
+                if not handler_gate(interaction):
+                    aborted = aborted or "the gates no longer allow this server"
+                    break
+                try:
+                    await ch.delete(reason=f"test harness run #{run['id']}")
+                    deleted += 1
+                except discord.HTTPException as exc:
+                    aborted = aborted or f"Discord refused deleting {ch.name}: {type(exc).__name__}"
+                    break
+                await asyncio.sleep(WAVE_PAUSE)
+            await asyncio.sleep(AUDIT_SETTLE)
+            # Did Discord attribute the deletes to the bot? (anti-nuke's whole input)
+            try:
+                if handler_gate(interaction):
+                    seen = 0
+                    async for e in guild.audit_logs(limit=min(50, n * 2 + 10), action=discord.AuditLogAction.channel_delete):
+                        if e.created_at >= started and getattr(e.user, "id", None) == bot_id:
+                            seen += 1
+                    audit_seen = seen
+            except discord.HTTPException:
+                audit_seen = None
+            after_own = (await db.get_antinuke_config(gid, self._clone_id)).get("triggered_count", 0)
+            own_trips = max(0, after_own - trips_before)
+            # Synthetic attacker through the REAL listener: must trip exactly once and alert.
+            if listener is not None and handler_gate(interaction):
+                from modules import antinuke as an
+                an.reset(gid)
+                for _ in range(3):
+                    await listener.on_audit_log_entry_create(SimpleNamespace(
+                        action=discord.AuditLogAction.channel_delete, guild=guild,
+                        user=SimpleNamespace(id=scen.SYNTH_ATTACKER_ID)))
+                an.reset(gid)
+                synth = (await db.get_antinuke_config(gid, self._clone_id)).get("triggered_count", 0) - after_own
+        except Exception as exc:  # noqa: BLE001
+            logger.exception("[test_harness] wave crashed")
+            aborted = aborted or f"crashed: {type(exc).__name__}"
+        finally:
+            try:
+                await db.set_antinuke_config(gid, self._clone_id, enabled=prev["enabled"], threshold=prev["threshold"],
+                                             window_seconds=prev["window_seconds"], action=prev["action"],
+                                             log_channel_id=prev["log_channel_id"])
+                if listener:
+                    listener.invalidate(gid)
+                restored_cfg = True
+            except Exception:
+                logger.exception("[test_harness] could not restore the anti-nuke settings")
+        result = scen.channel_wave_result(n, created=len(created), deleted=deleted, audit_seen=audit_seen, own_trips=own_trips,
+                                          synth_trips=synth, config_restored=restored_cfg, aborted=aborted,
+                                          seconds=_time.perf_counter() - t0)
+        text = scen.format_results([result])
+        await self._audit(gid, "ai_testharness_wave", interaction.user.id,
+                          f"run {run['id']}: {'pass' if result['pass'] else 'FAIL'}; {'; '.join(result['gaps']) or 'no gaps'}"[:500])
+        await _say(interaction, text)
+        try:
+            if interaction.channel is not None:
+                await interaction.channel.send(text, allowed_mentions=NO_PINGS)
+        except Exception:
+            logger.exception("[test_harness] could not post the wave report")
+        fresh = await db.th_get_run(run["id"])
+        if fresh and fresh["status"] in th.UNFINISHED:               # always restore afterwards (plan rule 7)
+            await self._restore_run(fresh, why="wave finished", interaction=interaction)
+
+    @harness_g.command(name="wave", description="REAL: create+delete a small wave of throw-away channels, check protections, restore")
+    @app_commands.describe(count="Channels in the wave (default 5, max 25)")
+    async def harness_wave(self, interaction: discord.Interaction, count: Optional[int] = None):
+        # Only reached if something calls the callback directly (the AI goes through the confirm hooks). Never skip Confirm.
+        if not handler_gate(interaction):
+            return await _say(interaction, REFUSAL)
+        ok, text = await self.ai_wave_prompt(interaction, count=count)
+        if not ok:
+            return await _say(interaction, text)
+        from discord_bot.cogs._views_moderation import ConfirmActionView
+
+        async def go(ci):
+            await self.ai_wave(ci, count=count)
+        await _say(interaction, text, view=ConfirmActionView(interaction.user.id, go, confirm_label="Run wave", danger=True))
 
     @harness_g.command(name="stop", description="Kill switch: stop the run and restore this test server now")
     async def harness_stop(self, interaction: discord.Interaction):
