@@ -20,8 +20,10 @@ from modules import antiraid_pro, join_gate
 
 MAX_JOINERS = 15          # synthetic joiners per join_burst (plan: <= 15 test members)
 MAX_MESSAGES = 25         # synthetic messages per scam_links run
-WAVE_MAX = 25             # real channel-delete wave cap (plan rule 10)
 WAVE_DEFAULT = 5          # first real runs stay small
+# kind -> (scenario name, plural noun, title word, cap). Caps are plan rule 10 (<= 25 channels, <= 20 roles).
+WAVES = {"channel": ("channel_wave", "channels", "Channel", 25), "role": ("role_wave", "roles", "Role", 20)}
+WAVE_MAX = WAVES["channel"][3]
 SYNTH_ATTACKER_ID = 1     # never a real account: used to feed the real anti-nuke listener
 
 SCAM_SAMPLES = (
@@ -86,22 +88,24 @@ def scam_links(*, check: Optional[Callable] = None, strict: bool = True, allowed
     return _result("scam_links", "Scam links / bait messages", checks, time.perf_counter() - t0)
 
 
-def clamp_wave(n) -> int:
+def clamp_wave(n, kind: str = "channel") -> int:
+    cap = WAVES[kind][3]
     try:
         n = int(n)
     except (TypeError, ValueError):
-        return WAVE_DEFAULT
-    return max(1, min(n, WAVE_MAX))
+        return min(WAVE_DEFAULT, cap)
+    return max(1, min(n, cap))
 
 
-def channel_wave_result(n: int, *, created: int, deleted: int, audit_seen: Optional[int], own_trips: int,
+def wave_result(kind: str, n: int, *, created: int, deleted: int, audit_seen: Optional[int], own_trips: int,
                         synth_trips: Optional[int], config_restored: bool, aborted: Optional[str], seconds: float) -> dict:
     """Turn the facts the cog measured into PASS/FAIL checks. None = could not be measured (counts as a failure, honestly)."""
+    name, noun, word, _cap = WAVES[kind]
     checks = [
-        {"label": f"created {created}/{n} throw-away channels", "ok": created == n},
+        {"label": f"created {created}/{n} throw-away {noun}", "ok": created == n},
         {"label": f"deleted {deleted}/{created} of them", "ok": deleted == created and created > 0},
         {"label": ("Discord audit log attributed " + (f"{audit_seen}/{deleted}" if audit_seen is not None else "?")
-                   + " deletes to the bot (anti-nuke relies on this)"),
+                   + f" {kind} deletes to the bot (anti-nuke relies on this)"),
          "ok": audit_seen is not None and deleted > 0 and audit_seen >= deleted},
         {"label": f"anti-nuke did not flag the bot for its own deletes ({own_trips} trip(s))", "ok": own_trips == 0},
         {"label": ("synthetic attacker wave tripped anti-nuke " +
@@ -113,11 +117,19 @@ def channel_wave_result(n: int, *, created: int, deleted: int, audit_seen: Optio
              "account (not available); detection/alert is proven with synthetic entries fed to the real listener."]
     if aborted:
         notes.insert(0, f"Stopped early: {aborted}")
-    r = _result("channel_wave", f"Channel-delete wave ({n} channels)", checks, seconds, notes)
+    r = _result(name, f"{word}-delete wave ({n} {noun})", checks, seconds, notes)
     if aborted:
         r["pass"] = False
         r["gaps"].append(f"run stopped early: {aborted}")
     return r
+
+
+def channel_wave_result(n: int, **kw) -> dict:
+    return wave_result("channel", n, **kw)
+
+
+def role_wave_result(n: int, **kw) -> dict:
+    return wave_result("role", n, **kw)
 
 
 SCENARIOS: Dict[str, Callable[..., dict]] = {"join_burst": join_burst, "scam_links": scam_links}
@@ -134,7 +146,7 @@ def run_all(**kw) -> List[dict]:
     return [join_burst(n=kw.get("n", 10)), scam_links()]
 
 
-REAL = ("channel_wave",)     # scenarios that really change the server (the rest are simulated)
+REAL = tuple(w[0] for w in WAVES.values())     # scenarios that really change the server (the rest are simulated)
 
 
 def format_results(results: List[dict]) -> str:

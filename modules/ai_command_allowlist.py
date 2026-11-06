@@ -446,6 +446,11 @@ AI_COMMANDS = (
          "(optional `count`, default 5, max 25), check Discord's audit log and the anti-nuke protection, post a PASS/FAIL report, "
          "then restore the server from its snapshot. Needs an armed snapshot first (`testharness snapshot`) and a Confirm click.",
          ("manage_channels",), ai_only=True, test_guild_only=True),
+    _sub("testharness rolewave", _TH, True,
+         "Owner-only bot test harness, REAL scenario: in THIS test server create then delete a small wave of throw-away roles "
+         "(no permissions; optional `count`, default 5, max 20), check Discord's audit log and the anti-nuke protection, post a "
+         "PASS/FAIL report, then restore the server from its snapshot. Needs an armed snapshot first and a Confirm click.",
+         ("manage_roles",), ai_only=True, test_guild_only=True),
     _sub("testharness stop", _TH, False,
          "Owner-only bot test harness KILL SWITCH: stop the current test run and restore this test server from its snapshot right "
          "now, then verify and report. No confirm (it must be instant).",

@@ -80,7 +80,12 @@ def make_guild(fail_create_at=None, audit_n=None, fail_delete_at=None):
         for _ in range(len(made) if audit_n is None else audit_n):
             yield SimpleNamespace(created_at=datetime.now(timezone.utc) + timedelta(seconds=1), user=SimpleNamespace(id=BOT))
 
-    g = SimpleNamespace(id=TEST_GUILD, owner_id=OWNER, create_text_channel=create, audit_logs=audit_logs, made=made)
+    async def create_role(name=None, permissions=None, reason=None):
+        assert permissions == discord.Permissions.none()          # throw-away roles never carry permissions
+        return await create(name, reason)
+
+    g = SimpleNamespace(id=TEST_GUILD, owner_id=OWNER, create_text_channel=create, create_role=create_role,
+                        audit_logs=audit_logs, made=made)
     return g
 
 
@@ -225,3 +230,70 @@ def test_direct_callback_still_needs_confirm(env):
     i = inter(g)
     run(cog.harness_wave.callback(cog, i, count=5))
     assert g.made == []                                                                  # only a Confirm view was offered
+
+
+# ── phase 4b: role wave ──────────────────────────────────────────────────
+def test_role_wave_cap_and_spec():
+    assert scen.clamp_wave(None, "role") == 5 and scen.clamp_wave(10**6, "role") == 20 and scen.clamp_wave(0, "role") == 1
+    assert scen.clamp_wave(10**6, "channel") == 25
+    spec = AI_COMMANDS_BY_NAME["testharness_rolewave"]
+    assert spec.ai_only and spec.test_guild_only and spec.requires_confirmation
+
+
+def test_role_result_titles_and_failures():
+    r = scen.role_wave_result(5, created=5, deleted=5, audit_seen=5, own_trips=0, synth_trips=1, config_restored=True,
+                              aborted=None, seconds=1.0)
+    assert r["pass"] and r["name"] == "role_wave" and "Role-delete wave (5 roles)" == r["title"]
+    assert not scen.role_wave_result(5, created=5, deleted=5, audit_seen=1, own_trips=0, synth_trips=1,
+                                     config_restored=True, aborted=None, seconds=1.0)["pass"]
+
+
+def test_real_scenarios_get_the_real_header():
+    r = scen.role_wave_result(2, created=2, deleted=2, audit_seen=2, own_trips=0, synth_trips=1, config_restored=True,
+                              aborted=None, seconds=0.1)
+    assert "Real scenario" in scen.format_results([r])
+
+
+def test_prompt_says_roles_and_caps_at_20(env):
+    ok, text = run(make_cog(env).ai_rolewave_prompt(inter(make_guild()), count=500))
+    assert ok and "**20**" in text and "roles" in text
+
+
+def test_prompt_refuses_role_wave_without_armed_snapshot(env):
+    env.status = None
+    ok, text = run(make_cog(env).ai_rolewave_prompt(inter(make_guild()), count=5))
+    assert not ok and "snapshot" in text.lower()
+
+
+def test_full_role_wave_passes_and_restores(env):
+    cog, g = make_cog(env), make_guild()
+    i = inter(g)
+    run(cog.ai_rolewave(i, count=3))
+    assert len(g.made) == 3 and all(c.deleted for c in g.made)
+    assert env.cfg["enabled"] is False
+    cog._restore_run.assert_awaited_once()
+    sent = i.channel.send.await_args.args[0]
+    assert "PASS" in sent and "Role-delete wave" in sent
+
+
+def test_role_wave_stops_at_first_refusal(env):
+    cog, g = make_cog(env), make_guild(fail_create_at=2)
+    i = inter(g)
+    run(cog.ai_rolewave(i, count=10))
+    assert len(g.made) == 1 and g.made[0].deleted
+    assert "FAIL" in i.channel.send.await_args.args[0]
+    cog._restore_run.assert_awaited_once()
+
+
+@pytest.mark.parametrize("kw", [dict(guild_id=OTHER_GUILD), dict(user_id=STRANGER), dict(clone_id=7)])
+def test_role_wave_refused_everywhere_else(env, kw):
+    cog, g = make_cog(env), make_guild()
+    i = inter(g, **kw)
+    run(cog.ai_rolewave(i, count=5))
+    assert g.made == [] and env.history == [] and env.status == "armed"
+
+
+def test_role_wave_direct_callback_needs_confirm(env):
+    cog, g = make_cog(env), make_guild()
+    run(cog.harness_rolewave.callback(cog, inter(g), count=5))
+    assert g.made == []

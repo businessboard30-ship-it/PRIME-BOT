@@ -9,6 +9,7 @@ do NOT mention it in the README or help text.
 
 Commands (all test-guild-only, owner-only, main-bot-only):
   testharness simulate  phase 3: simulated scenarios, no server changes (no confirm, no snapshot)
+  testharness rolewave  phase 4b, REAL: same as wave but with throw-away roles (cap 20).
   testharness wave      phase 4, REAL: create then delete <=25 throw-away channels, check audit log + anti-nuke, restore.
                         Needs an armed snapshot and a CONFIRM CLICK.
   testharness status    read-only
@@ -79,8 +80,10 @@ class TestHarnessCog(commands.Cog):
     __test__ = False  # not a pytest class
 
     # The guard calls the prompt hook before showing Confirm, then the handler after the click (and re-runs its own gate).
-    AI_CONFIRM_PROMPTS = {"testharness_snapshot": "ai_snapshot_prompt", "testharness_wave": "ai_wave_prompt"}
-    AI_CONFIRMED_HANDLERS = {"testharness_snapshot": "ai_snapshot", "testharness_wave": "ai_wave"}
+    AI_CONFIRM_PROMPTS = {"testharness_snapshot": "ai_snapshot_prompt", "testharness_wave": "ai_wave_prompt",
+                         "testharness_rolewave": "ai_rolewave_prompt"}
+    AI_CONFIRMED_HANDLERS = {"testharness_snapshot": "ai_snapshot", "testharness_wave": "ai_wave",
+                          "testharness_rolewave": "ai_rolewave"}
 
     def __init__(self, bot):
         self.bot = bot
@@ -289,26 +292,40 @@ class TestHarnessCog(commands.Cog):
         runs = [r for r in await db.th_unfinished_runs(guild_id) if r["status"] == "armed"]
         return runs[0] if runs else None
 
-    async def ai_wave_prompt(self, interaction, count=None, **_):
+    async def _wave_prompt(self, interaction, kind, count):
         """Confirm text + early refusal. (ok, text). Refuses unless a verified snapshot is armed (plan rule 7)."""
         if not handler_gate(interaction):
             return False, REFUSAL
         run = await self._armed_run(interaction.guild_id)
         if run is None:
             return False, "No armed snapshot here. Run `testharness snapshot` first; nothing destructive starts without one."
-        n = scen.clamp_wave(count)
+        n, noun = scen.clamp_wave(count, kind), scen.WAVES[kind][1]
         left = max(0, int((run["deadline_at"] - datetime.now(timezone.utc)).total_seconds() // 60))
-        return True, (f"🧪 REAL wave in this test server: I'll create **{n}** throw-away channels, delete them one by one "
+        return True, (f"🧪 REAL wave in this test server: I'll create **{n}** throw-away {noun}, delete them one by one "
                       f"(~{WAVE_PAUSE}s apart), check the audit log and anti-nuke, then restore the server from snapshot run "
                       f"#{run['id']} (its timer has ~{left} min left; the run ends when I finish). Stops at the first Discord error. Confirm?")
 
+    async def ai_wave_prompt(self, interaction, count=None, **_):
+        return await self._wave_prompt(interaction, "channel", count)
+
+    async def ai_rolewave_prompt(self, interaction, count=None, **_):
+        return await self._wave_prompt(interaction, "role", count)
+
     async def ai_wave(self, interaction, count=None, **_):
+        return await self._wave(interaction, "channel", count)
+
+    async def ai_rolewave(self, interaction, count=None, **_):
+        return await self._wave(interaction, "role", count)
+
+    async def _wave(self, interaction, kind, count):
         """Runs after the Confirm click. Handler gate re-checked before EVERY Discord call."""
         if not handler_gate(interaction):
             return await _say(interaction, REFUSAL)
         if not interaction.response.is_done():
             await interaction.response.defer(ephemeral=True)
-        gid, n, guild = interaction.guild_id, scen.clamp_wave(count), interaction.guild
+        gid, n, guild = interaction.guild_id, scen.clamp_wave(count, kind), interaction.guild
+        noun = scen.WAVES[kind][1]
+        audit_action = discord.AuditLogAction.channel_delete if kind == "channel" else discord.AuditLogAction.role_delete
         run = await self._armed_run(gid)
         if run is None or not await db.th_claim_run(run["id"], ["armed"], "running"):
             return await _say(interaction, "No armed snapshot (or a run is already going), so nothing was started.")
@@ -319,7 +336,7 @@ class TestHarnessCog(commands.Cog):
         listener = self.bot.get_cog("AntiNukeCog")
         synth, own_trips, audit_seen, restored_cfg = None, 0, None, False
         started = datetime.now(timezone.utc)
-        await self._audit(gid, "ai_testharness_wave_start", interaction.user.id, f"run {run['id']}, {n} channels")
+        await self._audit(gid, "ai_testharness_wave_start", interaction.user.id, f"run {run['id']}, {n} {noun}")
         try:
             # Anti-nuke on for the test, pointed at this channel, with the default threshold.
             report_ch = getattr(interaction.channel, "id", None)
@@ -333,9 +350,11 @@ class TestHarnessCog(commands.Cog):
                     aborted = "the gates no longer allow this server"
                     break
                 try:
-                    ch = await guild.create_text_channel(f"th-wave-{run['id']}-{i + 1}", reason=f"test harness run #{run['id']}")
+                    nm, why = f"th-wave-{run['id']}-{i + 1}", f"test harness run #{run['id']}"
+                    ch = (await guild.create_text_channel(nm, reason=why) if kind == "channel"
+                          else await guild.create_role(name=nm, permissions=discord.Permissions.none(), reason=why))
                 except discord.HTTPException as exc:
-                    aborted = f"Discord refused creating channel {i + 1}: {type(exc).__name__}"
+                    aborted = f"Discord refused creating {kind} {i + 1}: {type(exc).__name__}"
                     break
                 created.append(ch)
                 await asyncio.sleep(WAVE_PAUSE)
@@ -355,7 +374,7 @@ class TestHarnessCog(commands.Cog):
             try:
                 if handler_gate(interaction):
                     seen = 0
-                    async for e in guild.audit_logs(limit=min(50, n * 2 + 10), action=discord.AuditLogAction.channel_delete):
+                    async for e in guild.audit_logs(limit=min(50, n * 2 + 10), action=audit_action):
                         if e.created_at >= started and getattr(e.user, "id", None) == bot_id:
                             seen += 1
                     audit_seen = seen
@@ -369,7 +388,7 @@ class TestHarnessCog(commands.Cog):
                 an.reset(gid)
                 for _ in range(3):
                     await listener.on_audit_log_entry_create(SimpleNamespace(
-                        action=discord.AuditLogAction.channel_delete, guild=guild,
+                        action=audit_action, guild=guild,
                         user=SimpleNamespace(id=scen.SYNTH_ATTACKER_ID)))
                 an.reset(gid)
                 synth = (await db.get_antinuke_config(gid, self._clone_id)).get("triggered_count", 0) - after_own
@@ -386,11 +405,11 @@ class TestHarnessCog(commands.Cog):
                 restored_cfg = True
             except Exception:
                 logger.exception("[test_harness] could not restore the anti-nuke settings")
-        result = scen.channel_wave_result(n, created=len(created), deleted=deleted, audit_seen=audit_seen, own_trips=own_trips,
+        result = scen.wave_result(kind, n, created=len(created), deleted=deleted, audit_seen=audit_seen, own_trips=own_trips,
                                           synth_trips=synth, config_restored=restored_cfg, aborted=aborted,
                                           seconds=_time.perf_counter() - t0)
         text = scen.format_results([result])
-        await self._audit(gid, "ai_testharness_wave", interaction.user.id,
+        await self._audit(gid, f"ai_testharness_{kind}wave", interaction.user.id,
                           f"run {run['id']}: {'pass' if result['pass'] else 'FAIL'}; {'; '.join(result['gaps']) or 'no gaps'}"[:500])
         await _say(interaction, text)
         try:
@@ -415,6 +434,20 @@ class TestHarnessCog(commands.Cog):
 
         async def go(ci):
             await self.ai_wave(ci, count=count)
+        await _say(interaction, text, view=ConfirmActionView(interaction.user.id, go, confirm_label="Run wave", danger=True))
+
+    @harness_g.command(name="rolewave", description="REAL: create+delete a small wave of throw-away roles, check protections, restore")
+    @app_commands.describe(count="Roles in the wave (default 5, max 20)")
+    async def harness_rolewave(self, interaction: discord.Interaction, count: Optional[int] = None):
+        if not handler_gate(interaction):
+            return await _say(interaction, REFUSAL)
+        ok, text = await self.ai_rolewave_prompt(interaction, count=count)
+        if not ok:
+            return await _say(interaction, text)
+        from discord_bot.cogs._views_moderation import ConfirmActionView
+
+        async def go(ci):
+            await self.ai_rolewave(ci, count=count)
         await _say(interaction, text, view=ConfirmActionView(interaction.user.id, go, confirm_label="Run wave", danger=True))
 
     @harness_g.command(name="stop", description="Kill switch: stop the run and restore this test server now")
