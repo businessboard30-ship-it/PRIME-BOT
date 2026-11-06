@@ -79,11 +79,12 @@ class MoneyHubView(_MoneyView):
 
     def body(self):
         return ["Payments, revenue and premium tools. Pick one.",
-                "-# Pending payments, Revenue and Failed payments are read-only. Reverse and Discount codes change data."]
+                "-# Paid products, Pending payments, Revenue and Failed payments are read-only. Reverse and Discount codes change data."]
 
     def controls(self):
         P, S = discord.ButtonStyle.primary, discord.ButtonStyle.secondary
         return [
+            _btn("Paid products", P, self._paid, "💳"),
             _btn("Pending payments", P, self._pending, "🕒"),
             _btn("Failed payments", P, self._failures, "⚠️"),
             _btn("Revenue trend", P, self._revenue, "📈"),
@@ -95,6 +96,11 @@ class MoneyHubView(_MoneyView):
 
     async def _home_btn(self, i):
         await _home(self, i)
+
+    async def _paid(self, i):
+        v = PaidProductsView(self.cog, self.owner_id)
+        await v.load()
+        await self.go(i, v)
 
     async def _pending(self, i):
         v = PendingView(self.cog, self.owner_id)
@@ -123,6 +129,148 @@ class MoneyHubView(_MoneyView):
         v = ExpiriesView(self.cog, self.owner_id)
         await v.load()
         await self.go(i, v)
+
+
+# ── paid products: who bought what ───────────────────────────────────────
+
+class UserIdModal(discord.ui.Modal, title="Find a buyer"):
+    def __init__(self, view):
+        super().__init__(timeout=PANEL_TIMEOUT)
+        self.view = view
+        self.uid = discord.ui.TextInput(label="Discord user ID (or @mention)", max_length=40, placeholder="e.g. 123456789012345678")
+        self.add_item(self.uid)
+
+    async def on_submit(self, interaction: discord.Interaction):
+        if MONEY not in allowed_sections(interaction.user.id):   # modals skip interaction_check
+            await _denied(interaction)
+            return
+        uid = money.parse_user_id(self.uid.value)
+        if uid is None:
+            self.view.notice = "That doesn't look like a Discord user ID (15-20 digits)."
+        else:
+            self.view.user_id, self.view.page, self.view.notice = uid, 0, None
+            await self.view.load()
+        self.view._build()
+        await interaction.response.edit_message(view=self.view)
+
+
+class PaidProductsView(_MoneyView):
+    title = "💳 Paid products"
+    ALL = "__all__"
+
+    def __init__(self, cog, owner_id, section=MONEY):
+        self.summary: List[dict] = []
+        self.rows: List[dict] = []
+        self.total = 0
+        self.page = 0
+        self.product: Optional[str] = None
+        self.user_id: Optional[int] = None
+        self.notice = None
+        self.error = False
+        super().__init__(cog, owner_id, section)
+
+    @property
+    def pages(self) -> int:
+        return max(1, -(-self.total // money.PAID_PAGE))
+
+    async def load(self) -> None:
+        try:
+            self.summary = await money.paid_summary()
+            res = await money.list_paid(self.page * money.PAID_PAGE, money.PAID_PAGE, self.product, self.user_id)
+            self.rows, self.total, self.error = res["rows"], res["total"], False
+            if self.page >= self.pages:                      # a filter shrank the list: stay on a page that exists
+                self.page = self.pages - 1
+                res = await money.list_paid(self.page * money.PAID_PAGE, money.PAID_PAGE, self.product, self.user_id)
+                self.rows = res["rows"]
+        except Exception:
+            logger.exception("[admin-panel] couldn't load paid products")
+            self.summary, self.rows, self.total, self.error = [], [], 0, True
+        self._build()
+
+    def body(self):
+        lines = ["Every completed purchase, newest first, with the buyer's Discord user ID.",
+                 "-# Gumroad is USD, everything else GHS. Reversed and pending payments are not listed here."]
+        if self.notice:
+            lines.append(self.notice)
+        if self.error:
+            lines.append(LOAD_FAILED)
+            return lines
+        if self.summary:
+            rows = [f"{_code(r['product'], 28):<28} {r['currency']} {r['n']:>4} sale(s)  {float(r['total']):>9g}  {r['buyers']} buyer(s)"
+                    for r in self.summary[:12]]
+            lines.append("**By product (all time)**\n```\n" + "\n".join(rows) + "\n```")
+        flt = []
+        if self.product:
+            flt.append(f"product **{_safe(self.product)}**")
+        if self.user_id:
+            flt.append(f"buyer **{self.user_id}**")
+        if flt:
+            lines.append("Filtered by " + " and ".join(flt) + ".")
+        if not self.rows:
+            lines.append("No completed payments match." if flt else "No completed payments yet.")
+            return lines
+        entries = []
+        for r in self.rows:
+            srv = f" | server {r['chat_id']}" if r.get("chat_id") else ""
+            entries.append(f"{_code(r.get('payment_type') or 'unknown', 24)} | user {r['user_id']} | "
+                           f"{(r.get('amount') or 0):g} {money.currency_of(r.get('provider'))} | "
+                           f"{_code(r.get('provider') or 'paystack', 10)}{srv} | {_age(r['created_date'])} | {_code(r['paystack_reference'], 44)}")
+        shown = _fit(entries, TEXT_BUDGET - 1500)
+        hidden = shown.pop() if shown and shown[-1].startswith("-# …and") else None
+        lines.append("```\n" + "\n".join(shown) + "\n```")
+        if hidden:
+            lines.append(hidden)
+        lines.append(f"-# Page {self.page + 1} of {self.pages} · {self.total} payment(s) match.")
+        return lines
+
+    def controls(self):
+        S = discord.ButtonStyle.secondary
+        items: list = []
+        products = sorted({r["product"] for r in self.summary})[:24]
+        if products:
+            opts = [discord.SelectOption(label="All products", value=self.ALL, default=self.product is None)]
+            opts += [discord.SelectOption(label=_clip(p, 100), value=p, default=p == self.product) for p in products]
+            sel = discord.ui.Select(placeholder="Filter by product", options=opts)
+            sel.callback = self._pick
+            items.append(sel)
+        items += [
+            _btn("Prev", S, self._prev, "◀️", disabled=self.page == 0),
+            _btn("Next", S, self._next, "▶️", disabled=self.page + 1 >= self.pages),
+            _btn("Find user ID", S, self._find, "🔎"),
+            _btn("Clear filters", S, self._clear, "🧹", disabled=self.product is None and self.user_id is None),
+            _btn("Refresh", S, self._refresh, "🔄"),
+            _btn("Back", S, self._back, "⬅️"),
+        ]
+        return items
+
+    async def _reload(self, i):
+        await self.load()
+        await i.response.edit_message(view=self)
+
+    async def _pick(self, i):
+        v = i.data["values"][0]
+        self.product = None if v == self.ALL else v
+        self.page, self.notice = 0, None
+        await self._reload(i)
+
+    async def _prev(self, i):
+        self.page = max(0, self.page - 1)
+        await self._reload(i)
+
+    async def _next(self, i):
+        self.page = min(self.pages - 1, self.page + 1)
+        await self._reload(i)
+
+    async def _find(self, i):
+        await i.response.send_modal(UserIdModal(self))
+
+    async def _clear(self, i):
+        self.product, self.user_id, self.page, self.notice = None, None, 0, None
+        await self._reload(i)
+
+    async def _refresh(self, i):
+        self.notice = None
+        await self._reload(i)
 
 
 # ── pending payments (references waiting in the queue) ───────────────────

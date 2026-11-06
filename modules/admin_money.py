@@ -123,6 +123,58 @@ async def list_pending(limit: int = PENDING_LIMIT) -> Dict[str, object]:
     return {"rows": out, "total": int(total if total is not None else len(out))}
 
 
+# ── paid products (completed purchases, with the buyer's user ID) ────────
+
+PAID_PAGE = 10
+_USER_ID_RE = re.compile(r"^\s*(?:<@!?)?(\d{15,20})>?\s*$")
+
+
+def parse_user_id(text) -> Optional[int]:
+    """A Discord user ID typed as digits or pasted as a mention (<@123...>). None when it isn't one."""
+    m = _USER_ID_RE.match(str(text or ""))
+    return int(m.group(1)) if m else None
+
+
+def currency_of(provider) -> str:
+    return "USD" if (provider or "").lower() == "gumroad" else "GHS"       # same rule as the revenue trend
+
+
+async def paid_summary() -> List[dict]:
+    """One row per product and currency over ALL completed payments: {'product','currency','n','total','buyers','last'}."""
+    pool = await _pool()
+    async with pool.acquire() as conn:
+        rows = await conn.fetch(
+            "SELECT COALESCE(NULLIF(payment_type, ''), 'unknown') AS product, "
+            "CASE WHEN provider = 'gumroad' THEN 'USD' ELSE 'GHS' END AS currency, "
+            "COUNT(*) AS n, COALESCE(SUM(amount), 0) AS total, COUNT(DISTINCT user_id) AS buyers, "
+            "MAX(created_date) AS last FROM payment_logs WHERE status = 'completed' "
+            "GROUP BY 1, 2 ORDER BY n DESC, product")
+    return [dict(r) for r in rows]
+
+
+async def list_paid(offset: int = 0, limit: int = PAID_PAGE, product: Optional[str] = None,
+                    user_id: Optional[int] = None) -> Dict[str, object]:
+    """Completed payments, newest first, optionally for one product and/or one buyer. Read-only.
+    Returns {'rows': [...], 'total': N} (total counts every match, not just this page)."""
+    where, args = ["status = 'completed'"], []
+    if product:
+        args.append("unknown" if product == "unknown" else product)
+        where.append("COALESCE(NULLIF(payment_type, ''), 'unknown') = $%d" % len(args))
+    if user_id:
+        args.append(int(user_id))
+        where.append("user_id = $%d" % len(args))
+    clause = " AND ".join(where)
+    pool = await _pool()
+    async with pool.acquire() as conn:
+        rows = await conn.fetch(
+            "SELECT payment_id, paystack_reference, user_id, amount, payment_type, provider, chat_id, created_date "
+            f"FROM payment_logs WHERE {clause} ORDER BY created_date DESC, payment_id DESC "
+            f"LIMIT ${len(args) + 1} OFFSET ${len(args) + 2}", *args, int(limit), max(0, int(offset)))
+        total = await conn.fetchval(f"SELECT COUNT(*) FROM payment_logs WHERE {clause}", *args)
+    out = [dict(r) for r in rows]
+    return {"rows": out, "total": int(total if total is not None else len(out))}
+
+
 CLEAR_PENDING_HOURS = 6   # only checkouts older than this; a buyer can still be mid-payment on a fresh one
 
 
