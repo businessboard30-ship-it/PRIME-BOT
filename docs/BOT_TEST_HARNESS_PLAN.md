@@ -88,5 +88,8 @@ Each phase is its own PR with tests, a handoff note (built / next), and no READM
 - Default dead-man timer (proposed 15 minutes) and caps (proposed above).
 
 ## Built / Next
-- Built: this plan only.
-- Next: owner sends the test server ID and picks the first protections; then phase 1 (gates + skeleton) as its own PR.
+- Built (phase 1, gates + skeleton): `config.TEST_GUILD_ID` (0 = off), `modules/test_harness.py` (`check_gates`), `AICommandSpec.test_guild_only`,
+  offer gate (`get_qualifying_commands`) + execution gate (`resolve_and_check`) in `ai_command_guard`, handler gate in
+  `discord_bot/cogs/test_harness.py` (AI-only, never on the slash tree, never loaded on clones), one read-only op `testharness status`,
+  audit via `log_action`. Tests: `tests/unit/test_test_harness_gates.py` (wrong guild, non-owner, clone, ID unset, direct handler call). No scenarios, no destructive code.
+- Next: owner sets `TEST_GUILD_ID` in config.py and picks the first protections; then phase 2 (snapshot/restore + dead-man timer + restart recovery) as its own PR.
