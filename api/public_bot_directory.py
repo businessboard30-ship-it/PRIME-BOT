@@ -84,7 +84,16 @@ async def _fetch(params):
 
 class handler(BaseHTTPRequestHandler):
     def _cors(self):
-        self.send_header("Access-Control-Allow-Origin", "https://discordbotreviewer.com")
+        origin = self.headers.get("Origin", "")
+        allowed = {
+            "https://discordbotreviewer.com",
+            "https://www.discordbotreviewer.com",
+            "https://discordbotreviewer.pages.dev",
+        }
+        if origin in allowed or (origin.startswith("https://") and origin.endswith(".discordbotreviewer.pages.dev")):
+            self.send_header("Access-Control-Allow-Origin", origin)
+        else:
+            self.send_header("Access-Control-Allow-Origin", "https://discordbotreviewer.com")
         self.send_header("Vary", "Origin")
         self.send_header("Access-Control-Allow-Methods", "GET, OPTIONS")
         self.send_header("Access-Control-Allow-Headers", "Content-Type")
