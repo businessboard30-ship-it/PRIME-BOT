@@ -34,7 +34,7 @@ async def _fetch(params):
     if cached and time.time() - cached[0] < CACHE_SECONDS:
         return cached[1]
     pool = await get_pool()
-    where = ["l.status = 'approved'"]
+    where = ["l.status = 'approved'", "l.application_id <> 1539561247299604610"]
     args = []
     if q:
         args.append("%" + q.replace("%", "\\%").replace("_", "\\_") + "%")
