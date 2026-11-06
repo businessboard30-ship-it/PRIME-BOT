@@ -265,6 +265,69 @@ def test_bulk_create_refuses_a_batch_over_the_channel_limit(setup_cog, ops=None)
     assert "limit" in err
 
 
+def test_bulk_create_can_plan_a_brand_new_category_for_the_channels(setup_cog):
+    err, plan = run(setup_cog._create_plan(_inter(), "a, b", new_category="Nebula"))
+    assert err is None and plan["new_category"] == "Nebula" and plan["category"] is None
+    assert "new category **Nebula**" in setup_cog._create_summary(plan)
+
+
+def test_new_category_reuses_one_that_already_exists(setup_cog):
+    cat = _chan(discord.CategoryChannel, "Nebula", 3)
+    err, plan = run(setup_cog._create_plan(_inter(channels=[cat]), "a", new_category="nebula"))
+    assert err is None and plan["category"] is cat and plan["new_category"] is None
+
+
+def test_category_and_new_category_together_are_refused(setup_cog):
+    cat = _chan(discord.CategoryChannel, "Old", 3)
+    err, _ = run(setup_cog._create_plan(_inter(channels=[cat]), "a", category="Old", new_category="New"))
+    assert "not both" in err
+
+
+def test_unknown_existing_category_is_still_refused_not_guessed(setup_cog):
+    err, _ = run(setup_cog._create_plan(_inter(), "a", category="Nebula"))
+    assert "couldn't find a category" in err
+
+
+def test_finish_create_makes_the_category_first_then_puts_the_channels_in_it(setup_cog, monkeypatch):
+    from discord_bot.cogs import setup_channels as sc
+    monkeypatch.setattr(sc.modx, "log_action", AsyncMock())
+    monkeypatch.setattr(sc.asyncio, "sleep", AsyncMock())
+    calls = []
+
+    async def fake_create(guild, names, kind, category, reason):
+        calls.append((kind, list(names), category))
+        return [SimpleNamespace(name=n, mention=f"#{n}") for n in names], None
+
+    monkeypatch.setattr(sc._ai_bulk_ops, "create_channels", fake_create)
+    monkeypatch.setattr(sc._ai_bulk, "JOBS", ai_bulk.JobGuard())
+    inter = _inter()
+    run(setup_cog._finish_create(inter, {"final": ["a", "b"], "kind": "text", "category": None, "new_category": "Nebula"}))
+    assert calls[0] == ("category", ["Nebula"], None)
+    assert calls[1][0] == "text" and calls[1][1] == ["a", "b"] and calls[1][2].name == "Nebula"
+    assert "Created 3/3" in inter.followup.send.await_args.args[0]
+
+
+def test_nothing_is_made_outside_the_category_if_the_category_fails(setup_cog, monkeypatch):
+    from discord_bot.cogs import setup_channels as sc
+    monkeypatch.setattr(sc.modx, "log_action", AsyncMock())
+    calls = []
+
+    async def fake_create(guild, names, kind, category, reason):
+        calls.append(kind)
+        return [], "Discord refused one of the names"
+
+    monkeypatch.setattr(sc._ai_bulk_ops, "create_channels", fake_create)
+    monkeypatch.setattr(sc._ai_bulk, "JOBS", ai_bulk.JobGuard())
+    inter = _inter()
+    run(setup_cog._finish_create(inter, {"final": ["a"], "kind": "text", "category": None, "new_category": "Nebula"}))
+    assert calls == ["category"] and "Nothing was created" in inter.followup.send.await_args.args[0]
+
+
+def test_ai_tool_description_tells_the_model_to_invent_names_and_use_new_category(setup_cog):
+    params = {p["name"]: p["description"] for p in setup_cog.AI_TOOL_PARAMS["bulk-create"]}
+    assert "invent" in params["names"] and "new_category" in params["category"] and "NEW category" in params["new_category"]
+
+
 def test_bulk_create_runs_one_job_and_releases_the_lock(setup_cog, monkeypatch):
     from discord_bot.cogs import setup_channels as sc
     monkeypatch.setattr(sc.modx, "log_action", AsyncMock())

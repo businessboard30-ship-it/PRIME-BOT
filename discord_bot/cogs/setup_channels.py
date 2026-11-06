@@ -23,6 +23,7 @@ decorator-bound callback dies when the process restarts, only fixed
 custom_ids can be re-attached via bot.add_view().
 """
 
+import asyncio
 import logging
 
 import discord
@@ -1154,11 +1155,17 @@ class SetupChannelsCog(GuildOnlyCog):
     AI_TOOL_PARAMS = {
         "bulk-create": [
             {"name": "names", "type": "string", "required": True,
-             "description": "Channel names to create, comma-separated (max 15), e.g. 'general, memes, staff-chat'"},
+             "description": "Channel names to create, comma-separated (max 15), e.g. 'general, memes, staff-chat'. "
+                            "If the user says random/any/whatever names, invent fitting names yourself; never ask them for names."},
             {"name": "kind", "type": "string", "enum": list(_ai_bulk_ops.KINDS),
              "description": "text (default), voice, or category"},
             {"name": "category", "type": "string",
-             "description": "Existing category to put them in (its name). Omit for no category."},
+             "description": "An EXISTING category to put them in (its name). Omit for no category. "
+                            "Never invent a name here: for a category that doesn't exist yet use new_category."},
+            {"name": "new_category", "type": "string",
+             "description": "Name of a NEW category to create first and put the channels in (e.g. when the user says "
+                            "'under one category' or 'under a new category'; pick a name yourself if they didn't give one). "
+                            "If a category with that name already exists it is reused."},
             {"name": "font", "type": "string", "enum": list(_STYLES.keys()),
              "description": "Optional fancy font for the names (e.g. bold, script, kanji)"},
             {"name": "bracket", "type": "string", "enum": list(_BRACKETS.keys()),
@@ -1176,7 +1183,7 @@ class SetupChannelsCog(GuildOnlyCog):
         ],
     }
 
-    async def _create_plan(self, interaction, names, kind=None, category=None, font=None, bracket=None):
+    async def _create_plan(self, interaction, names, kind=None, category=None, font=None, bracket=None, new_category=None):
         """(error_or_None, plan). Every check that could make the job fail happens here, BEFORE the confirm button."""
         from discord_bot.cogs.style import _normalize_font, _normalize_bracket, _premium_flags, _premium_block_message
         guild = interaction.guild
@@ -1190,6 +1197,15 @@ class SetupChannelsCog(GuildOnlyCog):
         if kind not in _ai_bulk_ops.KINDS:
             return f"Kind must be one of: {', '.join(_ai_bulk_ops.KINDS)}.", None
         cat, problem = (None, None) if kind == "category" else _ai_bulk_ops.find_category(guild, category)
+        new_cat_name = None
+        if kind != "category" and new_category not in (None, ""):
+            if cat is not None:
+                return "Give me either an existing category or a new one, not both.", None
+            # A category the user asked us to make: reuse it when it already exists, otherwise create it first.
+            cat, problem = _ai_bulk_ops.find_category(guild, new_category)
+            if cat is None and (problem or "").startswith("I couldn't find"):
+                new_cat_name = _ai_bulk.slug(str(new_category), category=True)
+                problem = None if new_cat_name else f"\u201c{new_category}\u201d isn't usable as a category name."
         if problem:
             return problem, None
         font_key = None
@@ -1216,15 +1232,17 @@ class SetupChannelsCog(GuildOnlyCog):
             if plan["invalid"]:
                 why.append("not usable as names: " + _ai_bulk.summarize(plan["invalid"]))
             return "Nothing to create" + (" \u2014 " + "; ".join(why) if why else ". Give me some names.") + ".", None
-        if len(guild.channels) + len(plan["create"]) > _ai_bulk_ops.GUILD_CHANNEL_LIMIT:
+        if len(guild.channels) + len(plan["create"]) + (1 if new_cat_name else 0) > _ai_bulk_ops.GUILD_CHANNEL_LIMIT:
             return f"That would pass Discord's {_ai_bulk_ops.GUILD_CHANNEL_LIMIT}-channel limit for a server.", None
-        plan.update(kind=kind, category=cat, font=font_key, bracket=bracket_key,
+        plan.update(kind=kind, category=cat, font=font_key, bracket=bracket_key, new_category=new_cat_name,
                     final=[_ai_bulk_ops.styled_name(n, font_key, bracket_key, kind) for n in plan["create"]])
         return None, plan
 
     @staticmethod
     def _create_summary(plan) -> str:
         where = f" in **{plan['category'].name}**" if plan.get("category") is not None else ""
+        if plan.get("new_category"):
+            where = f" in a new category **{plan['new_category']}**"
         font = ""
         if plan.get("font"):
             from modules.text_styles import STYLES
@@ -1249,29 +1267,39 @@ class SetupChannelsCog(GuildOnlyCog):
             await interaction.followup.send(f"\u23f3 {busy}", ephemeral=True)
             return
         try:
-            made, stop = await _ai_bulk_ops.create_channels(
-                guild, plan["final"], plan["kind"], plan.get("category"),
-                reason=f"Bulk create by {interaction.user} ({interaction.user.id})")
+            reason = f"Bulk create by {interaction.user} ({interaction.user.id})"
+            category, made_cat, stop = plan.get("category"), [], None
+            if plan.get("new_category"):
+                made_cat, stop = await _ai_bulk_ops.create_channels(guild, [plan["new_category"]], "category", None, reason=reason)
+                category = made_cat[0] if made_cat else None
+            if stop or (plan.get("new_category") and category is None):
+                made = []                                     # no category -> don't scatter channels outside it
+            else:
+                if made_cat:
+                    await asyncio.sleep(_ai_bulk.PAUSE_SECONDS)
+                made, stop = await _ai_bulk_ops.create_channels(guild, plan["final"], plan["kind"], category, reason=reason)
+            made = made_cat + made
         finally:
             _ai_bulk.JOBS.finish(guild.id)
         if made:
             await modx.log_action(guild.id, "bulk_create", interaction.user.id,
                                   reason=f"{len(made)} channel(s): {_ai_bulk.summarize([c.name for c in made], 8)}")
-        msg = (f"\u2705 Created {len(made)}/{len(plan['final'])}: " + " ".join(c.mention for c in made)) if made \
+        total = len(plan["final"]) + (1 if plan.get("new_category") else 0)       # the new category counts too
+        msg = (f"\u2705 Created {len(made)}/{total}: " + " ".join(c.mention for c in made)) if made \
             else "\u274c Nothing was created."
         if stop:
             msg += f"\n\u26a0\ufe0f Stopped early: {stop}"
         await interaction.followup.send(msg[:1900], ephemeral=True)
 
     async def ai_bulkcreate_prompt(self, interaction, names=None, kind=None, category=None, font=None,
-                                   bracket=None, **_ignored):
-        err, plan = await self._create_plan(interaction, names, kind, category, font, bracket)
+                                   bracket=None, new_category=None, **_ignored):
+        err, plan = await self._create_plan(interaction, names, kind, category, font, bracket, new_category)
         return (False, f"\u274c {err}") if err else (True, self._create_summary(plan) + "\nGo ahead?")
 
     async def ai_bulkcreate(self, interaction, names=None, kind=None, category=None, font=None, bracket=None,
-                            **_ignored):
+                            new_category=None, **_ignored):
         # Re-plan at click time: the server may have changed since the prompt was shown.
-        err, plan = await self._create_plan(interaction, names, kind, category, font, bracket)
+        err, plan = await self._create_plan(interaction, names, kind, category, font, bracket, new_category)
         if err:
             await interaction.followup.send(f"\u274c {err}", ephemeral=True)
             return
@@ -1286,10 +1314,11 @@ class SetupChannelsCog(GuildOnlyCog):
     @group.command(name="bulk-create", description="Create several channels at once, optionally in a fancy font")
     @app_commands.describe(names="Channel names, comma-separated (max 15)", kind="text (default), voice or category",
                            category="Existing category to put them in", font="Fancy font key (e.g. bold, script)",
-                           bracket="Bracket/decoration key (e.g. cjk, bar)")
+                           bracket="Bracket/decoration key (e.g. cjk, bar)",
+                           new_category="Name of a NEW category to create for them")
     async def bulkcreate_cmd(self, interaction: discord.Interaction, names: str, kind: str = "text",
-                             category: str = "", font: str = "", bracket: str = ""):
-        err, plan = await self._create_plan(interaction, names, kind, category, font, bracket)
+                             category: str = "", font: str = "", bracket: str = "", new_category: str = ""):
+        err, plan = await self._create_plan(interaction, names, kind, category, font, bracket, new_category)
         if err:
             await interaction.response.send_message(f"\u274c {err}", ephemeral=True)
             return

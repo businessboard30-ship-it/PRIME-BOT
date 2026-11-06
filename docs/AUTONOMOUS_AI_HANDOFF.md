@@ -186,6 +186,12 @@ Audit result per plan bullet, and what changed:
   `AI_VISION_MODEL` is now `qwen/qwen3.6-27b` (Groq's named vision replacement; override with the env var). Not tested against the live API from the build
   sandbox: smoke-test by sending the AI an image. `utils/rate_limiter.py` now uses the shared DB pool instead of its own connection.
 
+- Bulk channel create + new category (2026-11): "create ten channels with random names under one category with a random name" failed ("wasn't sure what you meant",
+  then "couldn't find a category called Nebula") because `/setup bulk-create` could only use an EXISTING category and the model invented a name for it.
+  Added `new_category` (create it first, reuse it if it already exists, refuse if `category` is also given; nothing is made outside it if the category step fails).
+  The tool descriptions now tell the model to invent names itself for "random/any" and to use `new_category` for a category that doesn't exist yet.
+  Unknown `category` is still refused, never guessed. Not tested against the live model: smoke-test by repeating the exact sentence from the report.
+
 ## Next
 
 - Step outputs passed to later steps (e.g. id of a category just created).
