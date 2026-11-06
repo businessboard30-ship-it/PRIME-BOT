@@ -159,7 +159,8 @@ _pool_loop = None  # the asyncio event loop _pool's connections belong to
 # Do NOT bump it for unrelated changes — an unnecessary bump forces every
 # bot/clone's next cold start to run the full DDL pass again, which is
 # exactly the schema-reload storm this version check exists to avoid.
-SCHEMA_VERSION = "144"
+SCHEMA_VERSION = "145"
+# "144" -> "145" adds discord_antinuke_config (anti-nuke v1: per-server opt-in, threshold/window/action). CREATE TABLE / CREATE UNIQUE INDEX IF NOT EXISTS only. Bump-or-it-never-runs trap: tests/unit/test_schema_version_guard.py
 # "142" -> "143" adds 098_premium_trial.sql (discord_guild_subscriptions.is_trial / trial_started_at: one free Premium trial per server). ALTER TABLE ADD COLUMN IF NOT EXISTS only. Bump-or-it-never-runs trap: tests/unit/test_schema_version_guard.py
 # "141" -> "142" adds 097_scam_hit_evidence_ref.sql (scam_shield_hits.evidence_channel_id / evidence_message_id: pointer to the archived copy, used by the AI scam lookup to show the scam link + image). ALTER TABLE ADD COLUMN IF NOT EXISTS only. Bump-or-it-never-runs trap: tests/unit/test_schema_version_guard.py
 # "140" -> "141" adds 096_ai_scheduled_jobs.sql (ai_scheduled_jobs + ai_job_runs: persistent AI scheduler, Phase 3). CREATE TABLE / CREATE INDEX IF NOT EXISTS only. Bump-or-it-never-runs trap: tests/unit/test_schema_version_guard.py
@@ -2907,6 +2908,24 @@ class Database:
         await conn.execute("""
             CREATE UNIQUE INDEX IF NOT EXISTS discord_antiraid_config_guild_clone_key
             ON discord_antiraid_config (guild_id, COALESCE(clone_id, -1))
+        """)
+        # Anti-nuke v1 (modules/antinuke.py, discord_bot/cogs/antinuke.py): OFF by default, opt-in per server.
+        await conn.execute("""
+            CREATE TABLE IF NOT EXISTS discord_antinuke_config (
+                guild_id BIGINT NOT NULL,
+                clone_id INTEGER,
+                enabled BOOLEAN NOT NULL DEFAULT FALSE,
+                threshold INTEGER NOT NULL DEFAULT 3,
+                window_seconds INTEGER NOT NULL DEFAULT 10,
+                action TEXT NOT NULL DEFAULT 'contain',
+                log_channel_id BIGINT,
+                triggered_count INTEGER NOT NULL DEFAULT 0,
+                last_triggered_at TIMESTAMPTZ
+            )
+        """)
+        await conn.execute("""
+            CREATE UNIQUE INDEX IF NOT EXISTS discord_antinuke_config_guild_clone_key
+            ON discord_antinuke_config (guild_id, COALESCE(clone_id, -1))
         """)
         # Anti-raid Pro (premium): join-profile filter. filter_age_days 0 = age check off.
         # filter_action is flag | quarantine | kick. See modules/antiraid_pro.py.
@@ -11249,6 +11268,40 @@ class Database:
         "log_channel_id", "alert_role_id", "active_until", "prev_verification", "created_by",
         "filter_age_days", "filter_default_avatar", "filter_suspicious_name", "filter_action",
     )
+
+    _ANTINUKE_DEFAULT = {"enabled": False, "threshold": 3, "window_seconds": 10, "action": "contain",
+                         "log_channel_id": None, "triggered_count": 0, "last_triggered_at": None}
+
+    async def get_antinuke_config(self, guild_id: int, clone_id: Optional[int] = None) -> Dict:
+        pool = await get_pool()
+        async with pool.acquire() as conn:
+            row = await conn.fetchrow(
+                "SELECT * FROM discord_antinuke_config WHERE guild_id = $1 AND clone_id IS NOT DISTINCT FROM $2",
+                guild_id, clone_id)
+        return dict(row) if row else {"guild_id": guild_id, "clone_id": clone_id, **self._ANTINUKE_DEFAULT}
+
+    async def set_antinuke_config(self, guild_id: int, clone_id: Optional[int] = None, **fields) -> Dict:
+        """Upsert-merge; omitted keys keep their current value."""
+        cur = await self.get_antinuke_config(guild_id, clone_id=clone_id)
+        m = {k: fields.get(k, cur.get(k)) for k in ("enabled", "threshold", "window_seconds", "action", "log_channel_id")}
+        pool = await get_pool()
+        async with pool.acquire() as conn:
+            row = await conn.fetchrow(
+                """
+                INSERT INTO discord_antinuke_config (guild_id, clone_id, enabled, threshold, window_seconds, action, log_channel_id)
+                VALUES ($1, $2, $3, $4, $5, $6, $7)
+                ON CONFLICT (guild_id, (COALESCE(clone_id, -1))) DO UPDATE
+                    SET enabled = $3, threshold = $4, window_seconds = $5, action = $6, log_channel_id = $7
+                RETURNING *
+                """, guild_id, clone_id, m["enabled"], m["threshold"], m["window_seconds"], m["action"], m["log_channel_id"])
+        return dict(row)
+
+    async def antinuke_mark_triggered(self, guild_id: int, clone_id: Optional[int] = None) -> None:
+        pool = await get_pool()
+        async with pool.acquire() as conn:
+            await conn.execute(
+                "UPDATE discord_antinuke_config SET triggered_count = triggered_count + 1, last_triggered_at = NOW() "
+                "WHERE guild_id = $1 AND clone_id IS NOT DISTINCT FROM $2", guild_id, clone_id)
 
     async def get_antiraid_config(self, guild_id: int, clone_id: Optional[int] = None) -> Dict:
         pool = await get_pool()

@@ -419,6 +419,13 @@ AI_COMMANDS = (
                   needs_perms=("manage_guild",)),
     AICommandSpec("antiraid", "discord_bot.cogs.antiraid", True, "Set up raid protection: spike detection, lockdown, staff alerts",
                   needs_perms=("manage_guild",)),
+    _sub("antinuke enable", "discord_bot.cogs.antinuke", True,
+         "Turn on anti-nuke: if one person (never the owner) deletes channels/roles or bans/kicks too fast, remove their dangerous "
+         "roles and alert staff. Optional `threshold` (2-20, default 3), `window` seconds (5-120, default 10), `action` "
+         "(contain or alert).", ("manage_guild",), ai_only=True),
+    _sub("antinuke disable", "discord_bot.cogs.antinuke", False, "Turn off anti-nuke protection.", ("manage_guild",), ai_only=True),
+    _sub("antinuke status", "discord_bot.cogs.antinuke", False, "Show whether anti-nuke is on, its settings and trigger count.",
+         ("manage_guild",), ai_only=True),
     # ── Bot test harness (AI-ONLY, TEST GUILD ONLY, owner only) ─────────────────────────────────────────
     # Phase 1: read-only status. Phase 2: snapshot (confirm) and stop (kill switch). See docs/BOT_TEST_HARNESS_PLAN.md. Never documented for users.
     _sub("testharness status", _TH, False,
