@@ -20,9 +20,21 @@ document.querySelectorAll(".archive-card").forEach(card=>{
  const name=card.querySelector("h3")?.textContent?.trim()||"Bot";
  const data=bots[slug]||{revenue:"Not publicly disclosed",value:"Not reliably estimable",evidence:"No verified financial disclosure found. Popularity or server count alone cannot establish revenue or company value.",confidence:"Not enough public financial data"};
  const img=document.createElement("img");img.className="archive-bot-avatar";img.alt=name+" official Discord bot avatar";img.loading="lazy";img.decoding="async";
- if(data.id){img.src="https://japi.rest/discord/v1/application/"+data.id;img.dataset.profileId=data.id;img.onerror=()=>{img.remove();const fallback=document.createElement("span");fallback.className="archive-bot-avatar archive-avatar-fallback";fallback.setAttribute("aria-label",name+" avatar unavailable");fallback.textContent=name.slice(0,1).toUpperCase();card.prepend(fallback)}}
- else {const fallback=document.createElement("span");fallback.className="archive-bot-avatar archive-avatar-fallback";fallback.setAttribute("aria-label",name+" avatar lookup pending");fallback.textContent=name.slice(0,1).toUpperCase();card.prepend(fallback)}
- card.prepend(img);
- const financial=document.createElement("div");financial.className="bot-financials";financial.innerHTML='<div><span>Monthly revenue</span><strong>'+esc(data.revenue)+'</strong></div><div><span>Estimated value</span><strong>'+esc(data.value)+'</strong></div><div class="bot-estimate-note">'+esc(data.confidence)+'. '+esc(data.evidence)+'</div>';card.append(financial);
+ if(data.id){
+   img.src="https://cdn.discordapp.com/embed/avatars/0.png";
+   card.prepend(img);
+   fetch("https://japi.rest/discord/v1/application/"+data.id).then(r=>{if(!r.ok)throw new Error("avatar lookup failed");return r.json()}).then(payload=>{
+     const profile=payload.data||{};
+     const url=profile.application?.iconURL||profile.bot?.avatarURL||null;
+     if(url) img.src=url;
+     else img.classList.add("archive-avatar-fallback");
+   }).catch(()=>img.classList.add("archive-avatar-fallback"));
+ } else {
+   img.src="https://cdn.discordapp.com/embed/avatars/0.png";
+   img.classList.add("archive-avatar-fallback");
+   card.prepend(img);
+ }
+ const financial=document.createElement("div");financial.className="bot-financials";
+ financial.innerHTML='<div><span>Server reach</span><strong>'+esc(data.servers||"Not verified")+'</strong></div><div><span>Monthly revenue</span><strong>'+esc(data.revenue)+'</strong></div><div><span>Estimated value</span><strong>'+esc(data.value)+'</strong></div><div class="bot-estimate-note">'+esc(data.confidence)+'. '+esc(data.evidence)+'</div>';card.append(financial);
 });
 })();
