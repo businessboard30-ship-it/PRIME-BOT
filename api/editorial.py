@@ -54,8 +54,9 @@ async def _submit(data, ip):
     async with pool.acquire() as c:
         recent=await c.fetchval("SELECT COUNT(*) FROM editorial_submissions WHERE ip_hash=$1 AND created_at>NOW()-INTERVAL '24 hours'",digest)
         if recent: raise ValueError("You've already submitted an article recently. Please wait before sending another.")
-        await c.execute("""INSERT INTO editorial_submissions(author_name,email,title,category,summary,article_body,source_url,ip_hash)
-        VALUES($1,$2,$3,$4,$5,$6,$7,$8)""",name,email or None,title,category,summary,body,source or None,digest)
+        submission_id=await c.fetchval("""INSERT INTO editorial_submissions(author_name,email,title,category,summary,article_body,source_url,ip_hash)
+        VALUES($1,$2,$3,$4,$5,$6,$7,$8) RETURNING id""",name,email or None,title,category,summary,body,source or None,digest)
+        return "DBR-"+str(submission_id).zfill(6)
 
 def _discord_user(user_id):
     token=os.getenv("DISCORD_BOT_TOKEN","").strip()
@@ -106,8 +107,8 @@ class handler(BaseHTTPRequestHandler):
             data=json.loads(self.rfile.read(n).decode())
             if data.get("website"): return self._send(400,{"status":"error","message":"Invalid submission."})
             if data.get("action")!="submit": return self._send(400,{"status":"error","message":"Unknown action."})
-            asyncio.run(_submit(data,self.client_address[0]))
-            self._send(201,{"status":"ok","message":"Your article has been sent to the editorial team for review."})
+            submission_id=asyncio.run(_submit(data,self.client_address[0]))
+            self._send(201,{"status":"ok","message":"Your article has been sent to the editorial team for review.","submission_id":submission_id})
         except ValueError as e: self._send(400,{"status":"error","message":str(e)})
         except Exception:
             logger.exception("Editorial article submission failed"); self._send(500,{"status":"error","message":"Your article could not be submitted right now."})
