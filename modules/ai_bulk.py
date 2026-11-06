@@ -42,6 +42,30 @@ RISKY_BULK_PERMS = ("administrator", "manage_guild", "manage_roles", "manage_cha
                     "view_audit_log", "manage_events", "manage_threads")
 DEDUPE_SECONDS = 15             # an identical AI command inside this window is ignored
 
+# The numbers above are the FREE-server limits. A Premium server gets bigger batches (the bulk work is paced one call
+# at a time, so a bigger batch is only slower, never harder on Discord). Use caps_for(premium) wherever a limit is applied.
+PREMIUM_CAPS = {"create": 30, "delete_channels": 25, "create_roles": 30, "delete_roles": 25}
+
+
+def caps_for(premium: bool) -> Dict[str, int]:
+    """Bulk limits for a server: {"create", "delete_channels", "create_roles", "delete_roles"}."""
+    if premium:
+        return dict(PREMIUM_CAPS)
+    return {"create": MAX_CREATE, "delete_channels": MAX_DELETE_CHANNELS,
+            "create_roles": MAX_CREATE_ROLES, "delete_roles": MAX_DELETE_ROLES}
+
+
+def cap_upsell(premium: bool, key: str) -> str:
+    """One short line telling a FREE server what Premium would raise this limit to ("" when already Premium)."""
+    if premium:
+        return ""
+    try:
+        from modules.premium_perks import trial_hint
+        hint = trial_hint()
+    except Exception:
+        hint = ""
+    return f" Premium raises this to {PREMIUM_CAPS[key]}." + hint
+
 _SPLIT = re.compile(r"[,;\n|]+")
 
 
@@ -129,10 +153,11 @@ def slug(name: str, *, voice: bool = False, category: bool = False) -> str:
     return re.sub(r"-{2,}", "-", text).strip("-")[:100]
 
 
-def plan_creation(raw_names, existing: Iterable[str], *, voice: bool = False, category: bool = False
-                  ) -> Dict[str, list]:
+def plan_creation(raw_names, existing: Iterable[str], *, voice: bool = False, category: bool = False,
+                  cap: Optional[int] = None) -> Dict[str, list]:
     """Splits what was asked for into what will be made and why anything is left out.
     Returns {"create": [...], "duplicates": [...], "invalid": [...], "over_cap": [...]}."""
+    limit = MAX_CREATE if cap is None else max(int(cap), 0)
     taken = {(e or "").lower() for e in existing}
     plan = {"create": [], "duplicates": [], "invalid": [], "over_cap": []}
     seen = set()
@@ -142,7 +167,7 @@ def plan_creation(raw_names, existing: Iterable[str], *, voice: bool = False, ca
             plan["invalid"].append(raw)
         elif name.lower() in taken or name.lower() in seen:
             plan["duplicates"].append(name)
-        elif len(plan["create"]) >= MAX_CREATE:
+        elif len(plan["create"]) >= limit:
             plan["over_cap"].append(name)
         else:
             plan["create"].append(name)
@@ -311,8 +336,10 @@ def role_name(name: str) -> str:
     return " ".join((name or "").replace("@", "").split())[:100]
 
 
-def plan_role_creation(raw_names, existing: Iterable[str], room: int = GUILD_ROLE_LIMIT) -> Dict[str, list]:
+def plan_role_creation(raw_names, existing: Iterable[str], room: int = GUILD_ROLE_LIMIT,
+                       cap: Optional[int] = None) -> Dict[str, list]:
     """Same shape as plan_creation, for roles. `room` is how many more roles the server can hold."""
+    limit = MAX_CREATE_ROLES if cap is None else max(int(cap), 0)
     taken = {(e or "").lower() for e in existing}
     plan = {"create": [], "duplicates": [], "invalid": [], "over_cap": []}
     seen = set()
@@ -322,7 +349,7 @@ def plan_role_creation(raw_names, existing: Iterable[str], room: int = GUILD_ROL
             plan["invalid"].append(raw)
         elif name.lower() in taken or name.lower() in seen:
             plan["duplicates"].append(name)
-        elif len(plan["create"]) >= min(MAX_CREATE_ROLES, max(room, 0)):
+        elif len(plan["create"]) >= min(limit, max(room, 0)):
             plan["over_cap"].append(name)
         else:
             plan["create"].append(name)

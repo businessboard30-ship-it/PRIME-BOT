@@ -52,6 +52,8 @@ class PremiumStatus:
     expires_ts: Optional[int] = None
     plus_ts: Optional[int] = None
     unknown: bool = False      # the lookup failed: show the plans anyway rather than an error
+    is_trial: bool = False         # the active Premium is the free trial
+    trial_available: bool = False  # this server has never had Premium: it can start its one free trial
 
 
 async def load_status(guild_id: int, clone_id) -> PremiumStatus:
@@ -59,13 +61,17 @@ async def load_status(guild_id: int, clone_id) -> PremiumStatus:
     try:
         row = await db.get_guild_premium(guild_id, clone_id=clone_id)
         if not row or not await db.is_guild_premium_active(guild_id, clone_id):
-            return PremiumStatus()
+            trial = False
+            if config.PREMIUM_TRIAL_ENABLED and config.PREMIUM_TRIAL_DAYS > 0:
+                trial = await db.premium_trial_available(guild_id)
+            return PremiumStatus(trial_available=trial)
         plus_ts = None
         if row.get("plus_expires_at") and await db.is_guild_plus_active(guild_id, clone_id):
             plus_ts = int(row["plus_expires_at"].timestamp())
         return PremiumStatus(
             active=True, lifetime=_is_lifetime_expiry(row["expires_at"]),
             expires_ts=int(row["expires_at"].timestamp()), plus_ts=plus_ts,
+            is_trial=bool(row.get("is_trial")),
         )
     except Exception:
         logger.exception("[premium] status lookup failed for guild %s", guild_id)
@@ -76,7 +82,13 @@ def status_text(s: PremiumStatus) -> str:
     if s.unknown:
         return "Couldn't check this server's Premium status just now — you can still pick a plan below."
     if not s.active:
+        if s.trial_available:
+            return (f"Not active on this server yet — but you can try **everything free for "
+                    f"{config.PREMIUM_TRIAL_DAYS} days**, no payment needed.")
         return "Not active on this server yet."
+    if s.is_trial and not s.lifetime:
+        return (f"🎁 **Your free Premium trial is running** until <t:{s.expires_ts}:D> (<t:{s.expires_ts}:R>). "
+                "Pick a plan below to keep everything when it ends.")
     if s.lifetime:
         out = "♾️ **Lifetime Premium is active** on this server. Nothing more to pay, ever."
     else:
@@ -178,7 +190,7 @@ class PremiumWizardView(discord.ui.LayoutView):
     # ── rendering ──
     def render(self) -> None:
         self.clear_items()
-        build = {"home": self._home, "perks": self._perks, "compare": self._compare}[self.page]
+        build = {"home": self._home, "perks": self._perks, "compare": self._compare, "report": self._report}[self.page]
         children, accent = build()
         self.add_item(discord.ui.Container(*children, accent_colour=accent))
 
@@ -207,6 +219,9 @@ class PremiumWizardView(discord.ui.LayoutView):
             status_text(s),
             f"-# One plan covers the whole server · {len(pp.perks())} perks · ✨ Plus adds {pp.plus_extras()}",
         ]))]
+        if s.trial_available:
+            kids.append(self._row(self._button(f"Start free {config.PREMIUM_TRIAL_DAYS}-day trial",
+                                               discord.ButtonStyle.success, "\U0001f381", self._start_trial)))
         if s.lifetime:
             kids.append(self._row(*(self._plan_button(*p) for p in _plus_plans())))
         else:
@@ -215,9 +230,11 @@ class PremiumWizardView(discord.ui.LayoutView):
                 *(self._plan_button(*p) for p in _plus_plans()),
                 self._plan_button(OFFER, f"50% off first year ${pd.discounted_usd():g}",
                                   discord.ButtonStyle.success, "🎟️")))
-        kids.append(self._row(
-            self._button("What's included", discord.ButtonStyle.secondary, "📋", self._to("perks")),
-            self._button("Compare", discord.ButtonStyle.secondary, "⚖️", self._to("compare"))))
+        info = [self._button("What's included", discord.ButtonStyle.secondary, "📋", self._to("perks")),
+                self._button("Compare", discord.ButtonStyle.secondary, "⚖️", self._to("compare"))]
+        if s.active:
+            info.append(self._button("What Premium did", discord.ButtonStyle.secondary, "\U0001f4ca", self._to("report")))
+        kids.append(self._row(*info))
         hint = payment_hint(self.mode)
         if not s.lifetime:
             hint = "-# 🎟️ First-time offer: Gumroad only (card / PayPal).\n" + hint
@@ -269,6 +286,56 @@ class PremiumWizardView(discord.ui.LayoutView):
         ])
         return [T(text), S(), self._nav("perks")], discord.Color.blurple()
 
+    def _report(self):
+        T, S = discord.ui.TextDisplay, discord.ui.Separator
+        text = getattr(self, "report_text", "") or "Loading\u2026"
+        return [T("## \U0001f4ca What Premium did\n" + text), S(),
+                self._row(self._button("Back to plans", discord.ButtonStyle.success, "\U0001f4b3", self._to("home")))], discord.Color.gold()
+
+    async def _start_trial(self, interaction: discord.Interaction) -> None:
+        """Starts the server's one free trial. Needs Manage Server; the INSERT is guarded, so a double tap or a second
+        admin can never grant a second trial."""
+        perms = getattr(interaction.user, "guild_permissions", None)
+        if not (perms and (perms.manage_guild or perms.administrator)):
+            await interaction.response.send_message(
+                "You need **Manage Server** to start this server's trial.", ephemeral=True)
+            return
+        if self._busy:
+            await interaction.response.send_message("Starting your trial \u2014 one moment\u2026", ephemeral=True)
+            return
+        self._busy = True
+        try:
+            expires = await db.start_guild_premium_trial(
+                self.guild.id, interaction.user.id, config.PREMIUM_TRIAL_DAYS, self.clone_id)
+        except Exception:
+            logger.exception("[premium] couldn't start the trial for guild %s", self.guild.id)
+            self._busy = False
+            await interaction.response.send_message("Couldn't start the trial just now \u2014 try again in a moment.",
+                                                    ephemeral=True)
+            return
+        self._busy = False
+        self.status = await load_status(self.guild.id, self.clone_id)
+        self.render()
+        await interaction.response.edit_message(view=self)
+        if expires is None:
+            await interaction.followup.send("This server has already used its free trial.", ephemeral=True)
+            return
+        logger.info("[premium] trial started for guild %s by %s", self.guild.id, interaction.user.id)
+        await interaction.followup.send(
+            f"\U0001f381 **Your free trial is on!** Every Premium feature is unlocked for {config.PREMIUM_TRIAL_DAYS} days. "
+            "Nothing to cancel \u2014 it just ends, and I'll remind you before it does.", ephemeral=True)
+
+    async def _show_report(self, interaction: discord.Interaction) -> None:
+        from modules import premium_report as pr
+        await interaction.response.defer()
+        stats = await pr.gather(self.guild.id)
+        text = pr.render(stats, is_trial=self.status.is_trial)
+        extra = pr.worth_it_line(stats)
+        self.report_text = text + ("\n" + extra if extra else "")
+        self.page, self.category = "report", None
+        self.render()
+        await interaction.edit_original_response(view=self)
+
     def _nav(self, other: str) -> discord.ui.ActionRow:
         """Back to the plans (the one obvious next step) plus a hop to the sibling info page."""
         sibling = {"perks": ("What's included", "📋"), "compare": ("Compare plans", "⚖️")}[other]
@@ -279,6 +346,9 @@ class PremiumWizardView(discord.ui.LayoutView):
     # ── navigation ──
     def _to(self, page: str):
         async def cb(interaction: discord.Interaction):
+            if page == "report":
+                await self._show_report(interaction)
+                return
             await self._show(interaction, page, None)
         return cb
 

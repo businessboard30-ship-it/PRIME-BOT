@@ -235,6 +235,14 @@ def premium_only_titles() -> Tuple[str, ...]:
     return tuple(p.title for p in perks() if not p.free)
 
 
+def trial_hint() -> str:
+    """"Try it free for N days with /premium." for the moment a free server hits a limit; "" when trials are off.
+    A server that already used its trial still sees it (a stale hint is harmless: the Premium screen says so)."""
+    if getattr(config, "PREMIUM_TRIAL_ENABLED", False) and getattr(config, "PREMIUM_TRIAL_DAYS", 0) > 0:
+        return f" Try everything free for {config.PREMIUM_TRIAL_DAYS} days with **/premium**."
+    return ""
+
+
 def yearly_savings_pct() -> int:
     full = config.PREMIUM_FEE_USD * 12
     return round((1 - config.PREMIUM_YEARLY_FEE_USD / full) * 100) if full else 0

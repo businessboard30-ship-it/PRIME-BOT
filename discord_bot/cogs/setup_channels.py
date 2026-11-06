@@ -1204,8 +1204,11 @@ class SetupChannelsCog(GuildOnlyCog):
         block = _premium_block_message(font_key, bracket_key, active, can)
         if block:
             return block, None
+        prem = await _ai_bulk_ops.guild_is_premium(getattr(interaction, "client", None), guild.id)
+        cap = _ai_bulk.caps_for(prem)["create"]
         plan = _ai_bulk.plan_creation(names, _ai_bulk_ops.existing_names(guild, kind, cat),
-                                      voice=(kind == "voice"), category=(kind == "category"))
+                                      voice=(kind == "voice"), category=(kind == "category"), cap=cap)
+        plan["cap"], plan["premium"] = cap, prem
         if not plan["create"]:
             why = []
             if plan["duplicates"]:
@@ -1231,7 +1234,8 @@ class SetupChannelsCog(GuildOnlyCog):
         if plan["duplicates"]:
             notes.append("already exist, skipped: " + _ai_bulk.summarize(plan["duplicates"]))
         if plan["over_cap"]:
-            notes.append(f"over the {_ai_bulk.MAX_CREATE}-channel limit, skipped: " + _ai_bulk.summarize(plan["over_cap"]))
+            notes.append(f"over the {plan.get('cap', _ai_bulk.MAX_CREATE)}-channel limit, skipped: " + _ai_bulk.summarize(plan["over_cap"])
+                         + _ai_bulk.cap_upsell(plan.get("premium", True), "create"))
         if plan["invalid"]:
             notes.append("not usable as names: " + _ai_bulk.summarize(plan["invalid"]))
         return text + ("\n_(" + "; ".join(notes) + ")_" if notes else "")
@@ -1305,9 +1309,11 @@ class SetupChannelsCog(GuildOnlyCog):
         wanted = _ai_bulk.split_names(names)
         if not wanted:
             return "Tell me which channels to delete.", None
-        if len(wanted) > _ai_bulk.MAX_DELETE_CHANNELS:
-            return (f"That's {len(wanted)} channels \u2014 I delete at most {_ai_bulk.MAX_DELETE_CHANNELS} at a time. "
-                    "Split it into smaller requests."), None
+        prem = await _ai_bulk_ops.guild_is_premium(getattr(interaction, "client", None), guild.id)
+        del_cap = _ai_bulk.caps_for(prem)["delete_channels"]
+        if len(wanted) > del_cap:
+            return (f"That's {len(wanted)} channels \u2014 I delete at most {del_cap} at a time. "
+                    "Split it into smaller requests." + _ai_bulk.cap_upsell(prem, "delete_channels")), None
         res = _ai_bulk_ops.resolve_channels(guild, wanted, getattr(interaction, "channel", None))
         # The asker needs Manage Channels on each one too (channel overrides can remove it).
         res["found"] = [c for c in res["found"] if c.permissions_for(interaction.user).manage_channels]
