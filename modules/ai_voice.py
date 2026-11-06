@@ -16,7 +16,12 @@ Groq caps one request at 200 characters, so the spoken text is cut into
 sentence-sized chunks, synthesised, and joined into one WAV. If anything fails
 the caller just sends the normal text reply, so voice can never break chat.
 
-Env: AI_TTS_MODEL (default canopylabs/orpheus-v1-english).
+Listening: a voice note sent to the bot (a DM, or a reply to one of its messages)
+is transcribed with Groq Whisper (`transcribe`) and answered like typed text, with
+a spoken reply back unless the user turned voice off.
+
+Env: AI_TTS_MODEL (default canopylabs/orpheus-v1-english),
+     AI_STT_MODEL (default whisper-large-v3-turbo).
 """
 
 from __future__ import annotations
@@ -36,6 +41,11 @@ logger = logging.getLogger(__name__)
 
 TTS_ENDPOINT = "https://api.groq.com/openai/v1/audio/speech"
 TTS_MODEL = os.getenv("AI_TTS_MODEL", "canopylabs/orpheus-v1-english")
+STT_ENDPOINT = "https://api.groq.com/openai/v1/audio/transcriptions"
+STT_MODEL = os.getenv("AI_STT_MODEL", "whisper-large-v3-turbo")
+MAX_VOICE_NOTE_BYTES = 8_000_000      # Discord voice notes are small ogg/opus files
+MAX_VOICE_NOTE_SECONDS = 120          # longer than this is not a chat message
+MAX_TRANSCRIPT_CHARS = 1500
 CHUNK_CHARS = 200          # Groq's per-request limit for Orpheus
 MAX_CHUNKS = 3             # ~600 characters of speech per reply
 MAX_SPOKEN_CHARS = CHUNK_CHARS * MAX_CHUNKS
@@ -258,3 +268,77 @@ async def render_voice(user_id: int, text: str, voice: str, *, explicit: bool) -
     if wav:
         mark_used(user_id)
     return wav
+
+
+# ── listening: voice notes in ────────────────────────────────────────────
+
+_AUDIO_EXTS = (".ogg", ".oga", ".opus", ".mp3", ".m4a", ".wav", ".webm", ".flac", ".mp4")
+
+
+def is_voice_note(att) -> bool:
+    """True for a Discord voice message or a plain audio attachment."""
+    try:
+        if callable(getattr(att, "is_voice_message", None)) and att.is_voice_message():
+            return True
+    except Exception:
+        pass
+    ctype = (getattr(att, "content_type", None) or "").split(";")[0].strip().lower()
+    name = (getattr(att, "filename", "") or "").lower()
+    return ctype.startswith("audio/") or (name.endswith(_AUDIO_EXTS) and ctype in ("", "video/mp4", "video/webm"))
+
+
+def find_voice_note(attachments) -> Optional[object]:
+    for a in list(attachments or []):
+        if is_voice_note(a):
+            return a
+    return None
+
+
+async def _stt_once(session: aiohttp.ClientSession, key: str, data: bytes, filename: str) -> Optional[str]:
+    form = aiohttp.FormData()
+    form.add_field("file", data, filename=filename or "voice-message.ogg", content_type="application/octet-stream")
+    form.add_field("model", STT_MODEL)
+    form.add_field("response_format", "json")
+    form.add_field("temperature", "0")
+    async with session.post(STT_ENDPOINT, data=form, headers={"Authorization": f"Bearer {key}"}) as resp:
+        if resp.status == 200:
+            body = await resp.json(content_type=None)
+            return (body.get("text") or "").strip()
+        logger.warning("[ai-voice] STT HTTP %s: %s", resp.status, (await resp.text())[:200])
+        if resp.status not in (401, 403, 429, 500, 502, 503, 504):
+            raise ValueError("stt rejected")
+    return None
+
+
+async def transcribe(data: bytes, filename: str = "voice-message.ogg") -> Optional[str]:
+    """What was said in an audio file, or None on any failure (caller says it couldn't hear it)."""
+    from modules.ai_features import GROQ_API_KEYS  # lazy: ai_features imports this module
+    from modules import groq_keys
+    if not GROQ_API_KEYS or not data or len(data) > MAX_VOICE_NOTE_BYTES:
+        return None
+    timeout = aiohttp.ClientTimeout(total=30)
+    async with aiohttp.ClientSession(timeout=timeout) as session:
+        for key in groq_keys.ordered_keys(GROQ_API_KEYS):
+            try:
+                text = await _stt_once(session, key, data, filename)
+            except ValueError:
+                return None
+            except Exception as e:
+                logger.warning("[ai-voice] STT request failed: %s", type(e).__name__)
+                continue
+            if text is not None:
+                return text[:MAX_TRANSCRIPT_CHARS]
+    return None
+
+
+async def transcribe_attachment(att) -> Optional[str]:
+    """Download a voice note (size/length capped) and transcribe it. Never raises."""
+    try:
+        size = int(getattr(att, "size", 0) or 0)
+        duration = getattr(att, "duration", None)
+        if size > MAX_VOICE_NOTE_BYTES or (duration and duration > MAX_VOICE_NOTE_SECONDS):
+            return None
+        return await transcribe(await att.read(), getattr(att, "filename", "voice-message.ogg"))
+    except Exception:
+        logger.warning("[ai-voice] couldn't transcribe attachment", exc_info=True)
+        return None

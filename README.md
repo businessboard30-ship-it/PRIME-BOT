@@ -55,6 +55,7 @@ Set these in Railway (or your host)'s environment settings — there's no
 **Recommended:**
 - `GROQ_API_KEY` — enables AI features (recommendations, scam-risk classifier, category suggestions). Everything degrades gracefully without it.
 - `AI_TTS_MODEL` — optional; text-to-speech model for AI voice replies (default `canopylabs/orpheus-v1-english`, uses the same `GROQ_API_KEY`)
+- `AI_STT_MODEL` — optional; speech-to-text model that transcribes voice notes sent to the AI (default `whisper-large-v3-turbo`, same `GROQ_API_KEY`)
 - `ENCRYPTION_KEY` — used by `utils/crypto.py` to encrypt stored clone bot tokens
 - `PAYSTACK_SECRET_KEY` / `PAYSTACK_PUBLIC_KEY` — payments (premium, clone registration fees, boosts)
 - `PUBLIC_BASE_URL` — base URL of your deployed API server, used to build OAuth redirect/webhook URLs

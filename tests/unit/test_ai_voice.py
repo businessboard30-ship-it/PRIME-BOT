@@ -120,3 +120,62 @@ def test_tts_failure_means_no_audio_so_the_caller_sends_text(monkeypatch):
     ai_voice._last_voice.clear()
     assert run(ai_voice.render_voice(4, "hello", "autumn", explicit=True)) is None
     assert not ai_voice.on_cooldown(4)      # a failed render doesn't burn the cooldown
+
+
+# ── listening: voice notes in ────────────────────────────────────────────
+
+class _Att:
+    def __init__(self, filename="voice-message.ogg", content_type="audio/ogg", size=20_000, duration=5.0, voice=True, data=b"OggS"):
+        self.filename, self.content_type, self.size, self.duration = filename, content_type, size, duration
+        self._voice, self._data = voice, data
+
+    def is_voice_message(self):
+        return self._voice
+
+    async def read(self):
+        return self._data
+
+
+def test_voice_notes_and_audio_files_are_recognised_but_other_files_are_not():
+    assert ai_voice.is_voice_note(_Att())
+    assert ai_voice.is_voice_note(_Att("clip.mp3", "audio/mpeg", voice=False))
+    assert not ai_voice.is_voice_note(_Att("pic.png", "image/png", voice=False))
+    assert not ai_voice.is_voice_note(_Att("notes.txt", "text/plain", voice=False))
+    assert ai_voice.find_voice_note([_Att("pic.png", "image/png", voice=False), _Att()]) is not None
+    assert ai_voice.find_voice_note([]) is None
+
+
+def test_transcribe_attachment_returns_the_transcript(monkeypatch):
+    seen = {}
+
+    async def fake(data, filename="x"):
+        seen["data"], seen["name"] = data, filename
+        return "what is my level"
+    monkeypatch.setattr(ai_voice, "transcribe", fake)
+    assert run(ai_voice.transcribe_attachment(_Att())) == "what is my level"
+    assert seen == {"data": b"OggS", "name": "voice-message.ogg"}
+
+
+def test_too_big_or_too_long_voice_notes_are_skipped_without_downloading(monkeypatch):
+    called = []
+
+    async def fake(*a, **k):
+        called.append(1)
+        return "x"
+    monkeypatch.setattr(ai_voice, "transcribe", fake)
+    assert run(ai_voice.transcribe_attachment(_Att(size=ai_voice.MAX_VOICE_NOTE_BYTES + 1))) is None
+    assert run(ai_voice.transcribe_attachment(_Att(duration=ai_voice.MAX_VOICE_NOTE_SECONDS + 1))) is None
+    assert called == []
+
+
+def test_transcribe_attachment_never_raises(monkeypatch):
+    async def boom(*a, **k):
+        raise RuntimeError("down")
+    monkeypatch.setattr(ai_voice, "transcribe", boom)
+    assert run(ai_voice.transcribe_attachment(_Att())) is None
+
+
+def test_transcribe_without_keys_returns_none(monkeypatch):
+    from modules import ai_features
+    monkeypatch.setattr(ai_features, "GROQ_API_KEYS", [])
+    assert run(ai_voice.transcribe(b"OggS")) is None

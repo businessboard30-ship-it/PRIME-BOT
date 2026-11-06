@@ -185,6 +185,50 @@ def test_dm_voice_reply_goes_through_channel_send(cog, monkeypatch):
     assert m.channel.send.await_args.kwargs["file"].filename == "voice.wav"
 
 
+def test_voice_note_in_dm_is_transcribed_and_answered_with_a_voice_reply(cog, monkeypatch):
+    seen = {}
+    cog.bot.user = cog_user
+
+    async def run_turn(message, content, history):
+        seen["content"] = content
+        return ai_voice.VoiceReply("you're level 5"), None
+    monkeypatch.setattr(cog, "_run_reply_turn", run_turn)
+    monkeypatch.setattr(cog, "_dm_context", AsyncMock(return_value=[]))
+    monkeypatch.setattr(ai_voice, "transcribe_attachment", AsyncMock(return_value="what level am I"))
+    vf = AsyncMock(return_value=discord.File(io.BytesIO(b"RIFF"), "voice.wav"))
+    monkeypatch.setattr(cog, "_voice_file", vf)
+    note = types.SimpleNamespace(filename="voice-message.ogg", content_type="audio/ogg", size=1000, duration=3.0,
+                                 is_voice_message=lambda: True)
+    m = _message(guild=False, content="")
+    m.attachments = [note]
+    run(cog.on_bot_chat(m))
+    assert seen["content"] == "what level am I"
+    assert vf.await_args.kwargs["explicit"] is True                 # they spoke, so we speak back
+    assert m.channel.send.await_args.kwargs["file"].filename == "voice.wav"
+
+
+def test_unintelligible_voice_note_gets_a_friendly_retry_message(cog, monkeypatch):
+    cog.bot.user = cog_user
+    monkeypatch.setattr(cog, "_dm_context", AsyncMock(return_value=[]))
+    monkeypatch.setattr(ai_voice, "transcribe_attachment", AsyncMock(return_value=None))
+    turn = AsyncMock()
+    monkeypatch.setattr(cog, "_run_reply_turn", turn)
+    note = types.SimpleNamespace(filename="voice-message.ogg", content_type="audio/ogg", size=1000, duration=3.0,
+                                 is_voice_message=lambda: True)
+    m = _message(guild=False, content="")
+    m.attachments = [note]
+    run(cog.on_bot_chat(m))
+    turn.assert_not_called()
+    assert "couldn't make out" in m.reply.await_args.args[0]
+
+
+def test_voice_note_forces_a_spoken_reply_unless_voice_is_off(cog):
+    assert run(cog._voice_setting(1, "hello", spoke=True)) == "forced"
+    assert run(cog._voice_setting(1, "hello")) == "auto"
+    cog.saved["voice_mode"] = ai_prefs.VOICE_OFF
+    assert run(cog._voice_setting(1, "hello", spoke=True)) is None
+
+
 # ── verification wording ─────────────────────────────────────────────────
 
 @pytest.mark.parametrize("turnstile", [True, False])
