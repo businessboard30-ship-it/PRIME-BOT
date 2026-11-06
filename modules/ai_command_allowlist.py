@@ -429,6 +429,11 @@ AI_COMMANDS = (
          "restore timer. Optional `minutes` (default 15, max 60). When the timer ends, or `testharness stop` runs, anything added "
          "is removed and anything changed is put back. Needs a Confirm click.",
          ("manage_channels", "manage_roles"), ai_only=True, test_guild_only=True),
+    _sub("testharness simulate", _TH, False,
+         "Owner-only bot test harness: run SIMULATED attack scenarios against the bot's own protections in THIS test server and "
+         "post a PASS/FAIL report. Nothing in the server is changed (no snapshot needed). Optional `scenario` "
+         "(join_burst or scam_links; default both) and `count` (join_burst size, max 15).",
+         ai_only=True, test_guild_only=True),
     _sub("testharness stop", _TH, False,
          "Owner-only bot test harness KILL SWITCH: stop the current test run and restore this test server from its snapshot right "
          "now, then verify and report. No confirm (it must be instant).",
