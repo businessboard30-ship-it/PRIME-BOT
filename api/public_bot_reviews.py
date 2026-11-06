@@ -54,7 +54,7 @@ async def _read(bot_id):
         )
         rows = await conn.fetch(
             "SELECT display_name, rating, comment, created_at FROM discordbotreviewer_reviews WHERE bot_id = $1 ORDER BY created_at DESC LIMIT 50",
-            ALKA_ID,
+            bot_id,
         )
     return {
         "status": "ok",
