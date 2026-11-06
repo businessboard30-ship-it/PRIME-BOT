@@ -420,9 +420,18 @@ AI_COMMANDS = (
     AICommandSpec("antiraid", "discord_bot.cogs.antiraid", True, "Set up raid protection: spike detection, lockdown, staff alerts",
                   needs_perms=("manage_guild",)),
     # ── Bot test harness (AI-ONLY, TEST GUILD ONLY, owner only) ─────────────────────────────────────────
-    # Phase 1 skeleton: a read-only status check. See docs/BOT_TEST_HARNESS_PLAN.md. Never documented for users.
+    # Phase 1: read-only status. Phase 2: snapshot (confirm) and stop (kill switch). See docs/BOT_TEST_HARNESS_PLAN.md. Never documented for users.
     _sub("testharness status", _TH, False,
          "Owner-only bot test harness: report whether the harness is armed in this server. Read-only.",
+         ai_only=True, test_guild_only=True),
+    _sub("testharness snapshot", _TH, True,
+         "Owner-only bot test harness: save a verified snapshot of THIS test server's roles, categories and channels and arm a "
+         "restore timer. Optional `minutes` (default 15, max 60). When the timer ends, or `testharness stop` runs, anything added "
+         "is removed and anything changed is put back. Needs a Confirm click.",
+         ("manage_channels", "manage_roles"), ai_only=True, test_guild_only=True),
+    _sub("testharness stop", _TH, False,
+         "Owner-only bot test harness KILL SWITCH: stop the current test run and restore this test server from its snapshot right "
+         "now, then verify and report. No confirm (it must be instant).",
          ai_only=True, test_guild_only=True),
 )
 
