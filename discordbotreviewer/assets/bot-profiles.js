@@ -13,14 +13,14 @@ const bots={
  "fredboat":{id:"184405253028970496",servers:"7.6M historical directory estimate",revenue:"Not disclosed",value:"Not reliably estimable",evidence:"No verified current revenue disclosure located.",confidence:"Low financial visibility"},
  "jockie-music":{id:"411916947773587456",servers:"9.8M",revenue:"Not disclosed",value:"Not reliably estimable",evidence:"Premium exists; revenue and paid-user counts are not public.",confidence:"Low financial visibility"},
  "xenon":{id:"416358583220109598",servers:"3.3M",revenue:"Not disclosed",value:"Not reliably estimable",evidence:"Premium pricing is public; customer count and revenue are not.",confidence:"Low financial visibility"}
-,"hydra":{id:"547905866255433758"},"wick":{id:"536991182035746816"},"rythm":{id:"235088799074484224"},"statbot":{id:"491769129318088714"},"serverstats":{id:"458276816071950337"},"mimu":{id:"493716749342998541"}
+,"hydra":{id:"547905866255433758"},"wick":{id:"536991182035746816"},"rythm":{id:"235088799074484224"},"statbot":{id:"491769129318088714"},"serverstats":{id:"458276816071950337"},"mimu":{id:"493716749342998541"},"captcha-bot":{id:"512333785338216465"},"double-counter":{id:"703886990948565003"},"apollo":{id:"475744554910351370"}
 };
 window.DBR_BOT_PROFILES=bots;
 const esc=s=>String(s).replace(/[&<>"']/g,c=>({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]));
 document.querySelectorAll(".archive-card").forEach(card=>{
  const slug=(new URL(card.href,location.href).searchParams.get("article")||"").toLowerCase();
  const name=card.querySelector("h3")?.textContent?.trim()||"Bot";
- const data=bots[slug]||{revenue:"Not publicly disclosed",value:"Not reliably estimable",evidence:"No verified financial disclosure found. Popularity or server count alone cannot establish revenue or company value.",confidence:"Not enough public financial data"};
+ const data={revenue:"Not publicly disclosed",value:"Not reliably estimable",evidence:"No verified financial disclosure found. Popularity or server count alone cannot establish revenue or company value.",confidence:"Not enough public financial data",...(bots[slug]||{})};
  const img=document.createElement("img");img.className="archive-bot-avatar";img.alt=name+" official Discord bot avatar";img.loading="lazy";img.decoding="async";
  if(data.id){
    fetch("https://japi.rest/discord/v1/application/"+data.id).then(r=>{if(!r.ok)throw new Error("avatar lookup failed");return r.json()}).then(payload=>{
