@@ -169,6 +169,19 @@ Audit result per plan bullet, and what changed:
   they show no image. Smoke-test after deploy: trigger a scam catch with an image, then ask the AI "is <id> a scammer?".
 - Not done: showing evidence from `/modlogs` actions, honeypot/antiraid catches.
 
+## AI voice: listening (built)
+- Before this, AI voice was output only: the bot could answer with a voice note (Groq Orpheus TTS, `modules/ai_voice.py`) but ignored voice notes
+  sent to it (a voice note has no text, so it was treated as an unsupported attachment) and never joined a voice channel to talk.
+- Now a voice note sent to the bot (DM, or a reply to one of its messages in a server) is transcribed with Groq Whisper
+  (`ai_voice.transcribe_attachment`, model `whisper-large-v3-turbo`, env `AI_STT_MODEL`, same Groq keys and rotation as TTS) and answered like typed text:
+  same cap, same tools, same checks. The reply comes back as a voice note unless the user turned voice off ("no more voice notes").
+- Limits: 8 MB and 120 s per voice note; transcript capped at 1500 characters. A note that can't be transcribed gets a friendly "try again or type it" reply and costs no AI call.
+- Voice notes are removed from the file/attachment path (`_run_reply_turn`) so they no longer strip command tools or show "file type not supported".
+- Discord does not let a voice message carry an @mention, so in a server the user must REPLY to one of the bot's messages (DMs work directly).
+- Tests: `tests/unit/test_ai_voice.py` and `test_ai_tools_voice_and_verify.py` (11 new). Not tested against the live Groq API from the build sandbox; smoke test after deploy: DM the bot a voice note.
+- Next (not built): live conversation in a voice channel. discord.py cannot receive audio, so it needs a voice-receive library (e.g. a discord.py fork or py-cord sinks),
+  VAD to split speech into turns, STT per turn, then TTS played back through the existing `davey`/PyNaCl voice client; it also has to avoid fighting music.py for the guild's single voice connection. Needs its own plan and a Premium/cap decision.
+
 ## Next
 
 - Step outputs passed to later steps (e.g. id of a category just created).
