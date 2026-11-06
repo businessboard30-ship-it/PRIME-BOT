@@ -134,3 +134,10 @@
 .article-hero-art .article-monogram{display:none}
 .article-hero-art .article-real-avatar{position:absolute;inset:0;width:100%;height:100%;max-width:none;max-height:none;object-fit:cover;object-position:center;border-radius:6px;transform:none;box-shadow:none;z-index:1}
 .article-hero-art small{z-index:2;bottom:0;left:0;right:0;padding:12px 18px;background:linear-gradient(transparent,#10130d9c);color:#fff;text-shadow:0 1px 4px #0008;letter-spacing:1.6px}
+
+/* Submission CTA intentionally mirrors the Alka recommendation panel. */
+.submit-recommendation{margin:34px auto 12px;min-height:230px}
+.submit-recommendation .recommended-copy{max-width:650px}
+.submit-brand-art{flex:0 0 auto;display:grid;place-items:center;width:145px;height:145px;border-radius:28%;background:#071b3b;color:#e8e9df;box-shadow:0 12px 30px #25282012}
+.submit-brand-art span{font:600 94px/.8 var(--serif);letter-spacing:-8px;transform:translate(-4px,-5px)}
+@media(max-width:650px){.submit-recommendation{padding:28px 24px;gap:22px}.submit-brand-art{width:92px;height:92px;border-radius:24%}.submit-brand-art span{font-size:62px}}
