@@ -548,7 +548,7 @@ def test_home_has_a_money_button_enabled_only_for_owners(vp, db):
 
 def test_hub_buttons_fit_discord_rows(vp, db):
     hub = vp.MoneyHubView(cog(), OWNER)
-    assert set(buttons(hub)) == {"Pending payments", "Failed payments", "Revenue trend", "Reverse payment", "Discount codes",
+    assert set(buttons(hub)) == {"Paid products", "Pending payments", "Failed payments", "Revenue trend", "Reverse payment", "Discount codes",
                                  "Upcoming expiries", "Back"}
     for row in (c for c in hub.walk_children() if isinstance(c, discord.ui.ActionRow)):
         assert len(row.children) <= 5
@@ -622,3 +622,122 @@ def test_gumroad_webhook_still_replies_when_the_recorder_cannot_write(vp, db, mo
     h = _gumroad_handler(monkeypatch, (200, "underpaid"), vp.money.record_failure_sync)
     h.do_POST()
     h.send_response.assert_called_once_with(200)
+
+
+# ── paid products: who bought what ───────────────────────────────────────
+
+def paid(n, uid, ptype="premium", provider="paystack", amount=20.0, chat=None):
+    return {"payment_id": n, "paystack_reference": f"ref_{n}", "user_id": uid, "amount": amount, "payment_type": ptype,
+            "provider": provider, "chat_id": chat, "created_date": NOW - timedelta(hours=n)}
+
+
+SUMMARY = [{"product": "premium", "currency": "GHS", "n": 3, "total": 60.0, "buyers": 2, "last": NOW},
+           {"product": "listing_boost", "currency": "USD", "n": 1, "total": 5.0, "buyers": 1, "last": NOW}]
+
+
+def paid_view(vp, monkeypatch, rows, total=None, summary=SUMMARY):
+    calls = []
+
+    async def fake_list(offset=0, limit=10, product=None, user_id=None):
+        calls.append((offset, product, user_id))
+        return {"rows": rows, "total": len(rows) if total is None else total}
+
+    monkeypatch.setattr(vp.money, "paid_summary", AsyncMock(return_value=summary))
+    monkeypatch.setattr(vp.money, "list_paid", fake_list)
+    return load(vp.PaidProductsView(cog(), OWNER)), calls
+
+
+def test_paid_products_shows_buyer_user_ids_and_the_product_summary(vp, monkeypatch):
+    v, _ = paid_view(vp, monkeypatch, [paid(1, 987654321098765432, chat=555), paid(2, 111222333444555666, "listing_boost", "gumroad", 5.0)])
+    t = text_of(v)
+    assert "user 987654321098765432" in t and "user 111222333444555666" in t and "server 555" in t
+    assert "5 USD" in t and "20 GHS" in t and "listing_boost" in t and "premium" in t
+    assert "By product" in t and "Page 1 of 1" in t
+    vp.audit.assert_not_called()                                     # read-only
+
+
+def test_paid_products_hub_button_exists(vp):
+    assert "Paid products" in buttons(vp.MoneyHubView(cog(), OWNER))
+
+
+def test_paid_products_filters_by_product_and_by_user_id(vp, monkeypatch):
+    v, calls = paid_view(vp, monkeypatch, [paid(1, 42)])
+    pick(v, 0, "premium")
+    assert calls[-1] == (0, "premium", None) and "Filtered by product **premium**" in text_of(v)
+    i = I()
+    run(buttons(v)["Find user ID"].callback(i))
+    modal = i.response.send_modal.await_args.args[0]
+    modal.uid._value = "<@123456789012345678>"
+    run(modal.on_submit(I()))
+    assert calls[-1] == (0, "premium", 123456789012345678) and "buyer **123456789012345678**" in text_of(v)
+    press(v, "Clear filters")
+    assert calls[-1] == (0, None, None) and "Filtered by" not in text_of(v)
+
+
+def test_paid_products_rejects_a_bad_user_id_and_keeps_the_view(vp, monkeypatch):
+    v, calls = paid_view(vp, monkeypatch, [paid(1, 42)])
+    i = I()
+    run(buttons(v)["Find user ID"].callback(i))
+    modal = i.response.send_modal.await_args.args[0]
+    modal.uid._value = "not an id"
+    n = len(calls)
+    run(modal.on_submit(I()))
+    assert "doesn't look like a Discord user ID" in text_of(v) and len(calls) == n and v.user_id is None
+
+
+def test_paid_products_modal_is_denied_when_access_was_lost(vp, monkeypatch):
+    v, calls = paid_view(vp, monkeypatch, [paid(1, 42)])
+    i = I()
+    run(buttons(v)["Find user ID"].callback(i))
+    modal = i.response.send_modal.await_args.args[0]
+    modal.uid._value = "123456789012345678"
+    stranger = I(user=OTHER)
+    run(modal.on_submit(stranger))
+    stranger.response.send_message.assert_awaited_once()
+    assert v.user_id is None
+
+
+def test_paid_products_pages_through_a_long_list(vp, monkeypatch):
+    v, calls = paid_view(vp, monkeypatch, [paid(n, 1000 + n) for n in range(10)], total=25)
+    assert "Page 1 of 3" in text_of(v) and buttons(v)["Prev"].disabled and not buttons(v)["Next"].disabled
+    press(v, "Next")
+    assert calls[-1][0] == 10 and "Page 2 of 3" in text_of(v)
+    press(v, "Next")
+    assert calls[-1][0] == 20 and buttons(v)["Next"].disabled and not buttons(v)["Prev"].disabled
+
+
+def test_paid_products_empty_error_and_size_limits(vp, monkeypatch):
+    v, _ = paid_view(vp, monkeypatch, [], summary=[])
+    assert "No completed payments yet." in text_of(v)
+    monkeypatch.setattr(vp.money, "paid_summary", AsyncMock(side_effect=RuntimeError("db down")))
+    assert "Couldn't load" in text_of(load(vp.PaidProductsView(cog(), OWNER)))
+    big, _ = paid_view(vp, monkeypatch, [paid(n, 900000000000000000 + n, "x" * 50, chat=800000000000000000 + n) for n in range(10)],
+                       summary=[{"product": f"prod_{k}", "currency": "GHS", "n": 99, "total": 1e6, "buyers": 9, "last": NOW} for k in range(30)])
+    assert len(text_of(big)) < 4000 and len(selects(big)[0].options) <= 25
+
+
+def test_parse_user_id_and_currency(vp):
+    assert vp.money.parse_user_id("123456789012345678") == 123456789012345678
+    assert vp.money.parse_user_id(" <@!123456789012345678> ") == 123456789012345678
+    assert vp.money.parse_user_id("12345") is None and vp.money.parse_user_id("abc") is None and vp.money.parse_user_id(None) is None
+    assert vp.money.currency_of("gumroad") == "USD" and vp.money.currency_of("paystack") == "GHS" and vp.money.currency_of(None) == "GHS"
+
+
+def test_list_paid_builds_safe_parameterised_sql(vp, monkeypatch):
+    seen = {}
+
+    class Conn:
+        async def fetch(self, sql, *args):
+            seen["fetch"] = (sql, args)
+            return []
+
+        async def fetchval(self, sql, *args):
+            seen["count"] = (sql, args)
+            return 0
+
+    monkeypatch.setattr(vp.money, "_pool", AsyncMock(return_value=FakePool(Conn())))
+    run(vp.money.list_paid(20, 10, "prem'; DROP TABLE x;--", 4242))
+    sql, args = seen["fetch"]
+    assert "DROP" not in sql and args == ("prem'; DROP TABLE x;--", 4242, 10, 20)
+    assert "status = 'completed'" in sql and "user_id = $2" in sql and "LIMIT $3 OFFSET $4" in sql
+    assert seen["count"][1] == ("prem'; DROP TABLE x;--", 4242)
