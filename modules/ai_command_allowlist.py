@@ -69,16 +69,23 @@ class AICommandSpec:
     # AI-callable operations ONLY. Do not "restore" them as slash commands, and do not count them against
     # command-cap budgeting -- they are not registered with Discord at all.
     ai_only: bool = False
+    # TEST-GUILD-ONLY (docs/BOT_TEST_HARNESS_PLAN.md). True means: offered and runnable ONLY in config.TEST_GUILD_ID, only
+    # for DISCORD_CLONE_ADMIN_IDS, only on the main bot (never a clone). TEST_GUILD_ID empty/0 disables it everywhere.
+    # This is the ONE deliberate exception to "the guard has no owner-only commands"; do not use it for anything else.
+    # Enforced by modules.ai_command_guard in get_qualifying_commands (offer gate) and resolve_and_check (execution
+    # gate), and again inside the cog handler (handler gate).
+    test_guild_only: bool = False
 
     @property
     def command_path(self) -> str:
         return self.path or self.name
 
 
-def _sub(path: str, module: str, confirm: bool, desc: str, perms: tuple = (), ai_only: bool = False) -> "AICommandSpec":
+def _sub(path: str, module: str, confirm: bool, desc: str, perms: tuple = (), ai_only: bool = False,
+         test_guild_only: bool = False) -> "AICommandSpec":
     """Spec for a subcommand of a group. `path` is the slash path, e.g. "welcome enable"."""
     return AICommandSpec(path.replace(" ", "_").replace("-", "_"), module, confirm, desc,
-                         needs_perms=tuple(perms), path=path, ai_only=ai_only)
+                         needs_perms=tuple(perms), path=path, ai_only=ai_only, test_guild_only=test_guild_only)
 
 
 _OPS = "discord_bot.cogs.ai_server_ops"
@@ -89,6 +96,8 @@ def _adm(path: str, confirm: bool, perms: tuple, desc: str) -> "AICommandSpec":
     slash tree (see its docstring), so none of these count against Discord's 100-command cap."""
     return _sub(path, _OPS, confirm, desc, perms, ai_only=True)
 
+
+_TH = "discord_bot.cogs.test_harness"
 
 AI_COMMANDS = (
     # ── Moderation ──────────────────────────────────────────────────────
@@ -410,6 +419,11 @@ AI_COMMANDS = (
                   needs_perms=("manage_guild",)),
     AICommandSpec("antiraid", "discord_bot.cogs.antiraid", True, "Set up raid protection: spike detection, lockdown, staff alerts",
                   needs_perms=("manage_guild",)),
+    # ── Bot test harness (AI-ONLY, TEST GUILD ONLY, owner only) ─────────────────────────────────────────
+    # Phase 1 skeleton: a read-only status check. See docs/BOT_TEST_HARNESS_PLAN.md. Never documented for users.
+    _sub("testharness status", _TH, False,
+         "Owner-only bot test harness: report whether the harness is armed in this server. Read-only.",
+         ai_only=True, test_guild_only=True),
 )
 
 AI_COMMANDS_BY_NAME = {c.name: c for c in AI_COMMANDS}

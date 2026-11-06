@@ -222,6 +222,16 @@ async def check_real_permission(interaction: discord.Interaction, command: disco
     return True, None
 
 
+def _test_harness_denial(interaction) -> Optional[str]:
+    """None iff the test harness may be offered/run for this interaction (see modules/test_harness.check_gates)."""
+    from modules import test_harness
+    return test_harness.check_gates(
+        guild_id=getattr(interaction, "guild_id", None),
+        user_id=getattr(getattr(interaction, "user", None), "id", None),
+        clone_id=getattr(getattr(interaction, "client", None), "clone_id", None),
+    )
+
+
 def check_spec_permissions(interaction, spec: AICommandSpec) -> Tuple[bool, Optional[str]]:
     """The Discord permissions the spec itself declares (needs_perms), checked against the asker in this channel.
     This is in addition to the command's own checks: many commands gate themselves inside their body, which would
@@ -348,6 +358,12 @@ async def resolve_and_check(interaction: discord.Interaction, command_name: str,
         await db.log_ai_command(interaction.guild_id, interaction.user.id, command_name, args, allowed=False, denial_reason=reason)
         return None, None, reason, False
 
+    if getattr(spec, "test_guild_only", False) and _test_harness_denial(interaction) is not None:
+        # Execution gate. Same wording as an unknown command so nothing reveals the feature exists.
+        reason = f"'{command_name}' isn't something I'm able to run."
+        await db.log_ai_command(interaction.guild_id, interaction.user.id, command_name, args, allowed=False, denial_reason=reason)
+        return None, None, reason, False
+
     command = _resolve_command(interaction.client, spec.command_path)
     if command is None:
         reason = f"'{command_name}' is allowlisted but I couldn't find the live command — probably a naming drift, tell the bot owner."
@@ -407,6 +423,8 @@ async def get_qualifying_commands(interaction: discord.Interaction, ignore_cap: 
     if not cap_ok:
         return qualifying
     for spec in AI_COMMANDS:
+        if getattr(spec, "test_guild_only", False) and _test_harness_denial(interaction) is not None:
+            continue  # offer gate: the tool never reaches the model outside the test guild / for non-owners / on clones
         command = _resolve_command(interaction.client, spec.command_path)
         if command is None:
             continue

@@ -349,6 +349,9 @@ class AnimeBotDiscord(commands.Bot):
         # AI-only server administration. This extension never calls add_cog: its commands go straight into the AI-only
         # registry and never touch the slash tree, so they use no Discord command slots (see the module docstring).
         await self.load_extension("discord_bot.cogs.ai_server_ops")
+        # Owner-only test harness (AI-only, test guild only, off while config.TEST_GUILD_ID is 0). Never on clones.
+        if getattr(self, "clone_id", None) is None:
+            await self.load_extension("discord_bot.cogs.test_harness")
         await self.load_extension("discord_bot.cogs.bump_setup")
         await self.load_extension("discord_bot.cogs.analytics")
         await self.load_extension("discord_bot.cogs.cat")

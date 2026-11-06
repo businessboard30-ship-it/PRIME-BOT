@@ -19,8 +19,10 @@ AI_ONLY_PATHS = {"setup bulk-create", "setup bulk-delete", "setup dedupe-channel
 
 def test_exactly_the_seven_expected_specs_are_ai_only():
     # The server-admin commands (cog ai_server_ops) are AI-only too, but they never touch the slash tree at all
-    # (see test_ai_server_ops.py), so they are not part of what detach_ai_only_commands moves.
-    on_tree = {s.command_path for s in AI_COMMANDS if s.ai_only and s.cog_module != "discord_bot.cogs.ai_server_ops"}
+    # (see test_ai_server_ops.py), so they are not part of what detach_ai_only_commands moves. Same for the owner-only
+    # test harness cog (test_test_harness_gates.py).
+    off_tree = {"discord_bot.cogs.ai_server_ops", "discord_bot.cogs.test_harness"}
+    on_tree = {s.command_path for s in AI_COMMANDS if s.ai_only and s.cog_module not in off_tree}
     assert on_tree == AI_ONLY_PATHS
 
 
