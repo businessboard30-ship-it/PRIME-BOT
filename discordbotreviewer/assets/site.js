@@ -13,8 +13,8 @@
   function card(bot) {
     const avatar = bot.avatar_url ? '<img class="bot-avatar" loading="lazy" src="'+esc(bot.avatar_url)+'" alt="">' : '<div class="bot-avatar bot-avatar-fallback">'+esc(fallback(bot.name))+'</div>';
     const tags = (bot.tags || []).slice(0,3).map(t => '<span class="tag">'+esc(t)+'</span>').join("");
-    const invite = bot.invite_url ? '<a href="'+esc(bot.invite_url)+'" target="_blank" rel="noopener noreferrer">Add bot ↗</a>' : "";
-    const share = '<a href="#" data-share="'+esc(bot.id)+'" data-name="'+esc(bot.name)+'">Share ↗</a>';
+    const invite = bot.invite_url ? '<a href="'+esc(bot.invite_url)+'" target="_blank" rel="noopener noreferrer">Add bot </a>' : "";
+    const share = '<a href="#" data-share="'+esc(bot.id)+'" data-name="'+esc(bot.name)+'">Share </a>';
     return '<article class="bot-card"><div class="bot-head">'+avatar+'<div style="min-width:0"><div class="bot-name">'+esc(bot.name)+'</div><div class="bot-id">ID · '+esc(bot.application_id)+'</div></div></div><p class="bot-desc">'+esc(bot.description || "No description provided.")+'</p><div class="bot-meta"><span class="tag">'+esc(bot.category || "Other")+'</span>'+tags+'</div><div class="bot-foot"><span class="bot-stats">♡ '+Number(bot.votes || 0)+' · '+esc(bot.age_label || "Listed")+'</span><div class="bot-links">'+share+invite+'</div></div></article>';
   }
   async function load(reset=true) {
