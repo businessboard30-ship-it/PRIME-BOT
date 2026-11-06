@@ -75,8 +75,8 @@ def test_no_attachments():
     assert run(aa.build_attachment_context([])) == (None, [])
 
 
-def test_vision_model_is_set():
-    assert "llama" in af.AI_VISION_MODEL
+def test_vision_model_is_set_and_is_not_the_retired_scout():
+    assert af.AI_VISION_MODEL and "llama-4-scout" not in af.AI_VISION_MODEL
 
 
 def test_hide_long_reply():
