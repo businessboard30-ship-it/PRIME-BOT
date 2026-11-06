@@ -93,3 +93,21 @@
 .bot-profile-grid strong{display:block;margin-top:6px;font-size:15px}
 .bot-profile-grid p{font-size:10px;line-height:1.55;color:#77796f;margin:5px 0 0}
 @media(max-width:650px){.archive-card{padding-left:88px;min-height:155px}.archive-bot-avatar{left:12px;width:62px;height:62px}.bot-profile-grid{grid-template-columns:1fr}.bot-financials{grid-template-columns:1fr 1fr}}
+
+/* Theme palettes and controls */
+:root[data-theme="midnight"]{--paper:#171a1d;--ink:#f1f2ee;--muted:#a9ada6;--line:#343a3d;--green:#a7c98b;--white:#22272a}
+:root[data-theme="midnight"] body,:root[data-theme="midnight"] .article-shell{background:var(--paper);color:var(--ink)}
+:root[data-theme="midnight"] .journal-card,:root[data-theme="midnight"] .archive-card,:root[data-theme="midnight"] .reader-review,:root[data-theme="midnight"] .article-submit-form input,:root[data-theme="midnight"] .article-submit-form textarea,:root[data-theme="midnight"] .article-submit-form select{background:#22272a;color:var(--ink);border-color:var(--line)}
+:root[data-theme="midnight"] .journal-copy p,:root[data-theme="midnight"] .archive-card p,:root[data-theme="midnight"] .article-body{color:#c0c4bc}
+:root[data-theme="forest"]{--paper:#e9eee5;--ink:#233329;--muted:#66766a;--line:#cbd6c8;--green:#b7d6a5}
+:root[data-theme="ocean"]{--paper:#eaf1f4;--ink:#20333d;--muted:#687d87;--line:#cad9df;--green:#a9d2d5}
+:root[data-theme="rose"]{--paper:#f4ecec;--ink:#3b2d32;--muted:#8a737a;--line:#e1cfd4;--green:#e6b8c2}
+:root[data-theme="forest"] .journal-card,:root[data-theme="forest"] .archive-card,:root[data-theme="ocean"] .journal-card,:root[data-theme="ocean"] .archive-card,:root[data-theme="rose"] .journal-card,:root[data-theme="rose"] .archive-card{background:#fff}
+.theme-control{display:inline-flex;align-items:center}
+.theme-control select{min-width:105px;height:34px;padding:0 9px;border:1px solid var(--line);border-radius:4px;background:transparent;color:var(--ink);font:10px var(--sans);cursor:pointer}
+.rating-overview{margin:15px 0 22px;max-width:560px}
+.rating-overview .review-summary{border:0;padding:0;margin:0 0 10px;font:12px var(--mono);color:var(--muted)}
+.rating-bar{height:9px;background:#d9ddd2;border-radius:20px;overflow:hidden}
+.rating-bar span{display:block;width:0;height:100%;background:#829b58;border-radius:20px;transition:width .35s ease}
+.rating-overview>small{display:block;margin-top:7px;font:10px var(--mono);color:var(--muted)}
+@media(max-width:650px){.theme-control select{min-width:84px;height:30px;font-size:9px}.topnav{gap:9px}}
