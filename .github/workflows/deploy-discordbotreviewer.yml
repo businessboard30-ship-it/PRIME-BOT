@@ -1,0 +1,31 @@
+name: Deploy Discord Bot Reviewer
+on:
+  push:
+    branches: [main]
+    paths: ["discordbotreviewer/**", ".github/workflows/deploy-discordbotreviewer.yml"]
+  pull_request:
+    paths: ["discordbotreviewer/**", ".github/workflows/deploy-discordbotreviewer.yml"]
+  workflow_dispatch:
+permissions:
+  contents: read
+  deployments: write
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+      - name: Create Pages project if missing
+        run: npx --yes wrangler@4 pages project create discordbotreviewer --production-branch=main || true
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+      - name: Deploy
+        run: npx --yes wrangler@4 pages deploy discordbotreviewer --project-name=discordbotreviewer --branch="${BRANCH}" --commit-dirty=true
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          BRANCH: ${{ github.event_name == 'pull_request' && github.head_ref || 'main' }}
