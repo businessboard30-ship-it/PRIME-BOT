@@ -13,7 +13,24 @@ const bots={
  "fredboat":{id:"184405253028970496",servers:"7.6M historical directory estimate",revenue:"Not disclosed",value:"Not reliably estimable",evidence:"No verified current revenue disclosure located.",confidence:"Low financial visibility"},
  "jockie-music":{id:"411916947773587456",servers:"9.8M",revenue:"Not disclosed",value:"Not reliably estimable",evidence:"Premium exists; revenue and paid-user counts are not public.",confidence:"Low financial visibility"},
  "xenon":{id:"416358583220109598",servers:"3.3M",revenue:"Not disclosed",value:"Not reliably estimable",evidence:"Premium pricing is public; customer count and revenue are not.",confidence:"Low financial visibility"}
-,"hydra":{id:"547905866255433758"},"wick":{id:"536991182035746816"},"rythm":{id:"235088799074484224"},"statbot":{id:"491769129318088714"},"serverstats":{id:"458276816071950337"},"mimu":{id:"493716749342998541"},"captcha-bot":{id:"512333785338216465"},"double-counter":{id:"703886990948565003"},"apollo":{id:"475744554910351370"}
+,"hydra":{id:"547905866255433758"},"wick":{id:"536991182035746816"},"rythm":{id:"235088799074484224"},"statbot":{id:"491769129318088714"},"serverstats":{id:"458276816071950337"},"mimu":{id:"493716749342998541"},"captcha-bot":{id:"512333785338216465"},"double-counter":{id:"703886990948565003"},"apollo":{id:"475744554910351370"},
+ "unbelievaboat":{id:"292953664492929025"},
+ "helper-gg":{id:"641385620530266125"},
+ "ticket-tool":{id:"557628352828014614"},
+ "altdentifier":{id:"372022813839851520"},
+ "sapphire":{id:"678344927997853742"},
+ "streamcord":{id:"375805687529209857"},
+ "owobot":{id:"408785106942164992"},
+ "karuta":{id:"646937666251915264"},
+ "epic-rpg":{id:"555955826880413696"},
+ "maki":{id:"563434444321587202"},
+ "zira":{id:"275813801792634880"},
+ "sesh":{id:"616754792965865495"},
+ "disboard":{id:"302050872383242240"},
+ "tempvoice":{id:"762217899355013120"},
+ "birthdaybot":{id:"656621136808902656"},
+ "amaribot":{id:"339254240012664832"},
+ "groovy":{id:"234395307759108106"}
 };
 window.DBR_BOT_PROFILES=bots;
 const esc=s=>String(s).replace(/[&<>"']/g,c=>({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]));

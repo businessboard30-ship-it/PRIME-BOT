@@ -127,3 +127,10 @@
 .archive-bot-avatar{display:none;width:62px;height:62px;object-fit:cover;border-radius:17px;background:#e5e7df;box-shadow:0 4px 16px #151a1412}.archive-bot-avatar.is-loaded{display:block}.archive-card{position:relative}.archive-card .archive-bot-avatar{position:absolute;top:18px;left:18px}
 .article-hero-art{position:relative}.article-real-avatar{position:absolute;top:50%;left:50%;width:116px;height:116px;object-fit:cover;border-radius:28px;transform:translate(-50%,-58%);box-shadow:0 14px 36px #1114;z-index:3}.article-real-avatar+.article-monogram{opacity:.12}
 @media(max-width:700px){.submit-feature-panel{grid-template-columns:1fr;gap:6px;padding:29px 24px}.submit-feature-art{height:140px;justify-content:flex-end;margin-top:-5px}.submit-paper{width:104px;height:130px;padding:13px}.paper-title{font-size:23px}.submit-orbit-a{width:180px;height:78px}.submit-orbit-b{width:150px;height:120px}}
+
+/* Use the real bot artwork as the full article feature image. */
+.article-hero-art{isolation:isolate;background:#e8e9df}
+.article-hero-art:before,.article-hero-art:after{display:none}
+.article-hero-art .article-monogram{display:none}
+.article-hero-art .article-real-avatar{position:absolute;inset:0;width:100%;height:100%;max-width:none;max-height:none;object-fit:cover;object-position:center;border-radius:6px;transform:none;box-shadow:none;z-index:1}
+.article-hero-art small{z-index:2;bottom:0;left:0;right:0;padding:12px 18px;background:linear-gradient(transparent,#10130d9c);color:#fff;text-shadow:0 1px 4px #0008;letter-spacing:1.6px}
