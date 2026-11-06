@@ -447,7 +447,10 @@ class RoleSetupCog(GuildOnlyCog):
         if colour == -1:
             return f"I don't know the colour \u201c{color}\u201d \u2014 use a name like red/blue or hex like #ff8800.", None
         room = _ai_bulk.GUILD_ROLE_LIMIT - len(guild.roles)
-        plan = _ai_bulk.plan_role_creation(names, [r.name for r in guild.roles], room)
+        prem = await _ai_bulk_ops.guild_is_premium(getattr(interaction, "client", None), guild.id)
+        cap = _ai_bulk.caps_for(prem)["create_roles"]
+        plan = _ai_bulk.plan_role_creation(names, [r.name for r in guild.roles], room, cap=cap)
+        plan["cap"], plan["premium"] = cap, prem
         if not plan["create"]:
             why = []
             if plan["duplicates"]:
@@ -476,7 +479,8 @@ class RoleSetupCog(GuildOnlyCog):
         if plan["duplicates"]:
             notes.append("already exist, skipped: " + _ai_bulk.summarize(plan["duplicates"]))
         if plan["over_cap"]:
-            notes.append(f"over the {_ai_bulk.MAX_CREATE_ROLES}-role limit, skipped: " + _ai_bulk.summarize(plan["over_cap"]))
+            notes.append(f"over the {plan.get('cap', _ai_bulk.MAX_CREATE_ROLES)}-role limit, skipped: " + _ai_bulk.summarize(plan["over_cap"])
+                         + _ai_bulk.cap_upsell(plan.get("premium", True), "create_roles"))
         if plan["invalid"]:
             notes.append("not usable as names: " + _ai_bulk.summarize(plan["invalid"]))
         return text + ("\n_(" + "; ".join(notes) + ")_" if notes else "")
@@ -578,9 +582,11 @@ class RoleSetupCog(GuildOnlyCog):
         wanted = _ai_bulk.split_names(names)
         if not wanted:
             return "Tell me which roles to delete.", None
-        if len(wanted) > _ai_bulk.MAX_DELETE_ROLES:
-            return (f"That's {len(wanted)} roles \u2014 I delete at most {_ai_bulk.MAX_DELETE_ROLES} at a time. "
-                    "Split it into smaller requests."), None
+        prem = await _ai_bulk_ops.guild_is_premium(getattr(interaction, "client", None), guild.id)
+        del_cap = _ai_bulk.caps_for(prem)["delete_roles"]
+        if len(wanted) > del_cap:
+            return (f"That's {len(wanted)} roles \u2014 I delete at most {del_cap} at a time. "
+                    "Split it into smaller requests." + _ai_bulk.cap_upsell(prem, "delete_roles")), None
         res = _ai_bulk_ops.resolve_roles(guild, wanted, interaction.user)
         if not res["found"]:
             extra = _ai_bulk_ops.role_problems(res)

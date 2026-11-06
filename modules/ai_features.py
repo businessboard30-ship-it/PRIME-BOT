@@ -1227,6 +1227,14 @@ async def get_reply_usage(user_id: int, guild_id: Optional[int]) -> int:
         return 0
 
 
+def _trial_hint() -> str:
+    try:
+        from modules.premium_perks import trial_hint
+        return trial_hint()
+    except Exception:
+        return ""
+
+
 def reply_cap_for(guild_id: Optional[int], is_premium: bool, is_plus: bool = False) -> int:
     if guild_id is None:
         return DM_CAP
@@ -1264,7 +1272,7 @@ async def check_reply_limit(user_id: int, guild_id: Optional[int], is_premium: b
         return (False, (
             f"You've used your {cap} free AI chats for today in this server (resets in {reset}). "
             f"Server Premium raises it to {REPLY_CAP_PREMIUM}/day — it's a server subscription, not AI credits "
-            f"(nobody is paying for credits). Ask a server admin about Premium."
+            f"(nobody is paying for credits). Ask a server admin about Premium." + _trial_hint()
         ))
     except Exception as e:
         logger.error(f"[ai] Error checking reply limit: {e}")

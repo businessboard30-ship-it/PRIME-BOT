@@ -329,3 +329,18 @@ async def delete_roles(roles: list, reason: str) -> Tuple[list, Optional[str]]:
         except discord.HTTPException as e:
             return gone, f"Discord wouldn't delete **{name}**: {getattr(e, 'text', e)}"
     return gone, None
+
+
+async def guild_is_premium(client, guild_id) -> bool:
+    """True when this server has Premium on this bot OR on the main bot (Premium is bought per server and per bot).
+    Any lookup failure counts as not premium: a broken lookup must never raise someone's limits."""
+    try:
+        from database import db
+        clone_id = getattr(client, "clone_id", None)
+        if await db.is_guild_premium_active(int(guild_id), clone_id):
+            return True
+        if clone_id is not None:
+            return bool(await db.is_guild_premium_active(int(guild_id), None))
+    except Exception:
+        logger.debug("[bulk] premium lookup failed", exc_info=True)
+    return False

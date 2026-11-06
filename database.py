@@ -157,7 +157,8 @@ _pool_loop = None  # the asyncio event loop _pool's connections belong to
 # Do NOT bump it for unrelated changes — an unnecessary bump forces every
 # bot/clone's next cold start to run the full DDL pass again, which is
 # exactly the schema-reload storm this version check exists to avoid.
-SCHEMA_VERSION = "142"
+SCHEMA_VERSION = "143"
+# "142" -> "143" adds 098_premium_trial.sql (discord_guild_subscriptions.is_trial / trial_started_at: one free Premium trial per server). ALTER TABLE ADD COLUMN IF NOT EXISTS only. Bump-or-it-never-runs trap: tests/unit/test_schema_version_guard.py
 # "141" -> "142" adds 097_scam_hit_evidence_ref.sql (scam_shield_hits.evidence_channel_id / evidence_message_id: pointer to the archived copy, used by the AI scam lookup to show the scam link + image). ALTER TABLE ADD COLUMN IF NOT EXISTS only. Bump-or-it-never-runs trap: tests/unit/test_schema_version_guard.py
 # "140" -> "141" adds 096_ai_scheduled_jobs.sql (ai_scheduled_jobs + ai_job_runs: persistent AI scheduler, Phase 3). CREATE TABLE / CREATE INDEX IF NOT EXISTS only. Bump-or-it-never-runs trap: tests/unit/test_schema_version_guard.py
 # "139" -> "140" adds 095_card_chief_seats.sql (discord_clan_chiefs.lease_until + card_chief_purchases: buy a chief seat with coins). ALTER TABLE ADD COLUMN IF NOT EXISTS / CREATE TABLE IF NOT EXISTS only. Bump-or-it-never-runs trap: tests/unit/test_schema_version_guard.py
@@ -6045,7 +6046,7 @@ class Database:
         for _card_mig in ("088_card_economy_core.sql", "089_card_boosts.sql", "090_card_trading.sql",
                           "091_card_coin_games.sql", "092_card_profiles.sql", "093_card_levelup_rewards.sql",
                           "094_card_trade_drafts.sql", "095_card_chief_seats.sql",
-                          "096_ai_scheduled_jobs.sql", "097_scam_hit_evidence_ref.sql"):
+                          "096_ai_scheduled_jobs.sql", "097_scam_hit_evidence_ref.sql", "098_premium_trial.sql"):
             _card_mig_path = pathlib.Path(__file__).parent / "database" / "migrations" / _card_mig
             if _card_mig_path.exists():
                 await conn.execute(_card_mig_path.read_text())
@@ -8842,7 +8843,10 @@ class Database:
                 INSERT INTO discord_guild_subscriptions (guild_id, clone_id, expires_at, activated_by)
                 VALUES ($1, $2, NOW() + make_interval(days => $4), $3)
                 ON CONFLICT (guild_id, (COALESCE(clone_id, -1))) DO UPDATE SET
-                    expires_at = GREATEST(discord_guild_subscriptions.expires_at, NOW()) + make_interval(days => $4),
+                    expires_at = GREATEST(
+                        CASE WHEN discord_guild_subscriptions.is_trial THEN NOW()
+                             ELSE discord_guild_subscriptions.expires_at END, NOW()) + make_interval(days => $4),
+                    is_trial = FALSE,
                     activated_by = $3, reminded_for = NULL, updated_at = NOW()
                 RETURNING expires_at
                 """,
@@ -8856,6 +8860,33 @@ class Database:
         if not row:
             return False
         return row["expires_at"] > datetime.now(timezone.utc) + timedelta(days=PREMIUM_LIFETIME_THRESHOLD_DAYS)
+
+    async def premium_trial_available(self, guild_id: int) -> bool:
+        """True when this server has NEVER had any Premium row (paid or trial) on any bot. One trial per server, ever."""
+        if not guild_id:
+            return False
+        pool = await get_pool()
+        async with pool.acquire() as conn:
+            row = await conn.fetchrow("SELECT 1 FROM discord_guild_subscriptions WHERE guild_id = $1 LIMIT 1", guild_id)
+        return row is None
+
+    async def start_guild_premium_trial(self, guild_id: int, started_by: int, days: int,
+                                        clone_id: Optional[int] = None) -> Optional[datetime]:
+        """Starts the server's one free Premium trial. Returns the trial's expires_at, or None when the server already
+        had a Premium row of any kind (the INSERT is guarded, so two taps can never grant two trials)."""
+        pool = await get_pool()
+        async with pool.acquire() as conn:
+            return await conn.fetchval(
+                """
+                INSERT INTO discord_guild_subscriptions
+                    (guild_id, clone_id, expires_at, activated_by, is_trial, trial_started_at)
+                SELECT $1, $2, NOW() + make_interval(days => $4), $3, TRUE, NOW()
+                WHERE NOT EXISTS (SELECT 1 FROM discord_guild_subscriptions WHERE guild_id = $1)
+                ON CONFLICT DO NOTHING
+                RETURNING expires_at
+                """,
+                guild_id, clone_id, started_by, days,
+            )
 
     async def set_premium_subscription_id(self, guild_id: int, clone_id: Optional[int], subscription_id: str) -> None:
         pool = await get_pool()
@@ -8884,7 +8915,7 @@ class Database:
                 """
                 UPDATE discord_guild_subscriptions SET
                     expires_at = GREATEST(expires_at, NOW() + make_interval(days => $2)),
-                    reminded_for = NULL, updated_at = NOW()
+                    is_trial = FALSE, reminded_for = NULL, updated_at = NOW()
                 WHERE subscription_id = $1 RETURNING *
                 """,
                 subscription_id, days,
@@ -8928,6 +8959,7 @@ class Database:
                         discord_guild_subscriptions.expires_at,
                         GREATEST(COALESCE(discord_guild_subscriptions.plus_expires_at, NOW()), NOW())
                             + make_interval(days => $4)),
+                    is_trial = FALSE,
                     activated_by = $3, reminded_for = NULL, updated_at = NOW()
                 RETURNING plus_expires_at
                 """,

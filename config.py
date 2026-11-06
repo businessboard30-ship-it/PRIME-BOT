@@ -464,6 +464,10 @@ PREMIUM_LIFETIME_THRESHOLD_DAYS = 365 * 50  # expiry further out than this == li
 # (one-time). No lifetime on purpose: it carries ongoing AI costs. Buying Plus also keeps Premium active for the
 # same period (database.activate_guild_plus), so nothing that checks Premium needs to know about Plus.
 PREMIUM_PLUS_FEE_USD = 6.99
+# Free Premium trial: one per server, ever, started from the Premium screen by someone with Manage Server. It is a
+# normal Premium row flagged is_trial (database.start_guild_premium_trial), so nothing else needs to know about it.
+PREMIUM_TRIAL_ENABLED = os.getenv("PREMIUM_TRIAL_ENABLED", "1").strip().lower() in ("1", "true", "yes", "on")
+PREMIUM_TRIAL_DAYS = int(os.getenv("PREMIUM_TRIAL_DAYS", "7"))
 PREMIUM_PLUS_YEARLY_FEE_USD = 59
 PREMIUM_PLUS_YEARLY_DAYS = 365
 # Plus limits (Premium / free values live next to the features: ai_features.REPLY_CAP_*, scam_vision.*_DAILY).

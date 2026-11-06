@@ -62,17 +62,36 @@ class GuildPremiumCog(commands.Cog):
             view.add_item(PremiumSubscribeButton(row["guild_id"], clone_id))
             try:
                 user = await self.bot.fetch_user(int(row["activated_by"]))
-                await user.send(
-                    f"💎 **Premium** for **{guild.name}** ends <t:{ts}:R> (<t:{ts}:D>). "
-                    "Tap below to renew — the new time is added on top of what you have left.",
-                    view=view,
-                )
+                await user.send(await self._reminder_text(row, guild, ts), view=view)
             except discord.HTTPException:
                 logger.info("[premium] couldn't DM renewal reminder for guild %s", row["guild_id"])
             except Exception:
                 logger.exception("[premium] reminder DM failed for guild %s", row["guild_id"])
             # Marked even when the DM failed (closed DMs) so we don't retry hourly.
             await db.mark_premium_reminded(row["guild_id"], clone_id, row["expires_at"])
+
+    @staticmethod
+    async def _reminder_text(row: dict, guild, ts: int) -> str:
+        """The renewal / trial-ending DM. It carries the real numbers of what Premium did, so the decision to renew is
+        made on evidence; if the numbers can't be read the DM still goes out without them."""
+        from modules import premium_report as pr
+        trial = bool(row.get("is_trial"))
+        days = config.PREMIUM_TRIAL_DAYS if trial else pr.DEFAULT_DAYS
+        try:
+            stats = await pr.gather(int(row["guild_id"]), days)
+            report = pr.render(stats, days, is_trial=trial)
+            if report.startswith("I couldn't read"):
+                report = ""
+        except Exception:
+            logger.debug("[premium] report for reminder failed", exc_info=True)
+            report = ""
+        if trial:
+            head = (f"\U0001f381 Your free **Premium** trial for **{guild.name}** ends <t:{ts}:R> (<t:{ts}:D>). "
+                    "Tap below to keep everything \u2014 nothing you set up is lost either way.")
+        else:
+            head = (f"\u23f3 **Premium** for **{guild.name}** ends <t:{ts}:R> (<t:{ts}:D>). "
+                    "Tap below to renew \u2014 the new time is added on top of what you have left.")
+        return head + ("\n\n" + report if report else "")
 
     @_reminder_loop.before_loop
     async def _before_reminder_loop(self):
