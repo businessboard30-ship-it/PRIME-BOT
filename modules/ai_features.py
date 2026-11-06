@@ -105,7 +105,7 @@ DASHBOARD_BUTTON_MARKER = "\x00DASH_BTN\x00"
 CAT_TOKEN = "[[CAT]]"
 BOT_NAME = "Maxwell"  # what the AI says when asked its name
 
-AI_VISION_MODEL = os.getenv("AI_VISION_MODEL", "").strip() or "meta-llama/llama-4-scout-17b-16e-instruct"  # reads attached images
+AI_VISION_MODEL = os.getenv("AI_VISION_MODEL", "").strip() or "qwen/qwen3.6-27b"  # reads attached images (Groq retired llama-4-scout on 2026-07-17; set AI_VISION_MODEL to override)
 AI_CHAT_MODEL = "openai/gpt-oss-120b"  # Groq's current recommended general-purpose model
 # Shared rules appended to every prompt. Length is enforced three ways —
 # this prompt, a low max_completion_tokens, and trim_reply() — because a
@@ -841,6 +841,7 @@ async def ai_chat(user_id: int, message: str, is_anime_question: bool = False,
         if image_urls:
             payload["model"] = AI_VISION_MODEL
             payload.pop("reasoning_effort", None)     # only the gpt-oss reasoning models accept it
+            payload["max_completion_tokens"] = 2000   # room for a reasoning vision model to think and still answer
         search_on = False
         if tools:
             payload["tools"] = tools

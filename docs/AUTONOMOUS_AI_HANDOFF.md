@@ -182,6 +182,10 @@ Audit result per plan bullet, and what changed:
 - Next (not built): live conversation in a voice channel. discord.py cannot receive audio, so it needs a voice-receive library (e.g. a discord.py fork or py-cord sinks),
   VAD to split speech into turns, STT per turn, then TTS played back through the existing `davey`/PyNaCl voice client; it also has to avoid fighting music.py for the guild's single voice connection. Needs its own plan and a Premium/cap decision.
 
+- Vision model (2026-11): Groq retired `meta-llama/llama-4-scout-17b-16e-instruct` on 2026-07-17, so reading attached images was failing. Default
+  `AI_VISION_MODEL` is now `qwen/qwen3.6-27b` (Groq's named vision replacement; override with the env var). Not tested against the live API from the build
+  sandbox: smoke-test by sending the AI an image. `utils/rate_limiter.py` now uses the shared DB pool instead of its own connection.
+
 ## Next
 
 - Step outputs passed to later steps (e.g. id of a category just created).

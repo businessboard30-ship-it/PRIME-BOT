@@ -20,14 +20,10 @@ class PostgresRateLimiter:
     
     async def _get_pool(self):
         """Lazy-initialize connection pool."""
-        if self.pool is None:
-            self.pool = await asyncpg.create_pool(
-                DATABASE_URL,
-                min_size=1,
-                max_size=1,
-                statement_cache_size=0
-            )
-        return self.pool
+        # Share the process-wide pool (database.get_pool) instead of opening a private one: every extra
+        # pool is another connection against Postgres' hard cap ("too many clients already").
+        from database import get_pool
+        return await get_pool()
     
     async def _ensure_table(self):
         """Create rate_limits table if it doesn't exist."""
