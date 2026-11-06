@@ -577,13 +577,16 @@ class AIToolsCog(commands.Cog):
             return "Couldn't do that right now. Try again in a moment.", None
         return None
 
-    async def _voice_setting(self, user_id: int, text: str) -> Optional[str]:
+    async def _voice_setting(self, user_id: int, text: str, *, spoke: bool = False) -> Optional[str]:
         """What to tell ai_chat about voice for this message: "forced" if they
-        asked for it, "auto" if the AI may choose, None if they turned it off."""
+        asked for it (or sent a voice note, so we answer in kind), "auto" if the
+        AI may choose, None if they turned it off."""
         if ai_voice.wants_voice(text):
             return "forced"
         _, mode = await ai_prefs.get_prefs(user_id)
-        return None if mode == ai_prefs.VOICE_OFF else "auto"
+        if mode == ai_prefs.VOICE_OFF:
+            return None
+        return "forced" if spoke else "auto"
 
     async def _voice_file(self, user_id: int, text: str, *, explicit: bool) -> Optional[discord.File]:
         """Audio attachment for a voice reply, or None (caller sends text only)."""
@@ -1928,13 +1931,14 @@ class AIToolsCog(commands.Cog):
         runnable = runnable_labels([t["function"]["name"] for t in tools]) if tools else None
         command_context = await self._command_context(content, user_id, perms, guild, runnable=runnable)
         tools, command_context = self._with_choice_tool(tools, command_context, 0)
-        atts = await _message_attachments(message)
+        atts = [a for a in (await _message_attachments(message) or []) if not ai_voice.is_voice_note(a)]  # voice notes were already transcribed into `content`
+        spoke = ai_voice.find_voice_note(message.attachments) is not None
         file_block, image_urls = await ai_attachments.build_attachment_context(atts) if atts else (None, [])
         response = await ai_chat(
             user_id, content, is_anime_question=is_anime, tier="basic", session_id=None,
             command_context=command_context, history_override=history,
             guild_id=guild_id, kind="reply", tools=None if atts else (tools or None),
-            voice=await self._voice_setting(user_id, content),
+            voice=await self._voice_setting(user_id, content, spoke=spoke),
             file_block=file_block, image_urls=image_urls or None,
         )
         if isinstance(response, dict):
@@ -2001,6 +2005,20 @@ class AIToolsCog(commands.Cog):
                     if not content and not message.attachments:
                         return
 
+            heard_voice = False
+            note = ai_voice.find_voice_note(message.attachments)
+            if note is not None:
+                # A voice note IS the user's message: transcribe it and answer it like typed text.
+                async with message.channel.typing():
+                    heard = await ai_voice.transcribe_attachment(note)
+                if heard:
+                    content = f"{content} {heard}".strip() if content else heard
+                    heard_voice = True
+                elif not content:
+                    await message.reply(
+                        "\U0001f399\ufe0f I couldn't make out that voice note. Try again a bit closer to the mic, or type it out.",
+                        mention_author=False, allowed_mentions=discord.AllowedMentions.none())
+                    return
             if not content:
                 content = "Look at what I attached and tell me what it is, or summarise it."
             if is_capabilities_question(content) and not mentions_other_bot(content):
@@ -2015,7 +2033,7 @@ class AIToolsCog(commands.Cog):
                 text, view = await self._run_reply_turn(message, content, history)
                 if text and getattr(text, "voice", False):
                     voice_file = await self._voice_file(
-                        message.author.id, str(text), explicit=ai_voice.wants_voice(content))
+                        message.author.id, str(text), explicit=heard_voice or ai_voice.wants_voice(content))
             if not text:
                 return
             if SUPPORT_BUTTON_MARKER in text:
