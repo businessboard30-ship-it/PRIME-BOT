@@ -162,6 +162,7 @@ ROUTES = {
     "/api/public_stats": "api.public_stats",
     "/api/public_bot_directory": "api.public_bot_directory",
     "/api/public_bot_reviews": "api.public_bot_reviews",
+    "/api/editorial": "api.editorial",
     "/api/public_clones": "api.public_clones",
     "/api/verify_captcha": "api.verify_captcha",
     "/api/dash": "api.dash",
