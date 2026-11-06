@@ -92,4 +92,4 @@ Each phase is its own PR with tests, a handoff note (built / next), and no READM
   offer gate (`get_qualifying_commands`) + execution gate (`resolve_and_check`) in `ai_command_guard`, handler gate in
   `discord_bot/cogs/test_harness.py` (AI-only, never on the slash tree, never loaded on clones), one read-only op `testharness status`,
   audit via `log_action`. Tests: `tests/unit/test_test_harness_gates.py` (wrong guild, non-owner, clone, ID unset, direct handler call). No scenarios, no destructive code.
-- Next: owner sets `TEST_GUILD_ID` in config.py and picks the first protections; then phase 2 (snapshot/restore + dead-man timer + restart recovery) as its own PR.
+- TEST_GUILD_ID is now set (test server). Next: owner picks the first protections; then phase 2 (snapshot/restore + dead-man timer + restart recovery) as its own PR.

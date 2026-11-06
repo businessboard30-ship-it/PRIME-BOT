@@ -56,9 +56,13 @@ def test_unset_or_invalid_test_guild_disables_everywhere(unset):
     assert th.check_gates(0, OWNER, None, test_guild=unset, admin_ids={OWNER}) is not None
 
 
-def test_default_config_is_off():
-    assert config.TEST_GUILD_ID == 0 and th.is_enabled() is False
-    assert th.check_gates(1, next(iter(config.DISCORD_CLONE_ADMIN_IDS))) is not None
+def test_default_config_is_armed_for_the_one_test_guild_only():
+    assert config.TEST_GUILD_ID == 1536047270321979514 and th.is_enabled() is True
+    owner = next(iter(config.DISCORD_CLONE_ADMIN_IDS))
+    assert th.check_gates(config.TEST_GUILD_ID, owner) is None
+    assert th.check_gates(1, owner) is not None                       # any other guild
+    assert th.check_gates(config.TEST_GUILD_ID, 1) is not None        # any other user
+    assert th.check_gates(config.TEST_GUILD_ID, owner, clone_id=1) is not None
 
 
 def test_wrong_guild_refused():
