@@ -18068,6 +18068,17 @@ class Database:
                 guild_id, clone_id is _ANY_CLONE, None if clone_id is _ANY_CLONE else clone_id)
         return dict(row) if row else None
 
+    async def get_harness_peer_ids(self, clone_ids) -> List[int]:
+        """Discord user ids of the given clones' bots (test-harness bot-to-bot chat: who counts as one of our test bots)."""
+        ids = [int(c) for c in (clone_ids or []) if int(c) > 0]
+        if not ids:
+            return []
+        pool = await get_pool()
+        async with pool.acquire() as conn:
+            rows = await conn.fetch(
+                "SELECT bot_user_id FROM discord_cloned_bots WHERE clone_id = ANY($1::INT[]) AND bot_user_id IS NOT NULL", ids)
+        return [int(r["bot_user_id"]) for r in rows]
+
     async def th_claim_run(self, run_id: int, from_statuses: List[str], to_status: str) -> bool:
         """Atomic status change: True only for the caller that actually moved the run (stops a double restore)."""
         pool = await get_pool()

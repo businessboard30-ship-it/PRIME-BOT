@@ -11,7 +11,7 @@ from api import dash
 from modules import renewal_reminders as rr
 from tests.unit.test_dash_api import env, call  # noqa: F401
 
-NOW = datetime(2026, 10, 9, 12, 0, tzinfo=timezone.utc)
+NOW = datetime.now(timezone.utc).replace(microsecond=0)      # relative on purpose: a fixed date made this suite fail the day the fixture plan "expired"
 D = timedelta(days=1)
 
 
