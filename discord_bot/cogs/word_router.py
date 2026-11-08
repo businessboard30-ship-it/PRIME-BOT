@@ -115,46 +115,71 @@ class WordRouterCog(commands.Cog):
     def __init__(self, bot):
         self.bot = bot
         self._last = {}
+        self._ent = None            # (when, entries): the command tree rarely changes, so not rebuilt per message
+
+    def _entries(self):
+        now = time.monotonic()
+        if self._ent is None or now - self._ent[0] > 600:
+            cmds = [c for c in self.bot.tree.walk_commands() if not isinstance(c, discord.app_commands.Group)]
+            self._ent = (now, wr.entries_from(cmds))
+        return self._ent[1]
+
+    def _harness_ok(self, message: discord.Message) -> bool:
+        if getattr(self.bot, "test_harness_cog", None) is None or message.guild is None:
+            return False
+        from modules import test_harness as th
+        return th.check_gates(guild_id=message.guild.id, user_id=message.author.id,
+                              clone_id=getattr(self.bot, "clone_id", None)) is None
+
+    def plan(self, message: discord.Message):
+        """What this message gets: ("harness", word), ("panel", word) or None. Synchronous and side-effect free, so the AI chat
+        cog can ask the same question and stay silent when the router owns the message (one answer, never two)."""
+        in_dm = message.guild is None
+        word = wr.parse_trigger(message.content, getattr(self.bot.user, "id", None), in_dm,
+                                lambda w: self.bot.get_command(w) is not None)
+        if word is None:
+            return None
+        if word in wr.HARNESS_WORDS and not in_dm and self._harness_ok(message):
+            return ("harness", word)
+        perms = None if in_dm else message.channel.permissions_for(message.author).value
+        if wr.rank(word, self._entries(), perms, not in_dm):
+            return ("panel", word)
+        if (message.content or "").lstrip().startswith("!"):      # "!word" is never chat: give the pick-one menu
+            return ("panel", word)
+        return None                                               # unknown word after a mention: normal chat answers
+
+    def claims(self, message: discord.Message) -> bool:
+        try:
+            return self.plan(message) is not None
+        except Exception:
+            logger.exception("[word_router] plan failed")
+            return False
 
     @commands.Cog.listener()
     async def on_message(self, message: discord.Message):
         try:
             if message.author.bot:
                 return
-            in_dm = message.guild is None
-            word = wr.parse_trigger(message.content, getattr(self.bot.user, "id", None), in_dm,
-                                    lambda w: self.bot.get_command(w) is not None)
-            if word is None:
+            plan = self.plan(message)
+            if plan is None:
                 return
+            kind, word = plan
             now = time.monotonic()
             if now - self._last.get(message.author.id, 0.0) < COOLDOWN:
                 return
             self._last[message.author.id] = now
             if len(self._last) > 5000:
                 self._last = {k: v for k, v in self._last.items() if now - v < COOLDOWN}
-            if word in wr.HARNESS_WORDS and not in_dm and await self._harness_panel(message):
-                return
-            perms = None if in_dm else message.channel.permissions_for(message.author).value
-            view = RouterView(self.bot, message.author.id, word, perms, not in_dm)
+            in_dm = message.guild is None
+            if kind == "harness":
+                from discord_bot.cogs.test_harness import HarnessPanel
+                view = HarnessPanel(self.bot.test_harness_cog, message.author.id)
+            else:
+                perms = None if in_dm else message.channel.permissions_for(message.author).value
+                view = RouterView(self.bot, message.author.id, word, perms, not in_dm)
             view.message = await message.reply(view=view, mention_author=False, allowed_mentions=NO_PINGS)
         except Exception:
             logger.exception("[word_router] on_message failed")
-
-
-    async def _harness_panel(self, message: discord.Message) -> bool:
-        """Owner-only test harness panel. True if it was shown. Anyone who fails a gate just falls through to the normal
-        panel, so nothing reveals that the harness exists."""
-        harness = getattr(self.bot, "test_harness_cog", None)
-        if harness is None:
-            return False
-        from modules import test_harness as th
-        if th.check_gates(guild_id=message.guild.id, user_id=message.author.id,
-                          clone_id=getattr(self.bot, "clone_id", None)) is not None:
-            return False
-        from discord_bot.cogs.test_harness import HarnessPanel
-        view = HarnessPanel(harness, message.author.id)
-        view.message = await message.reply(view=view, mention_author=False, allowed_mentions=NO_PINGS)
-        return True
 
 
 async def setup(bot: commands.Bot):

@@ -220,8 +220,46 @@ def test_listener_cooldown_blocks_spam():
     a.reply.assert_awaited_once(); b.reply.assert_not_awaited()
 
 
-def test_dm_bare_word_works_but_hides_guild_only_commands():
+def test_dm_bare_word_gets_a_panel_only_for_commands_that_work_in_a_dm():
     c = make_cog()
-    m = message("demo", guild=False)
+    ok = message("plain", guild=False)
+    run(c.on_message(ok))
+    ok.reply.assert_awaited_once()
+    guild_only = message("demo", guild=False)          # only guild-only, permissioned commands match -> nothing to show
+    assert c.claims(guild_only) is False
+    run(c.on_message(guild_only))
+    guild_only.reply.assert_not_awaited()
+
+
+# ── one answer, never two: the router claims its messages so AI chat stays silent ─────────
+def test_claims_a_mention_with_a_matching_word_but_not_an_unknown_one():
+    c = make_cog()
+    assert c.claims(message(f"<@{BOT}> demo")) is True
+    assert c.claims(message(f"<@{BOT}> hello")) is False         # no match -> normal chat answers it
+    assert c.claims(message(f"<@{BOT}> demo please")) is False   # two words are never a trigger
+    assert c.claims(message("demo")) is False                    # a bare word in a server is just chat
+
+
+def test_bang_word_is_always_claimed_even_without_a_match():
+    c = make_cog()
+    m = message("!zzzz")
+    assert c.claims(m) is True
     run(c.on_message(m))
     m.reply.assert_awaited_once()
+
+
+def test_claims_never_raises():
+    c = make_cog()
+    assert c.claims(SimpleNamespace(content="!x", author=None, guild=None)) is False
+
+
+def test_ai_chat_stays_silent_when_the_router_claims_the_message():
+    from discord_bot.cogs import ai_tools
+    router = SimpleNamespace(claims=lambda m: True)
+    boom = MagicMock(side_effect=AssertionError("chat must not run"))
+    me = SimpleNamespace(bot=SimpleNamespace(get_cog=lambda n: router if n == "WordRouterCog" else None, user=SimpleNamespace(id=BOT)),
+                         _dm_context=boom, _reply_chain=boom, _run_reply_turn=boom)
+    m = SimpleNamespace(author=SimpleNamespace(bot=False), content=f"<@{BOT}> demo", attachments=[], guild=object(),
+                        reference=None, mentions=[SimpleNamespace(id=BOT)])
+    run(ai_tools.AIToolsCog.on_bot_chat(me, m))
+    boom.assert_not_called()
