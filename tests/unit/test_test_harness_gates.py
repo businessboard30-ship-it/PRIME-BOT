@@ -13,6 +13,13 @@ from modules import ai_command_guard as guard
 from modules import test_harness as th
 from modules.ai_command_allowlist import AI_COMMANDS, AI_COMMANDS_BY_NAME
 
+
+@pytest.fixture(autouse=True)
+def _main_bot_is_the_harness_bot(monkeypatch):
+    """These tests model the main bot as the harness bot; the clone rule has its own tests (test_th_clones.py)."""
+    import config as _config
+    monkeypatch.setattr(_config, "TEST_CLONE_IDS", set(), raising=False)
+
 TEST_GUILD = 111
 OTHER_GUILD = 222
 OWNER = 42

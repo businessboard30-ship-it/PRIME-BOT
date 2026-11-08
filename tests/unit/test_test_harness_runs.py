@@ -21,8 +21,18 @@ from tests.unit._fake_guild import FakeGuild
 OWNER, STRANGER = 42, 99
 
 
+
+@pytest.fixture(autouse=True)
+def _main_bot_is_the_harness_bot(monkeypatch):
+    """These tests model the main bot as the harness bot; the clone rule has its own tests (test_th_clones.py)."""
+    import config as _config
+    monkeypatch.setattr(_config, "TEST_CLONE_IDS", set(), raising=False)
+
 def run(coro):
     return asyncio.run(coro)
+
+
+_ANY = object()      # same meaning as database._ANY_CLONE
 
 
 class FakeDb:
@@ -31,13 +41,13 @@ class FakeDb:
     def __init__(self):
         self.runs, self.n, self.tamper = {}, 0, False
 
-    async def th_create_run(self, guild_id, owner_id, snapshot_json, snapshot_hash, deadline_at, report_channel_id=None):
+    async def th_create_run(self, guild_id, owner_id, snapshot_json, snapshot_hash, deadline_at, report_channel_id=None, clone_id=None):
         if any(r["guild_id"] == guild_id and r["status"] in th.UNFINISHED for r in self.runs.values()):
             return None
         self.n += 1
         self.runs[self.n] = dict(id=self.n, guild_id=guild_id, owner_id=owner_id, status="armed", snapshot_json=snapshot_json,
                                  snapshot_hash=snapshot_hash, report_channel_id=report_channel_id, deadline_at=deadline_at,
-                                 started_at=datetime.now(timezone.utc), finished_at=None, result_json=None)
+                                 started_at=datetime.now(timezone.utc), finished_at=None, result_json=None, clone_id=clone_id)
         return self.n
 
     async def th_get_run(self, run_id):
@@ -48,11 +58,12 @@ class FakeDb:
             r["snapshot_json"] = json.dumps(snap)
         return r
 
-    async def th_unfinished_runs(self, guild_id=None):
-        return [dict(r) for r in self.runs.values() if r["status"] in th.UNFINISHED and (guild_id is None or r["guild_id"] == guild_id)]
+    async def th_unfinished_runs(self, guild_id=None, clone_id=_ANY):
+        return [dict(r) for r in self.runs.values() if r["status"] in th.UNFINISHED and (guild_id is None or r["guild_id"] == guild_id)
+                and (clone_id is _ANY or r["clone_id"] == clone_id)]
 
-    async def th_latest_run(self, guild_id):
-        rs = [r for r in self.runs.values() if r["guild_id"] == guild_id]
+    async def th_latest_run(self, guild_id, clone_id=_ANY):
+        rs = [r for r in self.runs.values() if r["guild_id"] == guild_id and (clone_id is _ANY or r["clone_id"] == clone_id)]
         return dict(rs[-1]) if rs else None
 
     async def th_claim_run(self, run_id, from_statuses, to_status):

@@ -159,7 +159,8 @@ _pool_loop = None  # the asyncio event loop _pool's connections belong to
 # Do NOT bump it for unrelated changes — an unnecessary bump forces every
 # bot/clone's next cold start to run the full DDL pass again, which is
 # exactly the schema-reload storm this version check exists to avoid.
-SCHEMA_VERSION = "145"
+SCHEMA_VERSION = "146"
+# "145" -> "146" adds test_harness_runs.clone_id (which bot owns a run; NULL = the main bot) so two harness bots never touch each other's run. ADD COLUMN IF NOT EXISTS only. Bump-or-it-never-runs trap: tests/unit/test_schema_version_guard.py
 # "144" -> "145" adds discord_antinuke_config (anti-nuke v1: per-server opt-in, threshold/window/action). CREATE TABLE / CREATE UNIQUE INDEX IF NOT EXISTS only. Bump-or-it-never-runs trap: tests/unit/test_schema_version_guard.py
 # "142" -> "143" adds 098_premium_trial.sql (discord_guild_subscriptions.is_trial / trial_started_at: one free Premium trial per server). ALTER TABLE ADD COLUMN IF NOT EXISTS only. Bump-or-it-never-runs trap: tests/unit/test_schema_version_guard.py
 # "141" -> "142" adds 097_scam_hit_evidence_ref.sql (scam_shield_hits.evidence_channel_id / evidence_message_id: pointer to the archived copy, used by the AI scam lookup to show the scam link + image). ALTER TABLE ADD COLUMN IF NOT EXISTS only. Bump-or-it-never-runs trap: tests/unit/test_schema_version_guard.py
@@ -554,6 +555,8 @@ async def get_pool():
         _pool_loop = current_loop
     return _pool
 
+
+_ANY_CLONE = object()   # th_* run queries: "any bot's runs" (None means the main bot's, an int means that clone's)
 
 class Database:
     """Database handler backed by Postgres (Supabase / Neon / Railway Postgres)."""
@@ -2332,6 +2335,7 @@ class Database:
                 result_json TEXT
             )
         """)
+        await conn.execute("ALTER TABLE test_harness_runs ADD COLUMN IF NOT EXISTS clone_id INTEGER")
         await conn.execute("""
             CREATE UNIQUE INDEX IF NOT EXISTS ux_test_harness_one_active
             ON test_harness_runs (guild_id)
@@ -18020,18 +18024,18 @@ class Database:
 
     # ── bot test harness runs (modules/test_harness.py, discord_bot/cogs/test_harness.py) ──────────────
     async def th_create_run(self, guild_id: int, owner_id: int, snapshot_json: str, snapshot_hash: str,
-                            deadline_at, report_channel_id: Optional[int] = None) -> Optional[int]:
+                            deadline_at, report_channel_id: Optional[int] = None, clone_id: Optional[int] = None) -> Optional[int]:
         """Insert an 'armed' run. Returns its id, or None when this guild already has an unfinished run."""
         pool = await get_pool()
         async with pool.acquire() as conn:
             return await conn.fetchval(
                 """
-                INSERT INTO test_harness_runs (guild_id, owner_id, status, snapshot_json, snapshot_hash, deadline_at, report_channel_id)
-                VALUES ($1, $2, 'armed', $3, $4, $5, $6)
+                INSERT INTO test_harness_runs (guild_id, owner_id, status, snapshot_json, snapshot_hash, deadline_at, report_channel_id, clone_id)
+                VALUES ($1, $2, 'armed', $3, $4, $5, $6, $7)
                 ON CONFLICT DO NOTHING
                 RETURNING id
                 """,
-                guild_id, owner_id, snapshot_json, snapshot_hash, deadline_at, report_channel_id,
+                guild_id, owner_id, snapshot_json, snapshot_hash, deadline_at, report_channel_id, clone_id,
             )
 
     async def th_get_run(self, run_id: int) -> Optional[Dict]:
@@ -18040,25 +18044,28 @@ class Database:
             row = await conn.fetchrow("SELECT * FROM test_harness_runs WHERE id = $1", run_id)
         return dict(row) if row else None
 
-    async def th_unfinished_runs(self, guild_id: Optional[int] = None) -> List[Dict]:
+    async def th_unfinished_runs(self, guild_id: Optional[int] = None, clone_id=_ANY_CLONE) -> List[Dict]:
+        """Unfinished runs. clone_id=_ANY_CLONE (default) = every bot's; None = the main bot's; N = clone N's."""
         pool = await get_pool()
         async with pool.acquire() as conn:
             rows = await conn.fetch(
                 """
                 SELECT * FROM test_harness_runs
                 WHERE status IN ('armed', 'running', 'restoring') AND ($1::BIGINT IS NULL OR guild_id = $1)
+                  AND ($2::BOOLEAN OR clone_id IS NOT DISTINCT FROM $3::INTEGER)
                 ORDER BY id
                 """,
-                guild_id,
+                guild_id, clone_id is _ANY_CLONE, None if clone_id is _ANY_CLONE else clone_id,
             )
         return [dict(r) for r in rows]
 
-    async def th_latest_run(self, guild_id: int) -> Optional[Dict]:
+    async def th_latest_run(self, guild_id: int, clone_id=_ANY_CLONE) -> Optional[Dict]:
         pool = await get_pool()
         async with pool.acquire() as conn:
             row = await conn.fetchrow(
-                "SELECT id, guild_id, status, started_at, deadline_at, finished_at FROM test_harness_runs "
-                "WHERE guild_id = $1 ORDER BY id DESC LIMIT 1", guild_id)
+                "SELECT id, guild_id, status, started_at, deadline_at, finished_at, clone_id FROM test_harness_runs "
+                "WHERE guild_id = $1 AND ($2::BOOLEAN OR clone_id IS NOT DISTINCT FROM $3::INTEGER) ORDER BY id DESC LIMIT 1",
+                guild_id, clone_id is _ANY_CLONE, None if clone_id is _ANY_CLONE else clone_id)
         return dict(row) if row else None
 
     async def th_claim_run(self, run_id: int, from_statuses: List[str], to_status: str) -> bool:
