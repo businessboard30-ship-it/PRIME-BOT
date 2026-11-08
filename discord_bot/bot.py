@@ -326,6 +326,7 @@ class AnimeBotDiscord(commands.Bot):
         await self.load_extension("discord_bot.cogs.honeypot")
         await self.load_extension("discord_bot.cogs.antiraid")
         await self.load_extension("discord_bot.cogs.antinuke")
+        await self.load_extension("discord_bot.cogs.word_router")
         await self.load_extension("discord_bot.cogs.applications")
         await self.load_extension("discord_bot.cogs.verification")
         await self.load_extension("discord_bot.cogs.giveaways")
