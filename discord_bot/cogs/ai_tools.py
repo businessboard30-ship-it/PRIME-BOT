@@ -1891,15 +1891,15 @@ class AIToolsCog(commands.Cog):
         specs = await get_qualifying_commands(source, ignore_cap=True) if guild is not None else []
         return CapabilitiesView(specs, asker_id=user.id, in_server=guild is not None)
 
-    async def _run_reply_turn(self, message: discord.Message, content: str, history: list):
-        """Returns (text, view_or_None)."""
+    async def _run_reply_turn(self, message: discord.Message, content: str, history: list, peer_turn: bool = False):
+        """Returns (text, view_or_None). peer_turn=True (another test bot wrote it): plain chat only, never tools or writes."""
         if mentions_other_bot(content):
             return OTHER_BOT_REFUSAL, None  # refused before any AI call, costs no cap
-        quick = self._quick_answer(content, message.guild is not None, message.guild)
+        quick = None if peer_turn else self._quick_answer(content, message.guild is not None, message.guild)
         if quick:
             return quick  # fixed answer (premium button / invite link), no AI call, costs no cap
-        pref = await self._prefs_quick_answer(content, message.author.id)
-        if not pref:
+        pref = None if peer_turn else await self._prefs_quick_answer(content, message.author.id)
+        if not pref and not peer_turn:
             pref = await self._memory_quick_answer(
                 content, message.author.id, message.guild.id if message.guild else None,
                 bool(message.guild and message.author.guild_permissions.manage_guild))
@@ -1918,7 +1918,7 @@ class AIToolsCog(commands.Cog):
         perms = message.channel.permissions_for(message.author) if guild else None
 
         proxy = ProxyInteraction(message, self.bot) if guild else None
-        trusted = ai_trust.tools_allowed(history, message.author.id)      # Phase 7: other people's text never drives commands
+        trusted = ai_trust.tools_allowed(history, message.author.id) and not peer_turn   # Phase 7: other people's text never drives commands; a bot's never does
         if not trusted:
             logger.info("[ai_trust] command tools withheld for %s: the context holds other people's messages", message.author.id)
         tools = await self._build_command_tools(proxy) if (proxy is not None and trusted) else []
@@ -1953,6 +1953,44 @@ class AIToolsCog(commands.Cog):
             return ai_planner.UNRUN_NOTICE, None             # no command ran: never show an invented "done" list as a result
         return (response or "AI service error. Try again later."), None
 
+    _PEERS = None            # (when, ids): who counts as one of our test bots, cached a minute
+
+    async def _peer_ids(self):
+        import time as _t
+        now = _t.monotonic()
+        if self._PEERS is None or now - self._PEERS[0] > 60:
+            from modules import test_harness as _th
+            ids = await db.get_harness_peer_ids(_th.test_clone_ids())
+            self._PEERS = (now, set(ids))
+        return self._PEERS[1]
+
+    async def _peer_chat_ok(self, message: discord.Message) -> bool:
+        """May this bot answer a message written by another BOT? Never raises (any doubt means no)."""
+        try:
+            from modules import test_harness as th
+            from modules import th_botchat as bc
+            guild = message.guild
+            if guild is None or self.bot.user is None:
+                return False
+            if th.check_guild(guild.id, getattr(self.bot, "clone_id", None)) is not None:
+                return False                                       # not the test server, or this bot is not a harness bot
+            if not bc.peer_ok(in_test_guild=True, this_bot_is_harness=True, author_id=message.author.id,
+                              my_id=self.bot.user.id, peer_ids=await self._peer_ids()):
+                return False
+            flags, cur = [], message                               # depth = consecutive bot-authored messages up the reply chain
+            for _ in range(bc.BOT_CHAIN_MAX + 1):
+                flags.append(bool(cur.author.bot))
+                ref = cur.reference
+                if not ref or not ref.message_id:
+                    break
+                nxt = ref.resolved if isinstance(ref.resolved, discord.Message) else None
+                if nxt is None:
+                    nxt = await cur.channel.fetch_message(ref.message_id)
+                cur = nxt
+            return bc.may_answer(bc.chain_depth(flags))
+        except Exception:
+            return False
+
     @commands.Cog.listener("on_message")
     async def on_bot_chat(self, message: discord.Message):
         """Chat without /aichat: DM the bot, reply to one of its own messages
@@ -1960,12 +1998,19 @@ class AIToolsCog(commands.Cog):
         channel with a live roast battle (the roast cog owns replies there)
         and when the per-server switch is off. Answers are short (see
         BOT_RULES / trim_reply in modules/ai_features.py)."""
+        peer_turn = False
         if message.author.bot:
-            return
+            # Only a harness clone, in the test server, answers one of its own test peers, and only up to a hard chain cap
+            # (modules/th_botchat.py). Everything else about a bot-authored message is still ignored.
+            if not await self._peer_chat_ok(message):
+                return
+            peer_turn = True
         get_cog = getattr(self.bot, "get_cog", None)
-        router = get_cog("WordRouterCog") if get_cog else None      # one-word panels own their message: no chat reply on top
+        router = get_cog("WordRouterCog") if (get_cog and not peer_turn) else None   # one-word panels own their message: no chat on top
         if router is not None and router.claims(message):
             return
+        if peer_turn and message.attachments:
+            return                                                   # no attachments, voice notes or files from a bot
         content = (message.content or "").strip()
         if (not content and not message.attachments) or len(content) > MAX_AICHAT_CHARS or content.startswith(("!", "/")):
             return
@@ -2025,7 +2070,7 @@ class AIToolsCog(commands.Cog):
                     return
             if not content:
                 content = "Look at what I attached and tell me what it is, or summarise it."
-            if is_capabilities_question(content) and not mentions_other_bot(content):
+            if is_capabilities_question(content) and not mentions_other_bot(content) and not peer_turn:
                 # "what can you do / show your commands": a fixed component panel, no AI call, costs no daily cap.
                 src = ProxyInteraction(message, self.bot) if message.guild is not None else None
                 panel = await self._capabilities_view(message.author, message.guild, src)
@@ -2034,7 +2079,7 @@ class AIToolsCog(commands.Cog):
 
             voice_file = None
             async with message.channel.typing():
-                text, view = await self._run_reply_turn(message, content, history)
+                text, view = await self._run_reply_turn(message, content, history, **({"peer_turn": True} if peer_turn else {}))
                 if text and getattr(text, "voice", False):
                     voice_file = await self._voice_file(
                         message.author.id, str(text), explicit=heard_voice or ai_voice.wants_voice(content))

@@ -12,6 +12,7 @@ Commands (all test-guild-only, owner-only, main-bot-only):
   testharness rolewave  phase 4b, REAL: same as wave but with throw-away roles (cap 20).
   testharness wave      phase 4, REAL: create then delete <=25 throw-away channels, check audit log + anti-nuke, restore.
                         Needs an armed snapshot and a CONFIRM CLICK.
+  testharness chat      bot-to-bot chat test: mention another bot, it answers, capped at 4 messages. Changes nothing.
   testharness status    read-only
   testharness snapshot  saves + verifies a snapshot, arms the dead-man timer. NEEDS A CONFIRM CLICK, because the restore
                         that follows removes anything added to the server after the snapshot.
@@ -29,6 +30,8 @@ never add_cog'd (so cog_load / cog listeners would not fire).
 import asyncio
 import json
 import logging
+import re
+import time
 from datetime import datetime, timedelta, timezone
 from types import SimpleNamespace
 from typing import Optional
@@ -41,6 +44,7 @@ from database import db
 from modules import guild_snapshot as gs
 from modules import moderation_extra as modx
 from modules import test_harness as th
+from modules import th_botchat as bc
 from modules import th_scenarios as scen
 
 logger = logging.getLogger(__name__)
@@ -76,6 +80,36 @@ def _slim(result: dict) -> dict:
     return {k: v for k, v in result.items() if k != "idmap"}
 
 
+class BotPickView(discord.ui.LayoutView):
+    """One tap: choose which bot to chat with. Opened by the panel's Bot chat button; only the opener can use it."""
+
+    def __init__(self, cog, owner_id: int):
+        super().__init__(timeout=120)
+        self.cog, self.owner_id = cog, owner_id
+        sel = discord.ui.UserSelect(placeholder="Pick a bot", min_values=1, max_values=1)
+        sel.callback = self._picked(sel)
+        box = discord.ui.Container()
+        box.add_item(discord.ui.ActionRow(sel))
+        self.add_item(box)
+
+    def _picked(self, sel):
+        async def cb(i: discord.Interaction):
+            if not handler_gate(i):
+                return await _say(i, REFUSAL)
+            try:
+                await self.cog._bot_chat(i, sel.values[0])
+            except Exception:
+                logger.exception("[test_harness] bot chat failed")
+                await _say(i, "Something went wrong.")
+        return cb
+
+    async def interaction_check(self, i: discord.Interaction) -> bool:
+        if i.user.id != self.owner_id:
+            await _say(i, "Not yours.")
+            return False
+        return True
+
+
 class HarnessPanel(discord.ui.LayoutView):
     """Button-only panel (opened by one word, see cogs/word_router.py). Every press goes through the same gated, confirmed
     handlers as the AI path; only the person who opened it can press."""
@@ -93,6 +127,7 @@ class HarnessPanel(discord.ui.LayoutView):
             (("Simulate", "🧫", discord.ButtonStyle.secondary, cog.harness_simulate.callback),
              ("Status", "📋", discord.ButtonStyle.secondary, cog.harness_status.callback),
              ("Stop", "🛑", discord.ButtonStyle.danger, cog.harness_stop.callback)),
+            (("Bot chat", "🤖", discord.ButtonStyle.secondary, cog.harness_chat.callback),),
         )
         for row_spec in rows:
             row = discord.ui.ActionRow()
@@ -526,6 +561,73 @@ class TestHarnessCog(commands.Cog):
                     return await _say(ci, "No armed snapshot, so I stopped before anything destructive.")
                 await self._wave(ci, kind, n)
         await _say(interaction, plan, view=ConfirmActionView(interaction.user.id, go, confirm_label="Run all", danger=True))
+
+    # ── bot-to-bot chat ───────────────────────────────────────────────────
+    async def _bot_chat(self, interaction, member):
+        """Mention another bot with an opener, then watch the conversation. Capped by modules/th_botchat.BOT_CHAIN_MAX through
+        the reply chain itself; this method only starts it and reports. Changes nothing in the server except chat messages."""
+        if not handler_gate(interaction):
+            return await _say(interaction, REFUSAL)
+        if not interaction.response.is_done():
+            await interaction.response.defer(ephemeral=True)
+        me = getattr(self.bot.user, "id", None)
+        if member is None or not getattr(member, "bot", False) or member.id == me:
+            return await _say(interaction, "Pick a different bot (not me, and not a person).")
+        gid = interaction.guild_id
+        busy = self.__dict__.setdefault("_chat_busy", set())
+        if gid in busy:
+            return await _say(interaction, "A bot chat is already running here.")
+        busy.add(gid)
+        try:
+            peers = set(await db.get_harness_peer_ids(th.test_clone_ids()))
+            expect_chain = member.id in peers
+            if not handler_gate(interaction):
+                return await _say(interaction, REFUSAL)
+            ch = interaction.channel
+            sent = await ch.send(f"<@{member.id}> {bc.opener(int(time.time()) % len(bc.OPENERS))}",
+                                 allowed_mentions=discord.AllowedMentions(users=[member]))
+            await self._audit(gid, "ai_testharness_botchat_start", interaction.user.id, f"with bot {member.id}")
+            t0, replies, total, wait = time.monotonic(), [], 1, bc.WAIT_FIRST
+
+            def mine(m):
+                return m.channel.id == ch.id and m.id > sent.id and m.author.id in (member.id, me)
+            while total < bc.BOT_CHAIN_MAX:
+                try:
+                    m = await self.bot.wait_for("message", check=mine, timeout=wait)
+                except asyncio.TimeoutError:
+                    break
+                replies.append({"who": "them" if m.author.id == member.id else "me", "secs": time.monotonic() - t0,
+                                "text": m.content or ""})
+                total += 1
+                wait = bc.WAIT_NEXT
+            if expect_chain:                                   # linger a moment: anything past the cap is a failure
+                try:
+                    await self.bot.wait_for("message", check=mine, timeout=8)
+                    total += 1
+                except asyncio.TimeoutError:
+                    pass
+            result = bc.verdict(expect_chain=expect_chain, replies=replies, total_seen=total)
+            text = bc.format_report(getattr(member, "display_name", "that bot"), result, expect_chain)
+            await self._audit(gid, "ai_testharness_botchat", interaction.user.id,
+                              f"bot {member.id}: {'pass' if result['pass'] else 'FAIL'}; {'; '.join(result['gaps']) or 'no gaps'}"[:500])
+            await _say(interaction, text)
+            try:
+                await ch.send(text, allowed_mentions=NO_PINGS)
+            except Exception:
+                logger.exception("[test_harness] could not post the bot-chat report")
+        finally:
+            busy.discard(gid)
+
+    @harness_g.command(name="chat", description="Mention another bot and chat with it as a test (capped, changes nothing)")
+    @app_commands.describe(bot="The other bot, as an @mention or user ID. Leave empty to pick one from a list.")
+    async def harness_chat(self, interaction: discord.Interaction, bot: Optional[str] = None):
+        if not handler_gate(interaction):
+            return await _say(interaction, REFUSAL)
+        match = re.search(r"\d{15,20}", bot or "")
+        if match is None:
+            return await interaction.response.send_message(view=BotPickView(self, interaction.user.id), ephemeral=True)
+        member = interaction.guild.get_member(int(match.group())) if interaction.guild else None
+        await self._bot_chat(interaction, member)
 
     @harness_g.command(name="stop", description="Kill switch: stop the run and restore this test server now")
     async def harness_stop(self, interaction: discord.Interaction):

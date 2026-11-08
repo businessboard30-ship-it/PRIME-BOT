@@ -52,7 +52,7 @@ def make_cog():
 
 def test_panel_has_exactly_the_expected_buttons_and_no_text():
     v = HarnessPanel(make_cog(), OWNER)
-    assert [b.label for b in buttons(v)] == ["Run all", "Snapshot", "Channel wave", "Role wave", "Simulate", "Status", "Stop"]
+    assert [b.label for b in buttons(v)] == ["Run all", "Snapshot", "Channel wave", "Role wave", "Simulate", "Status", "Stop", "Bot chat"]
     assert not [t for t in v.walk_children() if isinstance(t, discord.ui.TextDisplay)]
 
 
