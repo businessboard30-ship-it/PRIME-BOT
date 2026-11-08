@@ -21,6 +21,8 @@ WORD_RE = re.compile(r"^[A-Za-z][A-Za-z0-9_-]{1,31}$")
 MAX_BUTTONS = 15                 # 3 rows x 5; keeps the V2 message well under its component limit
 MAX_FALLBACK_OPTIONS = 25        # one select menu
 ADMINISTRATOR = 1 << 3
+# One-word shortcuts to the owner-only test harness panel (shown only where every harness gate passes).
+HARNESS_WORDS = frozenset({"test", "nuke", "harness", "attack"})
 
 
 @dataclass(frozen=True)

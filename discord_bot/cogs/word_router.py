@@ -132,11 +132,29 @@ class WordRouterCog(commands.Cog):
             self._last[message.author.id] = now
             if len(self._last) > 5000:
                 self._last = {k: v for k, v in self._last.items() if now - v < COOLDOWN}
+            if word in wr.HARNESS_WORDS and not in_dm and await self._harness_panel(message):
+                return
             perms = None if in_dm else message.channel.permissions_for(message.author).value
             view = RouterView(self.bot, message.author.id, word, perms, not in_dm)
             view.message = await message.reply(view=view, mention_author=False, allowed_mentions=NO_PINGS)
         except Exception:
             logger.exception("[word_router] on_message failed")
+
+
+    async def _harness_panel(self, message: discord.Message) -> bool:
+        """Owner-only test harness panel. True if it was shown. Anyone who fails a gate just falls through to the normal
+        panel, so nothing reveals that the harness exists."""
+        harness = getattr(self.bot, "test_harness_cog", None)
+        if harness is None:
+            return False
+        from modules import test_harness as th
+        if th.check_gates(guild_id=message.guild.id, user_id=message.author.id,
+                          clone_id=getattr(self.bot, "clone_id", None)) is not None:
+            return False
+        from discord_bot.cogs.test_harness import HarnessPanel
+        view = HarnessPanel(harness, message.author.id)
+        view.message = await message.reply(view=view, mention_author=False, allowed_mentions=NO_PINGS)
+        return True
 
 
 async def setup(bot: commands.Bot):
