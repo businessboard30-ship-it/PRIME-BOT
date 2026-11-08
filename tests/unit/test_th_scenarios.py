@@ -13,6 +13,13 @@ from modules import th_scenarios as scen
 TEST_GUILD, OTHER_GUILD, OWNER, STRANGER = 111, 222, 42, 99
 
 
+
+@pytest.fixture(autouse=True)
+def _main_bot_is_the_harness_bot(monkeypatch):
+    """These tests model the main bot as the harness bot; the clone rule has its own tests (test_th_clones.py)."""
+    import config as _config
+    monkeypatch.setattr(_config, "TEST_CLONE_IDS", set(), raising=False)
+
 def run(c):
     return asyncio.run(c)
 

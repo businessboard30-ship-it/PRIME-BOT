@@ -738,6 +738,10 @@ OWNER_BROADCAST_CHANNEL_ID = 1535782838732066836
 # 0 = the whole feature is OFF everywhere (the tools are not even offered to the AI). Set it to the dedicated
 # bot-testing server's ID. It is never read from user text or from the invoking server.
 TEST_GUILD_ID = 1536047270321979514
+# Which bots may run the test harness. EMPTY = only the main bot. Clone ids (e.g. {11, 12}) = ONLY those clones; the main bot
+# then refuses, and every other clone always refuses. Each run records the bot that started it and only that bot restores it,
+# and the database allows one active run per server, so two harness bots can never test at once. See modules/test_harness.py.
+TEST_CLONE_IDS = {11, 12}
 # How often the owner server's auto-enabled autopost fires, in hours.
 # Hardcoded (was OWNER_BROADCAST_INTERVAL_HOURS env var) — tuning constant.
 OWNER_BROADCAST_INTERVAL_HOURS = 6

@@ -18,6 +18,13 @@ from modules.ai_command_allowlist import AI_COMMANDS_BY_NAME
 TEST_GUILD, OTHER_GUILD, OWNER, STRANGER, BOT = 111, 222, 42, 99, 7777
 
 
+
+@pytest.fixture(autouse=True)
+def _main_bot_is_the_harness_bot(monkeypatch):
+    """These tests model the main bot as the harness bot; the clone rule has its own tests (test_th_clones.py)."""
+    import config as _config
+    monkeypatch.setattr(_config, "TEST_CLONE_IDS", set(), raising=False)
+
 def run(c):
     return asyncio.run(c)
 
@@ -116,7 +123,7 @@ def env(monkeypatch):
     monkeypatch.setattr(cogmod.modx, "log_action", AsyncMock())
     monkeypatch.setattr(cogmod.db, "get_antinuke_config", st.get, raising=False)
     monkeypatch.setattr(cogmod.db, "set_antinuke_config", st.set, raising=False)
-    monkeypatch.setattr(cogmod.db, "th_unfinished_runs", AsyncMock(side_effect=lambda gid=None: [st.run()] if st.status in ("armed", "running") else []), raising=False)
+    monkeypatch.setattr(cogmod.db, "th_unfinished_runs", AsyncMock(side_effect=lambda gid=None, clone=None: [st.run()] if st.status in ("armed", "running") else []), raising=False)
     monkeypatch.setattr(cogmod.db, "th_claim_run", AsyncMock(side_effect=lambda rid, frm, to: (st.status in frm) and (setattr(st, "status", to) or True)), raising=False)
     monkeypatch.setattr(cogmod.db, "th_get_run", AsyncMock(side_effect=lambda rid: st.run() if st.status in ("armed", "running") else None), raising=False)
     return st

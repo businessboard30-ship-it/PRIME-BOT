@@ -216,7 +216,7 @@ class TestHarnessCog(commands.Cog):
         recovering = not self._recovered
         self._recovered = True
         now = datetime.now(timezone.utc)
-        for run in await db.th_unfinished_runs(th.test_guild_id()):
+        for run in await db.th_unfinished_runs(th.test_guild_id(), self._clone_id):      # only THIS bot's own runs
             stale_restore = run["status"] == "restoring" and not self._locks.get(run["guild_id"], asyncio.Lock()).locked()
             due = run["deadline_at"] <= now
             if recovering:
@@ -244,7 +244,7 @@ class TestHarnessCog(commands.Cog):
     async def harness_status(self, interaction: discord.Interaction):
         if not handler_gate(interaction):
             return await _say(interaction, REFUSAL)
-        run = await db.th_latest_run(interaction.guild_id)
+        run = await db.th_latest_run(interaction.guild_id, self._clone_id)
         if run and run["status"] in th.UNFINISHED:
             left = max(0, int((run["deadline_at"] - datetime.now(timezone.utc)).total_seconds() // 60))
             extra = f" Run #{run['id']} is **{run['status']}**; the dead-man timer restores in ~{left} min."
@@ -279,7 +279,7 @@ class TestHarnessCog(commands.Cog):
             return await _say(interaction, "❌ The snapshot failed its own integrity check, so nothing was started.")
         deadline = datetime.now(timezone.utc) + timedelta(minutes=m)
         report_ch = getattr(getattr(interaction, "channel", None), "id", None) or getattr(interaction, "channel_id", None)
-        run_id = await db.th_create_run(gid, interaction.user.id, json.dumps(snap), snap["hash"], deadline, report_ch)
+        run_id = await db.th_create_run(gid, interaction.user.id, json.dumps(snap), snap["hash"], deadline, report_ch, self._clone_id)
         if run_id is None:
             return await _say(interaction, "❌ A test run is already armed here. Say `stop` to restore it first.")
         stored = await db.th_get_run(run_id)                    # read it back: verified BEFORE anything may run
@@ -343,7 +343,7 @@ class TestHarnessCog(commands.Cog):
 
     # ── phase 4: real channel-delete wave ─────────────────────────────────
     async def _armed_run(self, guild_id):
-        runs = [r for r in await db.th_unfinished_runs(guild_id) if r["status"] == "armed"]
+        runs = [r for r in await db.th_unfinished_runs(guild_id, self._clone_id) if r["status"] == "armed"]
         return runs[0] if runs else None
 
     async def _wave_prompt(self, interaction, kind, count):
@@ -533,16 +533,19 @@ class TestHarnessCog(commands.Cog):
             return await _say(interaction, REFUSAL)
         if not interaction.response.is_done():
             await interaction.response.defer(ephemeral=True)
-        runs = await db.th_unfinished_runs(interaction.guild_id)
+        runs = await db.th_unfinished_runs(interaction.guild_id, self._clone_id)
         if not runs:
+            if await db.th_unfinished_runs(interaction.guild_id):          # another harness bot owns it: never touch it from here
+                return await _say(interaction, "The armed run belongs to the other test bot. Press Stop there.")
             return await _say(interaction, "No test run is armed here, so there is nothing to restore.")
         for run in runs:
             await self._restore_run(run, why=f"stopped by <@{interaction.user.id}>", interaction=interaction)
 
 
 async def setup(bot: commands.Bot):
-    """Deliberately NOT bot.add_cog (see module docstring). Clones never register it."""
-    if getattr(bot, "clone_id", None) is not None:
+    """Deliberately NOT bot.add_cog (see module docstring). Only the one harness bot registers it (the main bot, or the single
+    clone named by config.TEST_CLONE_ID); every other bot returns here, so it has no harness command, timer or panel."""
+    if not th.bot_may_run(getattr(bot, "clone_id", None)):
         return
     from modules.ai_command_guard import register_hidden_cog
     cog = TestHarnessCog(bot)

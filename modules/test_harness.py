@@ -10,7 +10,8 @@ database, so it is trivially unit-testable. Every layer (offer gate, execution g
 Rules enforced here (plan, "Hard rules" 1, 3, 4):
   * ONE server: `config.TEST_GUILD_ID`. 0 / empty / unset = the feature is disabled everywhere.
   * Owner only: the asker must be in `config.DISCORD_CLONE_ADMIN_IDS`.
-  * Main bot only: a clone (clone_id is not None) never runs it.
+  * Harness bots only: the main bot, or -- when `config.TEST_CLONE_IDS` is non-empty -- exactly those clones and nobody else (the main bot
+    then refuses). Every other clone never runs it. Runs are owned by the bot that started them (database.py).
 
 Nothing destructive lives in this phase.
 """
@@ -32,12 +33,27 @@ def test_guild_id() -> int:
     return _int_or_zero(getattr(config, "TEST_GUILD_ID", 0))
 
 
+def test_clone_ids() -> frozenset:
+    """The clones allowed to run the harness (empty = the main bot is the harness bot)."""
+    raw = getattr(config, "TEST_CLONE_IDS", ()) or ()
+    return frozenset(n for n in (_int_or_zero(x) for x in raw) if n > 0)
+
+
+def bot_may_run(clone_id, *, test_clones: Optional[Iterable[int]] = None) -> bool:
+    """Is THIS bot one of the bots the harness may run on? clone_id is None for the main bot."""
+    wanted = (frozenset(n for n in (_int_or_zero(x) for x in test_clones) if n > 0)
+              if test_clones is not None else test_clone_ids())
+    if wanted:
+        return clone_id is not None and _int_or_zero(clone_id) in wanted
+    return clone_id is None
+
+
 def is_enabled() -> bool:
     return test_guild_id() > 0
 
 
 def check_gates(guild_id, user_id, clone_id=None, *, test_guild: Optional[int] = None,
-                admin_ids: Optional[Iterable[int]] = None) -> Optional[str]:
+                admin_ids: Optional[Iterable[int]] = None, test_clones: Optional[Iterable[int]] = None) -> Optional[str]:
     """Return None when allowed, else a short internal reason (never shown to the asker verbatim).
 
     `test_guild` / `admin_ids` exist so tests can inject values; production callers leave them None so the live
@@ -45,8 +61,8 @@ def check_gates(guild_id, user_id, clone_id=None, *, test_guild: Optional[int] =
     configured = _int_or_zero(test_guild) if test_guild is not None else test_guild_id()
     if configured <= 0:
         return "harness disabled (TEST_GUILD_ID unset)"
-    if clone_id is not None:
-        return "clones never run the harness"
+    if not bot_may_run(clone_id, test_clones=test_clones):
+        return "this bot is not the harness bot"
     if guild_id is None or _int_or_zero(guild_id) != configured:
         return "not the test guild"
     admins = set(admin_ids) if admin_ids is not None else set(getattr(config, "DISCORD_CLONE_ADMIN_IDS", ()) or ())
@@ -74,14 +90,14 @@ def clamp_minutes(value) -> int:
     return min(n, DEADMAN_MAX_MINUTES)
 
 
-def check_guild(guild_id, clone_id=None, *, test_guild: Optional[int] = None) -> Optional[str]:
-    """Gate for code that has no interaction (the dead-man timer, restart recovery): enabled, main bot, test guild.
+def check_guild(guild_id, clone_id=None, *, test_guild: Optional[int] = None, test_clones: Optional[Iterable[int]] = None) -> Optional[str]:
+    """Gate for code that has no interaction (the dead-man timer, restart recovery): enabled, the harness bot, test guild.
     There is no asker to check; these paths only ever restore a run the owner already armed."""
     configured = _int_or_zero(test_guild) if test_guild is not None else test_guild_id()
     if configured <= 0:
         return "harness disabled (TEST_GUILD_ID unset)"
-    if clone_id is not None:
-        return "clones never run the harness"
+    if not bot_may_run(clone_id, test_clones=test_clones):
+        return "this bot is not the harness bot"
     if guild_id is None or _int_or_zero(guild_id) != configured:
         return "not the test guild"
     return None
