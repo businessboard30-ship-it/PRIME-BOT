@@ -76,6 +76,60 @@ def _slim(result: dict) -> dict:
     return {k: v for k, v in result.items() if k != "idmap"}
 
 
+class HarnessPanel(discord.ui.LayoutView):
+    """Button-only panel (opened by one word, see cogs/word_router.py). Every press goes through the same gated, confirmed
+    handlers as the AI path; only the person who opened it can press."""
+
+    def __init__(self, cog, owner_id: int):
+        super().__init__(timeout=300)
+        self.cog, self.owner_id = cog, owner_id
+        self.message = None
+        box = discord.ui.Container(accent_colour=discord.Color.red())
+        rows = (
+            (("Run all", "🧪", discord.ButtonStyle.danger, cog.harness_run_all),),
+            (("Snapshot", "📸", discord.ButtonStyle.secondary, cog.harness_snapshot.callback),
+             ("Channel wave", "💥", discord.ButtonStyle.secondary, cog.harness_wave.callback),
+             ("Role wave", "🎭", discord.ButtonStyle.secondary, cog.harness_rolewave.callback)),
+            (("Simulate", "🧫", discord.ButtonStyle.secondary, cog.harness_simulate.callback),
+             ("Status", "📋", discord.ButtonStyle.secondary, cog.harness_status.callback),
+             ("Stop", "🛑", discord.ButtonStyle.danger, cog.harness_stop.callback)),
+        )
+        for row_spec in rows:
+            row = discord.ui.ActionRow()
+            for label, emoji, style, fn in row_spec:
+                b = discord.ui.Button(label=label, emoji=emoji, style=style)
+                b.callback = self._press(fn)
+                row.add_item(b)
+            box.add_item(row)
+        self.add_item(box)
+
+    def _press(self, fn):
+        async def cb(i: discord.Interaction):
+            if not handler_gate(i):
+                return await _say(i, REFUSAL)
+            try:
+                # bound method (run all) or an unbound command callback that wants the cog first
+                await (fn(i) if getattr(fn, "__self__", None) is not None else fn(self.cog, i))
+            except Exception:
+                logger.exception("[test_harness] panel button failed")
+                await _say(i, "Something went wrong.")
+        return cb
+
+    async def interaction_check(self, i: discord.Interaction) -> bool:
+        if i.user.id != self.owner_id:
+            await _say(i, "Not yours.")
+            return False
+        return True
+
+    async def on_timeout(self):
+        if self.message is not None:
+            try:
+                await self.message.delete()
+            except discord.HTTPException:
+                pass
+
+
+
 class TestHarnessCog(commands.Cog):
     __test__ = False  # not a pytest class
 
@@ -450,6 +504,29 @@ class TestHarnessCog(commands.Cog):
             await self.ai_rolewave(ci, count=count)
         await _say(interaction, text, view=ConfirmActionView(interaction.user.id, go, confirm_label="Run wave", danger=True))
 
+    async def harness_run_all(self, interaction: discord.Interaction):
+        """One Confirm, then: snapshot -> channel wave (restores) -> snapshot -> role wave (restores). Stops at the first
+        step that does not leave an armed snapshot behind, so nothing destructive ever runs without one."""
+        if not handler_gate(interaction):
+            return await _say(interaction, REFUSAL)
+        ok, text = await self.ai_snapshot_prompt(interaction)
+        if not ok:
+            return await _say(interaction, text)
+        from discord_bot.cogs._views_moderation import ConfirmActionView
+        n_c, n_r = scen.WAVE_DEFAULT, scen.WAVE_DEFAULT
+        plan = (f"🧪 Full test in this server: snapshot, create+delete **{n_c}** throw-away channels, restore, then snapshot, "
+                f"create+delete **{n_r}** throw-away roles, restore. Reports are posted here. Confirm?")
+
+        async def go(ci):
+            for kind, n in (("channel", n_c), ("role", n_r)):
+                if not handler_gate(ci):
+                    return await _say(ci, REFUSAL)
+                await self.ai_snapshot(ci)
+                if await self._armed_run(ci.guild_id) is None:
+                    return await _say(ci, "No armed snapshot, so I stopped before anything destructive.")
+                await self._wave(ci, kind, n)
+        await _say(interaction, plan, view=ConfirmActionView(interaction.user.id, go, confirm_label="Run all", danger=True))
+
     @harness_g.command(name="stop", description="Kill switch: stop the run and restore this test server now")
     async def harness_stop(self, interaction: discord.Interaction):
         if not handler_gate(interaction):
@@ -469,6 +546,7 @@ async def setup(bot: commands.Bot):
         return
     from modules.ai_command_guard import register_hidden_cog
     cog = TestHarnessCog(bot)
+    bot.test_harness_cog = cog                  # the one-word router opens the harness panel through this
     n = register_hidden_cog(cog)
     if not cog._deadman.is_running():
         cog._deadman.start()
