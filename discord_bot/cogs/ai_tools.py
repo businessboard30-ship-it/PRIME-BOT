@@ -1962,6 +1962,10 @@ class AIToolsCog(commands.Cog):
         BOT_RULES / trim_reply in modules/ai_features.py)."""
         if message.author.bot:
             return
+        get_cog = getattr(self.bot, "get_cog", None)
+        router = get_cog("WordRouterCog") if get_cog else None      # one-word panels own their message: no chat reply on top
+        if router is not None and router.claims(message):
+            return
         content = (message.content or "").strip()
         if (not content and not message.attachments) or len(content) > MAX_AICHAT_CHARS or content.startswith(("!", "/")):
             return
