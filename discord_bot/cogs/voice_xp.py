@@ -195,6 +195,7 @@ class VoiceXPCog(GuildOnlyCog):
                 announce_ch = None
                 if leveling_cog:
                     announce_ch = await leveling_cog._ensure_announce_channel(guild, lv_config, clone_id=clone_id)
+                    await leveling_cog._stamp_levelup(guild_id, clone_id)
                     if announce_ch is None and member.voice and member.voice.channel:
                         announce_ch = member.voice.channel
 

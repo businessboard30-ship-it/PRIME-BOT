@@ -160,7 +160,8 @@ _pool_loop = None  # the asyncio event loop _pool's connections belong to
 # Do NOT bump it for unrelated changes — an unnecessary bump forces every
 # bot/clone's next cold start to run the full DDL pass again, which is
 # exactly the schema-reload storm this version check exists to avoid.
-SCHEMA_VERSION = "146"
+SCHEMA_VERSION = "147"
+# "146" -> "147" adds discord_leveling_config.leaderboard_last_levelup_at (when someone last levelled up; the daily XP leaderboard post only fires if it is newer than the last post). ADD COLUMN IF NOT EXISTS only.
 # "145" -> "146" adds test_harness_runs.clone_id (which bot owns a run; NULL = the main bot) so two harness bots never touch each other's run. ADD COLUMN IF NOT EXISTS only. Bump-or-it-never-runs trap: tests/unit/test_schema_version_guard.py
 # "144" -> "145" adds discord_antinuke_config (anti-nuke v1: per-server opt-in, threshold/window/action). CREATE TABLE / CREATE UNIQUE INDEX IF NOT EXISTS only. Bump-or-it-never-runs trap: tests/unit/test_schema_version_guard.py
 # "142" -> "143" adds 098_premium_trial.sql (discord_guild_subscriptions.is_trial / trial_started_at: one free Premium trial per server). ALTER TABLE ADD COLUMN IF NOT EXISTS only. Bump-or-it-never-runs trap: tests/unit/test_schema_version_guard.py
@@ -2525,6 +2526,11 @@ class Database:
         )
         await conn.execute(
             "ALTER TABLE discord_leveling_config ADD COLUMN IF NOT EXISTS leaderboard_last_posted_at TIMESTAMPTZ"
+        )
+        # leaderboard_last_levelup_at: stamped on every level-up (text and voice). The daily leaderboard post is skipped
+        # unless this is newer than leaderboard_last_posted_at, so a server where nobody levels up gets no repeat posts.
+        await conn.execute(
+            "ALTER TABLE discord_leveling_config ADD COLUMN IF NOT EXISTS leaderboard_last_levelup_at TIMESTAMPTZ"
         )
 
         # --- Leaderboard server links (feature expansion) -------------------
@@ -13688,6 +13694,7 @@ class Database:
                     "xp_rate": "default", "card_style": "card",
                     "wizard_channel_id": None, "wizard_message_id": None, "wizard_invoker_id": None,
                     "leaderboard_autopost_channel_id": None, "leaderboard_last_posted_at": None,
+                    "leaderboard_last_levelup_at": None,
                 }
 
         self._leveling_config_cache[cache_key] = (d, time.monotonic())
@@ -13780,9 +13787,13 @@ class Database:
                 WHERE COALESCE(leaderboard_autopost_channel_id, 0) != -1
                 AND COALESCE(NULLIF(leaderboard_autopost_channel_id, -1), announce_channel_id) IS NOT NULL
                 AND COALESCE(clone_id, -1) = COALESCE($1, -1)
+                -- Only when someone has levelled up since the last post (or since ever, if it never posted):
+                -- a server where nobody levels up for days or weeks gets no repeat posts until someone does.
+                AND leaderboard_last_levelup_at IS NOT NULL
                 AND (
                     leaderboard_last_posted_at IS NULL
-                    OR NOW() - leaderboard_last_posted_at >= INTERVAL '24 hours'
+                    OR (leaderboard_last_levelup_at > leaderboard_last_posted_at
+                        AND NOW() - leaderboard_last_posted_at >= INTERVAL '24 hours')
                 )
                 ORDER BY leaderboard_last_posted_at NULLS FIRST
                 LIMIT $2
@@ -13790,6 +13801,20 @@ class Database:
                 clone_id, limit,
             )
             return [dict(r) for r in rows]
+
+    async def mark_leaderboard_levelup(self, guild_id: int, clone_id: Optional[int]) -> None:
+        """Record that someone just levelled up here, which is what makes the daily leaderboard post due again. One
+        cheap UPDATE per level-up (not per message). Deliberately leaves the leveling config cache alone: nothing
+        reads this column through it, and dropping it on every level-up would force a re-read of the config."""
+        pool = await get_pool()
+        async with pool.acquire() as conn:
+            await conn.execute(
+                """
+                UPDATE discord_leveling_config SET leaderboard_last_levelup_at = NOW()
+                WHERE guild_id = $1 AND COALESCE(clone_id, -1) = COALESCE($2, -1)
+                """,
+                guild_id, clone_id,
+            )
 
     async def mark_leaderboard_posted(self, guild_id: int, clone_id: Optional[int]) -> None:
         pool = await get_pool()

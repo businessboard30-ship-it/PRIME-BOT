@@ -169,6 +169,14 @@ class LevelingCog(GuildOnlyCog):
         self._leaderboard_autopost_loop.cancel()
         self._godhood_deadline_loop.cancel()
 
+    async def _stamp_levelup(self, guild_id: int, clone_id=None) -> None:
+        """Tell the daily leaderboard post that someone levelled up (it stays quiet while nobody does). Never allowed
+        to break the level-up itself."""
+        try:
+            await db.mark_leaderboard_levelup(guild_id, clone_id)
+        except Exception:
+            logger.debug("[leaderboard-autopost] couldn't stamp the level-up for guild %s", guild_id, exc_info=True)
+
     async def _ensure_announce_channel(self, guild: discord.Guild, config: dict, clone_id=None):
         """Serialises channel creation per (guild, clone) so several members
         levelling up at the same moment can't each create their own
@@ -363,6 +371,7 @@ class LevelingCog(GuildOnlyCog):
 
         if new_level > old_level and isinstance(message.author, discord.Member):
             announce_channel = await self._ensure_announce_channel(message.guild, config, clone_id=clone_id)
+            await self._stamp_levelup(message.guild.id, clone_id)
             if announce_channel is None:
                 announce_channel = message.channel
             card_style = config.get("card_style", "card")

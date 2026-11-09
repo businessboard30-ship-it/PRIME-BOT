@@ -105,7 +105,7 @@ DASHBOARD_BUTTON_MARKER = "\x00DASH_BTN\x00"
 CAT_TOKEN = "[[CAT]]"
 BOT_NAME = "Maxwell"  # what the AI says when asked its name
 
-AI_VISION_MODEL = os.getenv("AI_VISION_MODEL", "").strip() or "qwen/qwen3.6-27b"  # reads attached images (Groq retired llama-4-scout on 2026-07-17; set AI_VISION_MODEL to override)
+AI_VISION_MODEL = os.getenv("AI_VISION_MODEL", "").strip() or "qwen/qwen3.8-27b"  # reads attached images (Groq retired llama-4-scout on 2026-07-17 and qwen3.6-27b since; set AI_VISION_MODEL to override)
 AI_CHAT_MODEL = "openai/gpt-oss-120b"  # Groq's current recommended general-purpose model
 # Shared rules appended to every prompt. Length is enforced three ways —
 # this prompt, a low max_completion_tokens, and trim_reply() — because a
