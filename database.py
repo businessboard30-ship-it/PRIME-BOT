@@ -8721,6 +8721,9 @@ class Database:
     # One in-flight DB load per (guild, clone): concurrent messages share it instead of each queueing for a pool connection.
     _automod_flights: Dict[tuple, "_AutomodFlight"] = {}
     _automod_stats: Dict[str, float] = {}
+    # Keys invalidated while a startup prewarm query is running (None when no prewarm is active), so the prewarm
+    # can never put pre-write values back in the cache.
+    _automod_prewarm_dirty: Optional[set] = None
 
     # Same read-cache pattern as _automod_config_cache above, applied to
     # leveling config: on_message in discord_bot/cogs/leveling.py calls
@@ -8757,9 +8760,57 @@ class Database:
         changes discord_automod_config, including raw SQL outside set_automod_config."""
         key = (guild_id, clone_id)
         self._automod_config_cache.pop(key, None)
+        if self._automod_prewarm_dirty is not None:
+            self._automod_prewarm_dirty.add(key)
         flight = self._automod_flights.get(key)
         if flight is not None:
             flight.invalidated = True
+
+    async def prewarm_automod_cache(self, guild_ids, clone_id: Optional[int] = None) -> int:
+        """Load the automod config of many guilds with ONE query and put it in the cache.
+
+        Without this, the first message in each guild after a (re)start is a cache miss, and every miss takes its own
+        pool connection: with dozens of guilds waking up at once that is dozens of connects, each logged as a slow
+        fetch (pool wait+connect dominating, query ~0.18s). Call once from on_ready. Entries already cached, loading
+        or written meanwhile are left alone. Returns the number of entries cached. Never raises: on any failure the
+        normal per-guild miss path simply handles those guilds as before."""
+        ids = list({int(g) for g in guild_ids})
+        if not ids:
+            return 0
+        self._automod_prewarm_dirty = dirty = set()
+        try:
+            t0 = time.monotonic()
+            pool = await get_pool()
+            async with pool.acquire() as conn:
+                rows = await conn.fetch(
+                    "SELECT * FROM discord_automod_config WHERE guild_id = ANY($1::bigint[]) "
+                    "AND clone_id IS NOT DISTINCT FROM $2",
+                    ids, clone_id,
+                )
+            by_guild = {}
+            for row in rows:
+                d = dict(row)
+                d["banned_words"] = json.loads(d["banned_words"]) if isinstance(d["banned_words"], str) else d["banned_words"]
+                by_guild[d["guild_id"]] = d
+            now = time.monotonic()
+            loaded = 0
+            for gid in ids:
+                key = (gid, clone_id)
+                if key in dirty or key in self._automod_config_cache or key in self._automod_flights:
+                    continue
+                d = by_guild.get(gid) or {"guild_id": gid, "clone_id": clone_id, **self._AUTOMOD_DEFAULTS}
+                self._automod_config_cache[key] = (d, now)
+                loaded += 1
+            while len(self._automod_config_cache) > self._AUTOMOD_CACHE_MAX_ENTRIES:
+                self._automod_config_cache.popitem(last=False)
+            logger.info("[automod-cache] prewarmed %d/%d guilds clone=%s in %.3fs",
+                        loaded, len(ids), clone_id, time.monotonic() - t0)
+            return loaded
+        except Exception:
+            logger.warning("[automod-cache] prewarm failed clone=%s; guilds will load on first use", clone_id, exc_info=True)
+            return 0
+        finally:
+            self._automod_prewarm_dirty = None
 
     async def _automod_fetch_row(self, key: tuple, reason: str) -> Dict:
         guild_id, clone_id = key
