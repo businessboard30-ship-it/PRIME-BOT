@@ -190,3 +190,8 @@
 .developer-guides .archive-open{font-size:9px}
 @media(max-width:900px){.developer-guides>.guide-grid{grid-template-columns:repeat(2,minmax(0,1fr))}}
 @media(max-width:560px){.developer-guides{padding-inline:16px}.developer-guides>.guide-grid{grid-template-columns:1fr}.developer-guides .archive-card{min-height:0}}
+
+
+/* A calmer, shorter homepage hero with less oversized display type. */
+@media(min-width:901px){.hero.editorial-hero{min-height:0;padding-top:48px;padding-bottom:44px;gap:42px}.hero.editorial-hero h1{font-size:clamp(48px,5.5vw,76px);letter-spacing:-4.5px;line-height:.98;margin:18px 0 18px}.hero.editorial-hero .hero-art{height:340px}}
+@media(min-width:901px) and (max-width:1100px){.hero.editorial-hero{gap:28px}.hero.editorial-hero .hero-art{height:310px}}
