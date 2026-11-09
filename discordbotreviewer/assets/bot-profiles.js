@@ -30,7 +30,8 @@ const bots={
  "tempvoice":{id:"762217899355013120"},
  "birthdaybot":{id:"656621136808902656"},
  "amaribot":{id:"339254240012664832"},
- "groovy":{id:"234395307759108106"}
+ "groovy":{id:"234395307759108106"},
+ "miyu":{id:"1376962306726039572"}
 };
 window.DBR_BOT_PROFILES=bots;
 const esc=s=>String(s).replace(/[&<>"']/g,c=>({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]));
