@@ -33,7 +33,10 @@ const bots={
  "groovy":{id:"234395307759108106"},
  "miyu":{id:"1376962306726039572"},
  "betty":{id:"884800931819048980"},
- "pixelmint":{id:"1500754402741588019"}
+ "pixelmint":{id:"1500754402741588019"},
+ "quill-and-ink":{id:"1535187211958489208",avatar:"https://prismusercontent.com/discord/avatars/1535187211958489208/ea611baa321e7e924cc3bfa99a5efe25.png?size=512"},
+ "petto":{id:"1489326875498119168"},
+ "flo":{id:"1466183599635042344",avatar:"https://prismusercontent.com/discord/avatars/1466183599635042344/42e87e6749f9f72b3083aa558c07ac6e.png?size=512"}
 };
 window.DBR_BOT_PROFILES=bots;
 const esc=s=>String(s).replace(/[&<>"']/g,c=>({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]));
@@ -42,13 +45,14 @@ document.querySelectorAll(".archive-card").forEach(card=>{
  const name=card.querySelector("h3")?.textContent?.trim()||"Bot";
  const data={revenue:"Not publicly disclosed",value:"Not reliably estimable",evidence:"No verified financial disclosure found. Popularity or server count alone cannot establish revenue or company value.",confidence:"Not enough public financial data",...(bots[slug]||{})};
  const img=document.createElement("img");img.className="archive-bot-avatar";img.alt=name+" official Discord bot avatar";img.loading="lazy";img.decoding="async";
- if(data.id){
+ if(data.avatar){img.src=data.avatar;img.onload=()=>img.classList.add("is-loaded");card.prepend(img);}
+ else if(data.id){
    fetch("https://japi.rest/discord/v1/application/"+data.id).then(r=>{if(!r.ok)throw new Error("avatar lookup failed");return r.json()}).then(payload=>{
      const profile=payload.data||{};
      const url=profile.application?.iconURL||profile.bot?.avatarURL||null;
      if(!url)throw new Error("No custom Discord avatar is published");
      img.src=url;img.onload=()=>img.classList.add("is-loaded");card.prepend(img);
-   }).catch(()=>img.remove());
+   }).catch(()=>{img.remove();const fallback=document.createElement("span");fallback.className="archive-bot-avatar archive-avatar-fallback";fallback.textContent=name.trim().charAt(0).toUpperCase();fallback.setAttribute("aria-label",name+" avatar unavailable");card.prepend(fallback);});
  }
  const financial=document.createElement("div");financial.className="bot-financials";
  financial.innerHTML='<div><span>Server reach</span><strong>'+esc(data.servers||"Not verified")+'</strong></div><div><span>Monthly revenue</span><strong>'+esc(data.revenue)+'</strong></div><div><span>Estimated value</span><strong>'+esc(data.value)+'</strong></div><div class="bot-estimate-note">'+esc(data.confidence)+'. '+esc(data.evidence)+'</div>';card.append(financial);
