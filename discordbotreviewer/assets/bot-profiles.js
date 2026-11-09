@@ -31,7 +31,9 @@ const bots={
  "birthdaybot":{id:"656621136808902656"},
  "amaribot":{id:"339254240012664832"},
  "groovy":{id:"234395307759108106"},
- "miyu":{id:"1376962306726039572"}
+ "miyu":{id:"1376962306726039572"},
+ "betty":{id:"884800931819048980"},
+ "pixelmint":{id:"1500754402741588019"}
 };
 window.DBR_BOT_PROFILES=bots;
 const esc=s=>String(s).replace(/[&<>"']/g,c=>({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]));
