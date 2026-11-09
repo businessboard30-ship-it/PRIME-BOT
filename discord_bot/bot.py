@@ -618,6 +618,11 @@ class AnimeBotDiscord(commands.Bot):
         instance_id = secrets.token_hex(4)
         logger.info(f"Logged in as {self.user} (id={self.user.id}) — {label} — instance={instance_id} pid={os.getpid()}")
         logger.info(f"In {len(self.guilds)} guild(s)")
+        # One bulk query warms the automod cache for every guild, instead of one slow pool connect per guild on its first
+        # message. Background task: never delays startup.
+        if getattr(self, "_automod_prewarm_task", None) is None:
+            self._automod_prewarm_task = asyncio.create_task(
+                db.prewarm_automod_cache([g.id for g in self.guilds], self.clone_id))
         if self.clone_id is not None:
             await db.touch_discord_clone_heartbeat(self.clone_id)
             # Publish the clone's public avatar for the About page showcase.
