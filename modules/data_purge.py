@@ -136,6 +136,11 @@ async def purge_guild(guild_id: int, clone_id: Optional[int] = None) -> dict:
                 continue
             if n:
                 removed[table] = n
+    try:  # the DELETE above bypasses set_automod_config, so drop any cached copy of the config we just removed
+        from database import db
+        db.invalidate_automod_config(guild_id, clone_id)
+    except Exception:
+        logger.debug("[purge] could not invalidate the automod config cache for guild %s", guild_id, exc_info=True)
     logger.info("[purge] guild %s clone %s: cleared %s rows in %s tables%s", guild_id, clone_id,
                 sum(removed.values()), len(removed), f" (failed: {failed})" if failed else "")
     return {"removed": removed, "failed": failed}
