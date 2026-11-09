@@ -41,6 +41,7 @@ const bots={
 window.DBR_BOT_PROFILES=bots;
 const esc=s=>String(s).replace(/[&<>"']/g,c=>({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]));
 document.querySelectorAll(".archive-card").forEach(card=>{
+ if(card.closest(".guide-grid"))return;
  const slug=(new URL(card.href,location.href).searchParams.get("article")||"").toLowerCase();
  const name=card.querySelector("h3")?.textContent?.trim()||"Bot";
  const data={revenue:"Not publicly disclosed",value:"Not reliably estimable",evidence:"No verified financial disclosure found. Popularity or server count alone cannot establish revenue or company value.",confidence:"Not enough public financial data",...(bots[slug]||{})};
