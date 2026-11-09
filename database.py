@@ -12,6 +12,7 @@ import random
 import secrets
 import sys
 import time
+from collections import OrderedDict
 from datetime import datetime, timedelta, timezone
 from typing import Optional, List, Dict, Any, Tuple
 
@@ -554,6 +555,16 @@ async def get_pool():
         )
         _pool_loop = current_loop
     return _pool
+
+
+class _AutomodFlight:
+    """One in-flight automod-config DB load. `invalidated` is set if the config is written while it runs."""
+    __slots__ = ("loop", "task", "invalidated")
+
+    def __init__(self, loop):
+        self.loop = loop
+        self.task = None
+        self.invalidated = False
 
 
 _ANY_CLONE = object()   # th_* run queries: "any bot's runs" (None means the main bot's, an int means that clone's)
@@ -7989,6 +8000,8 @@ class Database:
                         f"UPDATE {table} SET clone_id = $3 WHERE guild_id = $1 AND clone_id = $2",
                         guild_id, old_clone_id, new_clone_id
                     )
+            self.invalidate_automod_config(guild_id, old_clone_id)
+            self.invalidate_automod_config(guild_id, new_clone_id)
             return old_clone_id
 
     async def relink_discord_clone(self, clone_id: int, owner_id: int, bot_token_encrypted: str,
@@ -8690,7 +8703,18 @@ class Database:
     # (e.g. a direct SQL migration); normal admin edits invalidate
     # immediately via set_automod_config below.
     _AUTOMOD_CACHE_TTL_SECONDS = 300
-    _automod_config_cache: Dict[tuple, tuple] = {}  # (guild_id, clone_id) -> (config_dict, fetched_at_monotonic)
+    # Bounded (LRU) so guilds that were removed / clones that were retired can't pin memory forever.
+    _AUTOMOD_CACHE_MAX_ENTRIES = 4096
+    # After a failed refresh the stale copy is kept and the DB is not retried for this long (no hammering during an outage).
+    _AUTOMOD_FAILURE_RETRY_SECONDS = 5.0
+    # A single DB fetch slower than this is logged at WARNING with the acquire/query split; the rest is DEBUG.
+    _AUTOMOD_SLOW_FETCH_SECONDS = 0.25
+    # One INFO summary line (hit/miss/coalesced counts and fetch timings) at most this often, emitted from the fetch path.
+    _AUTOMOD_STATS_INTERVAL_SECONDS = 300.0
+    _automod_config_cache: "OrderedDict[tuple, tuple]" = OrderedDict()  # (guild_id, clone_id) -> (config_dict, fetched_at_monotonic)
+    # One in-flight DB load per (guild, clone): concurrent messages share it instead of each queueing for a pool connection.
+    _automod_flights: Dict[tuple, "_AutomodFlight"] = {}
+    _automod_stats: Dict[str, float] = {}
 
     # Same read-cache pattern as _automod_config_cache above, applied to
     # leveling config: on_message in discord_bot/cogs/leveling.py calls
@@ -8706,28 +8730,142 @@ class Database:
     _AUTORESPONDERS_CACHE_TTL_SECONDS = 300
     _autoresponders_cache: Dict[tuple, tuple] = {}  # (guild_id, clone_id) -> (list_of_dicts, fetched_at_monotonic)
 
-    async def get_automod_config(self, guild_id: int, clone_id: Optional[int] = None, fresh: bool = False) -> Dict:
-        cache_key = (guild_id, clone_id)
-        cached = None if fresh else self._automod_config_cache.get(cache_key)
-        if cached is not None:
-            config, fetched_at = cached
-            if time.monotonic() - fetched_at < self._AUTOMOD_CACHE_TTL_SECONDS:
-                return config
+    @staticmethod
+    def _automod_copy(config: Dict) -> Dict:
+        """Callers get their own copy so mutating a returned config can never corrupt the shared cached one."""
+        c = dict(config)
+        if isinstance(c.get("banned_words"), list):
+            c["banned_words"] = list(c["banned_words"])
+        return c
 
+    def _automod_stat(self, name: str, n: float = 1) -> None:
+        st = self._automod_stats
+        if not st:
+            st.update(hit=0, stale=0, miss=0, coalesced=0, fetches=0, errors=0, fetch_total_s=0.0, fetch_max_s=0.0,
+                      since=time.monotonic())
+        st[name] = st.get(name, 0) + n
+
+    def invalidate_automod_config(self, guild_id: int, clone_id: Optional[int] = None) -> None:
+        """Drop the cached config for (guild, clone) AND mark any load already in flight as stale, so a read that began
+        before a write can't land after it and put the old values back in the cache. Call this after anything that
+        changes discord_automod_config, including raw SQL outside set_automod_config."""
+        key = (guild_id, clone_id)
+        self._automod_config_cache.pop(key, None)
+        flight = self._automod_flights.get(key)
+        if flight is not None:
+            flight.invalidated = True
+
+    async def _automod_fetch_row(self, key: tuple, reason: str) -> Dict:
+        guild_id, clone_id = key
+        t0 = time.monotonic()
         pool = await get_pool()
         async with pool.acquire() as conn:
+            t1 = time.monotonic()
             row = await conn.fetchrow(
                 "SELECT * FROM discord_automod_config WHERE guild_id = $1 AND clone_id IS NOT DISTINCT FROM $2",
                 guild_id, clone_id
             )
-            if row:
-                d = dict(row)
-                d["banned_words"] = json.loads(d["banned_words"]) if isinstance(d["banned_words"], str) else d["banned_words"]
-            else:
-                d = {"guild_id": guild_id, "clone_id": clone_id, **self._AUTOMOD_DEFAULTS}
-
-        self._automod_config_cache[cache_key] = (d, time.monotonic())
+            t2 = time.monotonic()
+        if row:
+            d = dict(row)
+            d["banned_words"] = json.loads(d["banned_words"]) if isinstance(d["banned_words"], str) else d["banned_words"]
+        else:
+            d = {"guild_id": guild_id, "clone_id": clone_id, **self._AUTOMOD_DEFAULTS}
+        total = t2 - t0
+        self._automod_stat("fetches")
+        self._automod_stat("fetch_total_s", total)
+        if total > self._automod_stats["fetch_max_s"]:
+            self._automod_stats["fetch_max_s"] = total
+        args = (guild_id, clone_id, reason, total, t1 - t0, t2 - t1)
+        if total >= self._AUTOMOD_SLOW_FETCH_SECONDS:
+            logger.warning("[automod-cache] slow DB fetch guild=%s clone=%s reason=%s total=%.3fs "
+                           "(pool wait+connect=%.3fs, query=%.3fs)", *args[:4], args[4], args[5])
+        else:
+            logger.debug("[automod-cache] DB fetch guild=%s clone=%s reason=%s total=%.3fs "
+                         "(pool wait+connect=%.3fs, query=%.3fs)", *args[:4], args[4], args[5])
+        self._automod_log_stats()
         return d
+
+    def _automod_log_stats(self) -> None:
+        st = self._automod_stats
+        now = time.monotonic()
+        if now - st.get("since", now) < self._AUTOMOD_STATS_INTERVAL_SECONDS:
+            return
+        n = st.get("fetches", 0)
+        lookups = st["hit"] + st["stale"] + st["miss"] + st["coalesced"]
+        logger.info("[automod-cache] last %.0fs: %d lookups (hit=%d stale-served=%d miss=%d coalesced=%d), "
+                    "%d DB fetches avg=%.0fms max=%.0fms, %d errors, %d cached entries",
+                    now - st["since"], lookups, st["hit"], st["stale"], st["miss"], st["coalesced"], n,
+                    (st["fetch_total_s"] / n * 1000) if n else 0.0, st["fetch_max_s"] * 1000, st["errors"],
+                    len(self._automod_config_cache))
+        st.clear()
+
+    async def _automod_load(self, key: tuple, flight: "_AutomodFlight", reason: str) -> Dict:
+        try:
+            d = await self._automod_fetch_row(key, reason)
+        except Exception:
+            self._automod_stat("errors")
+            entry = self._automod_config_cache.get(key)
+            if entry is None:
+                raise           # nothing safe to fall back on (never serve a copy that was invalidated by a write)
+            logger.warning("[automod-cache] DB fetch failed for guild=%s clone=%s; serving the last known config "
+                           "and retrying in %.0fs", key[0], key[1], self._AUTOMOD_FAILURE_RETRY_SECONDS, exc_info=True)
+            self._automod_config_cache[key] = (
+                entry[0], time.monotonic() - self._AUTOMOD_CACHE_TTL_SECONDS + self._AUTOMOD_FAILURE_RETRY_SECONDS)
+            return entry[0]
+        if not flight.invalidated:
+            self._automod_config_cache[key] = (d, time.monotonic())
+            self._automod_config_cache.move_to_end(key)
+            while len(self._automod_config_cache) > self._AUTOMOD_CACHE_MAX_ENTRIES:
+                self._automod_config_cache.popitem(last=False)
+        return d
+
+    def _automod_flight(self, key: tuple, reason: str) -> "_AutomodFlight":
+        loop = asyncio.get_running_loop()
+        flight = self._automod_flights.get(key)
+        if flight is not None and not flight.invalidated and flight.loop is loop and not flight.task.done():
+            self._automod_stat("coalesced")
+            return flight
+        flight = _AutomodFlight(loop)
+        flight.task = loop.create_task(self._automod_load(key, flight, reason))
+        self._automod_flights[key] = flight
+
+        def _done(t: "asyncio.Task") -> None:
+            if self._automod_flights.get(key) is flight:
+                del self._automod_flights[key]
+            if not t.cancelled():
+                t.exception()    # mark retrieved: a failed background refresh is already logged, no "never retrieved" noise
+        flight.task.add_done_callback(_done)
+        return flight
+
+    async def get_automod_config(self, guild_id: int, clone_id: Optional[int] = None, fresh: bool = False) -> Dict:
+        """Per-guild automod config, served from memory.
+
+        - hit: returned straight from the cache (no DB, no await on I/O).
+        - expired entry: the last known copy is returned immediately and ONE background refresh runs, so no message
+          ever waits on the database just because the 5-minute TTL ran out. (Edits made through this process never
+          wait for the TTL: set_automod_config / invalidate_automod_config drop the entry at once.)
+        - miss: one DB load per (guild, clone), shared by every message that arrives meanwhile.
+        - DB failure: the last known config keeps being used (retry after a few seconds); with nothing cached the error
+          propagates exactly as before.
+        fresh=True bypasses the cache and any shared load (used by set_automod_config's read-modify-write)."""
+        key = (guild_id, clone_id)
+        if fresh:
+            return await self._automod_fetch_row(key, "fresh")
+        entry = self._automod_config_cache.get(key)
+        if entry is not None:
+            config, fetched_at = entry
+            if time.monotonic() - fetched_at < self._AUTOMOD_CACHE_TTL_SECONDS:
+                self._automod_stat("hit")
+            else:
+                self._automod_stat("stale")
+                self._automod_flight(key, "refresh")
+            self._automod_config_cache.move_to_end(key)
+            return self._automod_copy(config)
+        self._automod_stat("miss")
+        flight = self._automod_flight(key, "miss")
+        # shield: one caller being cancelled (message handler torn down) must not cancel the load the others share
+        return self._automod_copy(await asyncio.shield(flight.task))
 
     async def set_automod_config(self, guild_id: int, clone_id: Optional[int] = None, **fields) -> None:
         """fields may include any key from _AUTOMOD_DEFAULTS. Upserts, so the
@@ -8743,54 +8881,60 @@ class Database:
         # bot/clone process has its own) could put old values back, e.g. undo a "Don't ask again" on the reminders.
         current = await self.get_automod_config(guild_id, clone_id, fresh=True)
         merged = {**current, **fields}
-        pool = await get_pool()
-        async with pool.acquire() as conn:
-            await conn.execute(
-                """
-                INSERT INTO discord_automod_config
-                    (guild_id, clone_id, action, timeout_minutes, log_channel_id,
-                     word_filter_enabled, banned_words, anti_invite_enabled,
-                     anti_mention_enabled, anti_mention_threshold,
-                     spam_enabled, spam_flood_threshold, spam_flood_window_seconds,
-                     min_account_age_hours, log_channel_auto_created,
-                     log_channel_notice_count, log_channel_last_notice_at,
-                     wordfilter_notice_count, wordfilter_last_notice_at,
-                     wizard_channel_id, wizard_message_id, wizard_invoker_id,
-                     log_server_enabled, log_channels_enabled, log_roles_enabled,
-                     log_members_enabled, log_moderation_enabled, log_voice_enabled,
-                     log_invites_enabled, modlog_wizard_channel_id, modlog_wizard_message_id,
-                     modlog_wizard_invoker_id, updated_at)
-                VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19,
-                        $20, $21, $22, $23, $24, $25, $26, $27, $28, $29, $30, $31, $32, NOW())
-                ON CONFLICT (guild_id, (COALESCE(clone_id, -1))) DO UPDATE SET
-                    action = $3, timeout_minutes = $4, log_channel_id = $5,
-                    word_filter_enabled = $6, banned_words = $7, anti_invite_enabled = $8,
-                    anti_mention_enabled = $9, anti_mention_threshold = $10,
-                    spam_enabled = $11, spam_flood_threshold = $12, spam_flood_window_seconds = $13,
-                    min_account_age_hours = $14, log_channel_auto_created = $15,
-                    log_channel_notice_count = $16, log_channel_last_notice_at = $17,
-                    wordfilter_notice_count = $18, wordfilter_last_notice_at = $19,
-                    wizard_channel_id = $20, wizard_message_id = $21, wizard_invoker_id = $22,
-                    log_server_enabled = $23, log_channels_enabled = $24, log_roles_enabled = $25,
-                    log_members_enabled = $26, log_moderation_enabled = $27, log_voice_enabled = $28,
-                    log_invites_enabled = $29, modlog_wizard_channel_id = $30, modlog_wizard_message_id = $31,
-                    modlog_wizard_invoker_id = $32,
-                    updated_at = NOW()
-                """,
-                guild_id, clone_id, merged["action"], merged["timeout_minutes"], merged["log_channel_id"],
-                merged["word_filter_enabled"], json.dumps(merged["banned_words"]), merged["anti_invite_enabled"],
-                merged["anti_mention_enabled"], merged["anti_mention_threshold"],
-                merged["spam_enabled"], merged["spam_flood_threshold"], merged["spam_flood_window_seconds"],
-                merged["min_account_age_hours"], merged["log_channel_auto_created"],
-                merged["log_channel_notice_count"], merged["log_channel_last_notice_at"],
-                merged["wordfilter_notice_count"], merged["wordfilter_last_notice_at"],
-                merged["wizard_channel_id"], merged["wizard_message_id"], merged["wizard_invoker_id"],
-                merged["log_server_enabled"], merged["log_channels_enabled"], merged["log_roles_enabled"],
-                merged["log_members_enabled"], merged["log_moderation_enabled"], merged["log_voice_enabled"],
-                merged["log_invites_enabled"], merged["modlog_wizard_channel_id"], merged["modlog_wizard_message_id"],
-                merged["modlog_wizard_invoker_id"],
-            )
-        self._automod_config_cache.pop((guild_id, clone_id), None)
+        try:
+            pool = await get_pool()
+            async with pool.acquire() as conn:
+                await conn.execute(
+                    """
+                    INSERT INTO discord_automod_config
+                        (guild_id, clone_id, action, timeout_minutes, log_channel_id,
+                         word_filter_enabled, banned_words, anti_invite_enabled,
+                         anti_mention_enabled, anti_mention_threshold,
+                         spam_enabled, spam_flood_threshold, spam_flood_window_seconds,
+                         min_account_age_hours, log_channel_auto_created,
+                         log_channel_notice_count, log_channel_last_notice_at,
+                         wordfilter_notice_count, wordfilter_last_notice_at,
+                         wizard_channel_id, wizard_message_id, wizard_invoker_id,
+                         log_server_enabled, log_channels_enabled, log_roles_enabled,
+                         log_members_enabled, log_moderation_enabled, log_voice_enabled,
+                         log_invites_enabled, modlog_wizard_channel_id, modlog_wizard_message_id,
+                         modlog_wizard_invoker_id, updated_at)
+                    VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19,
+                            $20, $21, $22, $23, $24, $25, $26, $27, $28, $29, $30, $31, $32, NOW())
+                    ON CONFLICT (guild_id, (COALESCE(clone_id, -1))) DO UPDATE SET
+                        action = $3, timeout_minutes = $4, log_channel_id = $5,
+                        word_filter_enabled = $6, banned_words = $7, anti_invite_enabled = $8,
+                        anti_mention_enabled = $9, anti_mention_threshold = $10,
+                        spam_enabled = $11, spam_flood_threshold = $12, spam_flood_window_seconds = $13,
+                        min_account_age_hours = $14, log_channel_auto_created = $15,
+                        log_channel_notice_count = $16, log_channel_last_notice_at = $17,
+                        wordfilter_notice_count = $18, wordfilter_last_notice_at = $19,
+                        wizard_channel_id = $20, wizard_message_id = $21, wizard_invoker_id = $22,
+                        log_server_enabled = $23, log_channels_enabled = $24, log_roles_enabled = $25,
+                        log_members_enabled = $26, log_moderation_enabled = $27, log_voice_enabled = $28,
+                        log_invites_enabled = $29, modlog_wizard_channel_id = $30, modlog_wizard_message_id = $31,
+                        modlog_wizard_invoker_id = $32,
+                        updated_at = NOW()
+                    """,
+                    guild_id, clone_id, merged["action"], merged["timeout_minutes"], merged["log_channel_id"],
+                    merged["word_filter_enabled"], json.dumps(merged["banned_words"]), merged["anti_invite_enabled"],
+                    merged["anti_mention_enabled"], merged["anti_mention_threshold"],
+                    merged["spam_enabled"], merged["spam_flood_threshold"], merged["spam_flood_window_seconds"],
+                    merged["min_account_age_hours"], merged["log_channel_auto_created"],
+                    merged["log_channel_notice_count"], merged["log_channel_last_notice_at"],
+                    merged["wordfilter_notice_count"], merged["wordfilter_last_notice_at"],
+                    merged["wizard_channel_id"], merged["wizard_message_id"], merged["wizard_invoker_id"],
+                    merged["log_server_enabled"], merged["log_channels_enabled"], merged["log_roles_enabled"],
+                    merged["log_members_enabled"], merged["log_moderation_enabled"], merged["log_voice_enabled"],
+                    merged["log_invites_enabled"], merged["modlog_wizard_channel_id"], merged["modlog_wizard_message_id"],
+                    merged["modlog_wizard_invoker_id"],
+                )
+        finally:
+            # also on failure: a timeout can land after the commit, so never leave a possibly-old copy cached
+            self.invalidate_automod_config(guild_id, clone_id)
+        # Reload in the background right away (same race-guarded path as any read) so the first message after an admin
+        # edit finds the new config already cached instead of paying a DB round trip, or a reconnect on an idle pool.
+        self._automod_flight((guild_id, clone_id), "post-write")
 
     async def get_media_storage_config(self, guild_id: int, clone_id: Optional[int] = None) -> Dict:
         pool = await get_pool()
