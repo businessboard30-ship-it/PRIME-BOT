@@ -295,6 +295,10 @@ class PremiumWizardView(discord.ui.LayoutView):
     async def _start_trial(self, interaction: discord.Interaction) -> None:
         """Starts the server's one free trial. Needs Manage Server; the INSERT is guarded, so a double tap or a second
         admin can never grant a second trial."""
+        if not (config.PREMIUM_TRIAL_ENABLED and config.PREMIUM_TRIAL_DAYS > 0):
+            # Trials are switched off; an old Premium screen can still show the button, so refuse here too.
+            await interaction.response.send_message("The free Premium trial is no longer available.", ephemeral=True)
+            return
         perms = getattr(interaction.user, "guild_permissions", None)
         if not (perms and (perms.manage_guild or perms.administrator)):
             await interaction.response.send_message(

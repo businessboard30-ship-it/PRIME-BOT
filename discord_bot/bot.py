@@ -632,6 +632,14 @@ class AnimeBotDiscord(commands.Bot):
                     )
             except Exception:
                 logger.exception("Could not refresh public clone avatar for clone #%s", self.clone_id)
+        # Each clone tells the owner (by DM, once per distinct list) which Railway variables it needs if it is hosted as
+        # its own service. Fire-and-forget: it waits a little, never raises, and never delays startup.
+        if self.clone_id is not None and getattr(self, "_hosting_dm_task", None) is None:
+            try:
+                from modules import clone_hosting
+                self._hosting_dm_task = asyncio.create_task(clone_hosting.send_hosting_guide(self))
+            except Exception:
+                logger.debug("[clone-hosting] could not schedule the hosting guide", exc_info=True)
         # Catches up discord_guilds for any server joined while the bot was
         # offline, and backfills invite_url for guilds the bot was already
         # in before this column existed. Checked by ROW EXISTENCE

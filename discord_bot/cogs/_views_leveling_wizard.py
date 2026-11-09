@@ -41,9 +41,9 @@ def render_status_lines(config: dict, role_rows: list) -> list:
     if autopost_id == -1:
         autopost_line = "⬜ **Step 5: Daily leaderboard post** — *off*"
     elif autopost_id:
-        autopost_line = f"✅ **Step 5: Daily leaderboard post** — <#{autopost_id}>, once every 24h"
+        autopost_line = f"✅ **Step 5: Daily leaderboard post** — <#{autopost_id}>, at most once every 24h, and only when someone has levelled up"
     elif announce_id:
-        autopost_line = f"✅ **Step 5: Daily leaderboard post** — <#{announce_id}> (same as announce channel), once every 24h"
+        autopost_line = f"✅ **Step 5: Daily leaderboard post** — <#{announce_id}> (same as announce channel), at most once every 24h, and only when someone has levelled up"
     else:
         autopost_line = "✅ **Step 5: Daily leaderboard post** — on automatically once leveling starts posting somewhere"
     return [
