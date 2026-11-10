@@ -206,6 +206,11 @@ async def build_leaderboard_view(bot, guild: discord.Guild, clone_id, mode: str 
     # computed here, so there's no reason for it to sit at the end of a
     # sequential chain of DB round-trips.
     premium_task = asyncio.create_task(db.is_guild_premium_active(guild.id, clone_id))
+    # The server's own branding (accent colour, what they call "level"); {} when none, never raises.
+    from modules import guild_brand
+    _brand = await guild_brand.get(guild.id, clone_id)
+    _accent = await guild_brand.accent_color(guild.id, clone_id, discord.Color.blurple())
+    _level_word = guild_brand.level_word(_brand).title()
 
     # Count + rows used to be two sequential DB round-trips before either
     # even started — get_xp_leaderboard_page/get_global_xp_leaderboard_page
@@ -274,11 +279,11 @@ async def build_leaderboard_view(bot, guild: discord.Guild, clone_id, mode: str 
         Discord's 40-component ceiling can be rebuilt compact instead of
         raising ValueError at the user."""
         view = discord.ui.LayoutView(timeout=None)
-        container = discord.ui.Container(accent_colour=discord.Color.blurple())
+        container = discord.ui.Container(accent_colour=_accent)
 
         mode_label = "Local" if mode == "local" else "Global"
         container.add_item(discord.ui.TextDisplay(
-            f"### 📊 {mode_label} Level Leaderboard\nLeaderboard for user levels."
+            f"### 📊 {mode_label} {_level_word} Leaderboard\nLeaderboard for user {_level_word.lower()}s."
         ))
         mode_row = discord.ui.ActionRow()
         mode_row.add_item(LeaderboardModeSelect(guild.id, clone_id, mode))

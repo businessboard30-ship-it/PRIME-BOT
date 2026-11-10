@@ -602,6 +602,9 @@ class GiveawayStartButton(discord.ui.DynamicItem[discord.ui.Button], template=_i
                 color = discord.Color(int(draft["embed_color"], 16))
             except (ValueError, TypeError):
                 pass
+        if color is None:
+            from modules import guild_brand
+            color = await guild_brand.accent_color(interaction.guild_id, draft.get("clone_id"), None)
 
         embed = _giveaway_embed(
             draft["prize"], draft["winner_count"], ends_at, interaction.user, 0,
