@@ -196,6 +196,9 @@ async def fetch_goodbye(guild_id: int, clone_id) -> dict | None:
     quickly (a slow DB must never delay the wizard render)."""
     try:
         return await asyncio.wait_for(db.get_welcome_extras(guild_id, clone_id), timeout=1.5)
+    except asyncio.TimeoutError:
+        logger.info("[welcome] goodbye settings not read within 1.5s (slow database); the wizard shows its generic hint")
+        return None
     except Exception:
         logger.warning("swallowed exception in fetch_goodbye", exc_info=True)
         return None

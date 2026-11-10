@@ -234,3 +234,64 @@ def test_fresh_bypasses_cache(env):
         pool.rows[(1, None)] = _row(1, anti_invite_enabled=True)
         assert (await d.get_automod_config(1, fresh=True))["anti_invite_enabled"] is True
     asyncio.run(go())
+
+
+# ── refresh stampede (every guild expiring together used to flood the clone's 3-connection pool) ────────────────────
+def test_background_refreshes_are_capped_so_they_cannot_flood_the_pool(env, monkeypatch):
+    d, pool = env
+    state = {"active": 0, "peak": 0, "done": 0}
+
+    async def fake_fetch(key, reason):
+        state["active"] += 1
+        state["peak"] = max(state["peak"], state["active"])
+        await asyncio.sleep(0.01)
+        state["active"] -= 1
+        state["done"] += 1
+        return _row(key[0])
+    monkeypatch.setattr(d, "_automod_fetch_row", fake_fetch)
+
+    async def go():
+        old = time.monotonic() - d._AUTOMOD_CACHE_TTL_SECONDS - 5
+        for g in range(1, 41):
+            d._automod_config_cache[(g, None)] = (_row(g), old)          # all expired at the same moment
+        results = await asyncio.gather(*[d.get_automod_config(g) for g in range(1, 41)])
+        assert all(r["guild_id"] == g for g, r in zip(range(1, 41), results))      # every message got its (stale) copy at once
+        for _ in range(200):
+            if state["done"] >= 40:
+                break
+            await asyncio.sleep(0.01)
+        assert state["done"] == 40 and state["peak"] <= d._AUTOMOD_REFRESH_CONCURRENCY
+    asyncio.run(go())
+
+
+def test_prewarmed_entries_expire_spread_out_not_all_at_once(env, monkeypatch):
+    d, pool = env
+
+    class _FetchConn:
+        async def fetch(self, sql, ids, clone_id):
+            return []
+
+    class _FetchAcq:
+        async def __aenter__(self):
+            return _FetchConn()
+
+        async def __aexit__(self, *a):
+            return False
+
+    class _FetchPool:
+        def acquire(self):
+            return _FetchAcq()
+
+    async def gp():
+        return _FetchPool()
+    monkeypatch.setattr(database, "get_pool", gp)
+
+    async def go():
+        assert await d.prewarm_automod_cache(range(1, 301), clone_id=4) == 300
+        now = time.monotonic()
+        ages = [now - at for (_cfg, at) in d._automod_config_cache.values()]
+        ttl = d._AUTOMOD_CACHE_TTL_SECONDS
+        assert all(0 <= a <= d._AUTOMOD_PREWARM_SPREAD * ttl + 1 for a in ages)      # nothing expires early, nothing is "from the future"
+        assert max(ages) - min(ages) > 0.3 * ttl                                       # and they are spread, not one instant
+        assert not any(a >= ttl for a in ages)                                         # none already stale at startup
+    asyncio.run(go())
