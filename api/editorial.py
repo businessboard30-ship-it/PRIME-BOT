@@ -25,6 +25,11 @@ async def _pool():
           source_url VARCHAR(500), ip_hash CHAR(64) NOT NULL,
           status TEXT NOT NULL DEFAULT 'pending', created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
         );
+        ALTER TABLE editorial_submissions ADD COLUMN IF NOT EXISTS original_title VARCHAR(160);
+        ALTER TABLE editorial_submissions ADD COLUMN IF NOT EXISTS original_summary VARCHAR(500);
+        ALTER TABLE editorial_submissions ADD COLUMN IF NOT EXISTS original_article_body TEXT;
+        ALTER TABLE editorial_submissions ADD COLUMN IF NOT EXISTS ai_edited BOOLEAN NOT NULL DEFAULT FALSE;
+        ALTER TABLE editorial_submissions ADD COLUMN IF NOT EXISTS ai_model VARCHAR(100);
         """)
     return pool
 
@@ -44,6 +49,10 @@ async def _submit(data, ip):
     summary=str(data.get("summary") or "").strip()[:500]
     body=str(data.get("article_body") or "").strip()
     source=str(data.get("source_url") or "").strip()[:500]
+    original_title=str(data.get("original_title") or title).strip()[:160]
+    original_summary=str(data.get("original_summary") or summary).strip()[:500]
+    original_body=str(data.get("original_article_body") or body).strip()
+    ai_edited=bool(data.get("ai_edited")) and (original_body != body or original_title != title or original_summary != summary)
     if not all((name,title,category,summary,body)) or len(body)<100:
         raise ValueError("Please complete all required fields. Article drafts must be at least 100 characters.")
     if source and not source.startswith(("https://","http://")):
@@ -54,8 +63,12 @@ async def _submit(data, ip):
     async with pool.acquire() as c:
         recent=await c.fetchval("SELECT COUNT(*) FROM editorial_submissions WHERE ip_hash=$1 AND created_at>NOW()-INTERVAL '24 hours'",digest)
         if recent: raise ValueError("You've already submitted an article recently. Please wait before sending another.")
-        submission_id=await c.fetchval("""INSERT INTO editorial_submissions(author_name,email,title,category,summary,article_body,source_url,ip_hash)
-        VALUES($1,$2,$3,$4,$5,$6,$7,$8) RETURNING id""",name,email or None,title,category,summary,body,source or None,digest)
+        submission_id=await c.fetchval("""INSERT INTO editorial_submissions
+        (author_name,email,title,category,summary,article_body,source_url,ip_hash,original_title,original_summary,original_article_body,ai_edited,ai_model)
+        VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13) RETURNING id""",
+        name,email or None,title,category,summary,body,source or None,digest,
+        original_title,original_summary,original_body,ai_edited,
+        "Cloudflare Workers AI / GLM-4.7-Flash" if ai_edited else None)
         return "DBR-"+str(submission_id).zfill(6)
 
 def _rewrite_article(data, ip):
@@ -141,7 +154,7 @@ class handler(BaseHTTPRequestHandler):
     def do_POST(self):
         try:
             n=int(self.headers.get("Content-Length","0"))
-            if n<1 or n>30000: return self._send(400,{"status":"error","message":"Invalid article submission."})
+            if n<1 or n>60000: return self._send(400,{"status":"error","message":"Invalid article submission."})
             data=json.loads(self.rfile.read(n).decode())
             if data.get("website"): return self._send(400,{"status":"error","message":"Invalid submission."})
             action=data.get("action")
