@@ -79,7 +79,7 @@ def _rewrite_article(data, ip):
     if not title or not category or not summary or len(body) < 100: raise ValueError('Add a title, category, summary and at least 100 characters before using AI polish.')
     if len(body) > 14000: raise ValueError('AI polishing supports drafts up to 14,000 characters.')
     account = os.getenv('CLOUDFLARE_ACCOUNT_ID', '').strip()
-    token = (os.getenv('CLOUDFLARE_AI_API_TOKEN') or os.getenv('CLOUDFLARE_API_TOKEN') or '').strip()
+    token = os.getenv('CLOUDFLARE_AI_API_TOKEN', '').strip()
     if not account or not token: raise RuntimeError('AI polishing is not configured yet. Please try again later.')
     digest = hashlib.sha256((os.getenv('PUBLIC_REVIEW_HASH_SALT', 'editorial-ai-salt') + ip).encode()).hexdigest()
     pool = asyncio.run(_pool())
@@ -154,7 +154,7 @@ class handler(BaseHTTPRequestHandler):
     def do_POST(self):
         try:
             n=int(self.headers.get("Content-Length","0"))
-            if n<1 or n>60000: return self._send(400,{"status":"error","message":"Invalid article submission."})
+            if n<1 or n>150000: return self._send(400,{"status":"error","message":"Invalid article submission."})
             data=json.loads(self.rfile.read(n).decode())
             if data.get("website"): return self._send(400,{"status":"error","message":"Invalid submission."})
             action=data.get("action")
@@ -163,5 +163,6 @@ class handler(BaseHTTPRequestHandler):
             submission_id=asyncio.run(_submit(data,self.client_address[0]))
             self._send(201,{"status":"ok","message":"Your article has been sent to the editorial team for review.","submission_id":submission_id})
         except ValueError as e: self._send(400,{"status":"error","message":str(e)})
+        except RuntimeError as e: self._send(503,{"status":"error","message":str(e)})
         except Exception:
             logger.exception("Editorial article submission failed"); self._send(500,{"status":"error","message":"Your article could not be submitted right now."})
