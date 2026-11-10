@@ -25,13 +25,21 @@ about 2 for a mid one, 4-5 for a big one). A drowsy server is not switched off; 
 slowed (one poll in DROWSY_EVERY, see quiet_poll_due), so nothing is ever lost, just fetched less often. Used by the
 YouTube / Roblox feed polls, which fetch from outside once per feed. Any activity makes the server fully awake again
 and the very next poll runs at the normal pace.
+
+SLEEP (per-server inactivity sleep, layered on top of the above, nothing above changes): a server with no activity for
+SLEEP_DAYS (3, GUILD_SLEEP_DAYS) is ASLEEP. Asleep means only that NONESSENTIAL background work for THAT server is
+skipped or checked rarely (see is_sleeping / gate_due); no task is cancelled or restarted, so waking can never create a
+duplicate task -- the first activity simply removes the server from the asleep set and clears its recheck timers, and the
+very next loop tick treats it normally. Sleep state is derived from the persisted last-activity stamps, so it survives
+restarts with nothing extra stored. A dormant server is always also asleep. Essential features (automod, anti-raid,
+verification, welcome/goodbye, scheduled messages, giveaways, gateway events and interactions) never ask.
 """
 
 import json
 import logging
 import os
 import time
-from typing import Iterable, Optional
+from typing import Callable, Iterable, Mapping, Optional
 
 logger = logging.getLogger(__name__)
 
@@ -48,6 +56,27 @@ def dormant_days() -> int:
         return min(365, max(1, int(os.getenv("GUILD_DORMANT_DAYS", "14"))))
     except ValueError:
         return 14
+
+
+SLEEP_DAYS_DEFAULT = 3
+SLEEP_RECHECK_HOURS_DEFAULT = 6
+
+
+def sleep_days() -> int:
+    """Days with no activity after which a server's nonessential background work sleeps (GUILD_SLEEP_DAYS, 1-365)."""
+    try:
+        return min(365, max(1, int(os.getenv("GUILD_SLEEP_DAYS", str(SLEEP_DAYS_DEFAULT)))))
+    except ValueError:
+        return SLEEP_DAYS_DEFAULT
+
+
+def sleep_recheck_seconds() -> float:
+    """How often a sleeping server's rarely-needed checks still run (GUILD_SLEEP_RECHECK_HOURS, 1-48)."""
+    try:
+        h = min(48, max(1, int(os.getenv("GUILD_SLEEP_RECHECK_HOURS", str(SLEEP_RECHECK_HOURS_DEFAULT)))))
+    except ValueError:
+        h = SLEEP_RECHECK_HOURS_DEFAULT
+    return h * 3600.0
 
 
 DROWSY_FRACTION = 1 / 3         # of the dormant time
@@ -81,8 +110,22 @@ class ActivityTracker:
         self._clock = clock
         self._last: dict[int, float] = {}
         self.dirty = False
+        # Sleep bookkeeping (memory only, derived from _last so a restart loses nothing):
+        self._asleep: set[int] = set()                       # servers last seen asleep by is_sleeping()
+        self._gate_next: dict = {}                           # recheck key -> monotonic-ish time of its next allowed run
+        self._gate_guilds: dict[int, set] = {}               # guild id -> recheck keys that involve it
+        self._wake_hooks: list[Callable] = []
 
-    def touch(self, guild_id: Optional[int]) -> None:
+    def on_wake(self, hook: Callable) -> None:
+        """hook(guild_id, reason, quiet_seconds) runs (synchronously, must be cheap) when a sleeping server wakes."""
+        if hook not in self._wake_hooks:
+            self._wake_hooks.append(hook)
+
+    def remove_wake_hook(self, hook: Callable) -> None:
+        if hook in self._wake_hooks:
+            self._wake_hooks.remove(hook)
+
+    def touch(self, guild_id: Optional[int], reason: str = "activity") -> None:
         if not guild_id:
             return
         now = self._clock()
@@ -90,6 +133,79 @@ class ActivityTracker:
         if prev is None or now - prev >= TOUCH_RESOLUTION:
             self._last[guild_id] = now
             self.dirty = True
+        if guild_id in self._asleep:
+            self._wake(guild_id, reason, None if prev is None else max(0.0, now - prev))
+
+    def _wake(self, guild_id: int, reason: str, quiet: Optional[float]) -> None:
+        """Wake ONE server: forget that it slept and clear its recheck timers so its jobs run on their next tick."""
+        self._asleep.discard(guild_id)
+        for key in self._gate_guilds.pop(guild_id, ()):
+            self._gate_next.pop(key, None)
+        logger.info("[guild-sleep] guild=%s WOKE (%s) after %.1fh quiet; its paused jobs resume on their next tick",
+                    guild_id, reason, (quiet or 0.0) / 3600)
+        for hook in list(self._wake_hooks):
+            try:
+                hook(guild_id, reason, quiet)
+            except Exception:
+                logger.debug("swallowed exception in wake hook", exc_info=True)
+
+    def forget(self, guild_id: int) -> None:
+        """The bot left this server: drop everything held for it."""
+        self._last.pop(guild_id, None)
+        self._asleep.discard(guild_id)
+        for key in self._gate_guilds.pop(guild_id, ()):
+            self._gate_next.pop(key, None)
+        self.dirty = True
+
+    def is_sleeping(self, guild_id: int, member_count: Optional[int] = None) -> bool:
+        """True when this server has had no activity for sleep_days() (or is dormant, which is always at least as quiet).
+        Per server, so one sleeping server never affects another. Fails open (False) when unseen, switched off or on any error."""
+        try:
+            if not enabled():
+                self._asleep.discard(guild_id)
+                return False
+            last = self._last.get(guild_id)
+            if last is None:
+                return False
+            limit = sleep_days()
+            if member_count:
+                limit = min(limit, dormant_days_for(member_count))
+            elif os.getenv("GUILD_DORMANT_DAYS"):
+                limit = min(limit, dormant_days())
+            if self._clock() - last > limit * 86400:
+                self._asleep.add(guild_id)
+                return True
+            self._asleep.discard(guild_id)
+            return False
+        except Exception:
+            logger.debug("swallowed exception in ActivityTracker.is_sleeping", exc_info=True)
+            return False
+
+    def sleeping_ids(self) -> set:
+        return set(self._asleep)
+
+    def gate_due(self, key, members: Mapping[int, Optional[int]], every: Optional[float] = None) -> bool:
+        """For rarely-needed checks on one or more servers (`members` maps guild id -> member count or None).
+        Runs at the normal pace unless EVERY listed server is asleep; then it runs once, and again only after `every`
+        seconds (default sleep_recheck_seconds()). Waking any of the servers clears the timer, so the next tick runs.
+        Fails open (True)."""
+        try:
+            if not members:
+                return True
+            if not all(self.is_sleeping(g, mc) for g, mc in members.items()):
+                self._gate_next.pop(key, None)
+                return True
+            now = self._clock()
+            nxt = self._gate_next.get(key)
+            if nxt is not None and now < nxt:
+                return False
+            self._gate_next[key] = now + (every if every else sleep_recheck_seconds())
+            for g in members:
+                self._gate_guilds.setdefault(g, set()).add(key)
+            return True
+        except Exception:
+            logger.debug("swallowed exception in ActivityTracker.gate_due", exc_info=True)
+            return True
 
     def seed(self, guild_ids: Iterable[int]) -> None:
         """Servers seen for the first time start their quiet-clock now."""
@@ -103,7 +219,11 @@ class ActivityTracker:
         keep = set(guild_ids)
         gone = [g for g in self._last if g not in keep]
         for g in gone:
-            del self._last[g]
+            self.forget(g)
+        for g in [g for g in self._asleep if g not in keep]:
+            self.forget(g)
+        for g in [g for g in self._gate_guilds if g not in keep]:
+            self.forget(g)
         if gone:
             self.dirty = True
 
@@ -155,6 +275,16 @@ tracker = ActivityTracker()
 
 def is_dormant(guild_id: int, member_count: Optional[int] = None) -> bool:
     return tracker.is_dormant(guild_id, member_count=member_count)
+
+
+def is_sleeping(guild_id: int, member_count: Optional[int] = None) -> bool:
+    """Skip-while-asleep check for nonessential per-server jobs (promos, nudges, reminders). See ActivityTracker.is_sleeping."""
+    return tracker.is_sleeping(guild_id, member_count)
+
+
+def gate_due(key, members: Mapping[int, Optional[int]], every: Optional[float] = None) -> bool:
+    """Throttle for a rarely-needed check that only sleeps when every involved server is asleep. See ActivityTracker.gate_due."""
+    return tracker.gate_due(key, members, every)
 
 
 class CycleThrottle:

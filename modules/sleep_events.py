@@ -41,7 +41,7 @@ LABELS = {
 
 _queue: deque = deque(maxlen=MAX_QUEUE)
 _last_sent: dict = {}
-counts = {"sleep": 0, "wake": 0, "suppressed": 0, "dormant": 0, "active": 0}
+counts = {"sleep": 0, "wake": 0, "suppressed": 0, "dormant": 0, "active": 0, "guild_sleep": 0, "guild_wake": 0}
 
 
 def enabled() -> bool:
@@ -53,7 +53,7 @@ def label(name: str) -> str:
 
 
 def emit(kind: str, name: str, text: str, *, force: bool = False) -> None:
-    """kind: 'sleep' | 'wake' | 'dormant' | 'active' | 'note'. name identifies the thing (loop key or server id)."""
+    """kind: 'sleep' | 'wake' | 'dormant' | 'active' | 'guild_sleep' | 'guild_wake' | 'note'. name identifies the thing (loop key or server id)."""
     try:
         if not enabled():
             return

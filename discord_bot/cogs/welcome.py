@@ -28,6 +28,7 @@ from discord_bot.cogs._dm_support import GuildOnlyCog
 
 import config as bot_config
 from database import db
+from modules import guild_activity
 from modules.welcome_card import render_welcome_card
 from modules.welcome_studio import options_for_render, avatar_shape_for_render
 from discord_bot.cogs._views_shared import refresh_button
@@ -849,6 +850,8 @@ class WelcomeCog(GuildOnlyCog):
         buttons, so turning it on takes one tap instead of a wizard."""
         clone_id = getattr(self.bot, "clone_id", None)
         for guild in list(self.bot.guilds):
+            if guild_activity.is_sleeping(guild.id, getattr(guild, "member_count", None)):
+                continue          # server asleep (no activity for days): promos wait, picked up on the first tick after it wakes
             try:
                 config = await db.get_welcome_config(guild.id, clone_id=clone_id)
                 if config.get("enabled"):
@@ -880,6 +883,8 @@ class WelcomeCog(GuildOnlyCog):
         channel configured (or it's been deleted) — same as _send_nudge."""
         clone_id = getattr(self.bot, "clone_id", None)
         for guild in list(self.bot.guilds):
+            if guild_activity.is_sleeping(guild.id, getattr(guild, "member_count", None)):
+                continue          # server asleep (no activity for days): promos wait, picked up on the first tick after it wakes
             try:
                 config = await db.get_welcome_config(guild.id, clone_id=clone_id)
                 if not config.get("enabled"):
@@ -963,6 +968,8 @@ class WelcomeCog(GuildOnlyCog):
         for guild in list(self.bot.guilds):
             if guild.id in done:
                 continue
+            if guild_activity.is_sleeping(guild.id, getattr(guild, "member_count", None)):
+                continue          # server asleep (no activity for days): promos wait, picked up on the first tick after it wakes
             try:
                 config = await db.get_welcome_config(guild.id, clone_id=clone_id)
                 if not config.get("enabled") or config.get("card_theme") == "spider_pro":

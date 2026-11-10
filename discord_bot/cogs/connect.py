@@ -96,6 +96,24 @@ class ConnectCog(commands.Cog):
             logger.debug("swallowed exception in ConnectCog._all_quiet", exc_info=True)
             return False
 
+    def _poll_due(self, key: str, rows: list) -> bool:
+        """Whether this external feed should be fetched this cycle. Normal pace if any server following it is awake or
+        unknown; every server asleep -> one fetch per sleep recheck (hours), reset the moment any of them wakes; drowsy
+        only -> the existing one-in-four slowdown. Nothing is lost: delivery works from the stored last-seen state."""
+        try:
+            members: dict = {}
+            for f in rows:
+                g = self.bot.get_guild(int(f["guild_id"]))
+                if g is None:
+                    return ga.quiet_poll_due(key, False)
+                members[g.id] = getattr(g, "member_count", None)
+            if members and all(ga.is_sleeping(gid, mc) for gid, mc in members.items()):
+                return ga.gate_due(key, members)
+            return ga.quiet_poll_due(key, self._all_quiet(rows))
+        except Exception:
+            logger.debug("swallowed exception in ConnectCog._poll_due", exc_info=True)
+            return True
+
     # ── YouTube uploads ──────────────────────────────────────────────────
     @tasks.loop(minutes=POLL_MINUTES)
     async def _poll_youtube(self):
@@ -108,8 +126,8 @@ class ConnectCog(commands.Cog):
         for f in feeds:
             by_channel.setdefault(f["external_id"], []).append(f)
         for channel_id, rows in by_channel.items():
-            if not ga.quiet_poll_due(f"yt:{channel_id}", self._all_quiet(rows)):
-                continue          # only quiet servers follow this channel: fetched one poll in four, never lost
+            if not self._poll_due(f"yt:{channel_id}", rows):
+                continue          # only quiet/asleep servers follow this channel: fetched less often, never lost
             try:
                 entries = await api.fetch_channel_feed(channel_id)
             except ConnectError:
@@ -168,7 +186,7 @@ class ConnectCog(commands.Cog):
         for f in feeds:
             by_universe.setdefault(f["external_id"], []).append(f)
         for universe, rows in by_universe.items():
-            if not ga.quiet_poll_due(f"rbx:{universe}", self._all_quiet(rows)):
+            if not self._poll_due(f"rbx:{universe}", rows):
                 continue
             try:
                 now = await api.rbx_game_state(int(universe))

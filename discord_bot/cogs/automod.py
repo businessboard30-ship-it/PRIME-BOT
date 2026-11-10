@@ -50,6 +50,7 @@ from discord_bot.cogs._dm_support import GuildOnlyCog
 
 from database import db
 from modules import moderation_adapter as mod
+from modules import guild_activity
 from modules import moderation_extra as modx
 from config import DASHBOARD_BASE_URL, DISCORD_CLONE_ADMIN_IDS
 from discord_bot.i18n_helpers import get_lang, tr
@@ -559,6 +560,11 @@ class AutomodCog(GuildOnlyCog):
         clone_id = getattr(self.bot, "clone_id", None)
         now = discord.utils.utcnow()
         for guild in list(self.bot.guilds):
+            # Nag reminders (set up a log channel / turn on the word filter) are pointless in a server nobody has used for days:
+            # skip it, no DB read and no post. Counters are untouched, so it is picked up on the first tick after it wakes.
+            # Automod ITSELF (filtering, logging, actions) is event-driven and never goes through here.
+            if guild_activity.is_sleeping(guild.id, getattr(guild, "member_count", None)):
+                continue
             try:
                 config = await db.get_automod_config(guild.id, clone_id=clone_id)
                 log_item = await self._collect_log_channel_item(guild, config, clone_id, now)
