@@ -246,3 +246,22 @@ def test_keepalive_pings_every_interval_and_survives_errors(monkeypatch):
 def test_keepalive_can_be_switched_off(monkeypatch):
     monkeypatch.setenv("DB_KEEPALIVE", "0")
     assert run(asyncio.wait_for(database.pool_keepalive(), 1)) is None
+
+
+def test_goodbye_timeout_is_an_info_line_not_a_traceback_warning(monkeypatch, caplog):
+    import logging
+    from discord_bot.cogs import _views_welcome as vw
+
+    async def slow(*a, **k):
+        await asyncio.sleep(5)
+
+    monkeypatch.setattr(vw.db, "get_welcome_extras", slow, raising=False)
+    monkeypatch.setattr(vw.asyncio, "wait_for", lambda coro, timeout: _timeout(coro))
+
+    async def _timeout(coro):
+        coro.close()
+        raise asyncio.TimeoutError()
+    with caplog.at_level(logging.INFO):
+        assert run(vw.fetch_goodbye(1, None)) is None
+    assert any(r.levelno == logging.INFO and "slow database" in r.message for r in caplog.records)
+    assert not any(r.levelno >= logging.WARNING for r in caplog.records)

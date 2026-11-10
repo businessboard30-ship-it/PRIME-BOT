@@ -8746,6 +8746,13 @@ class Database:
     _AUTOMOD_CACHE_MAX_ENTRIES = 4096
     # After a failed refresh the stale copy is kept and the DB is not retried for this long (no hammering during an outage).
     _AUTOMOD_FAILURE_RETRY_SECONDS = 5.0
+    # Background refreshes of expired entries at most this many at a time. A clone's pool has only 3 connections, so a
+    # burst of refreshes (every guild expiring together) used to queue everything else behind them: 3s+ pool waits, other
+    # features timing out. Messages are unaffected either way (stale copies are served meanwhile).
+    _AUTOMOD_REFRESH_CONCURRENCY = 2
+    # Prewarmed entries get a random age up to this fraction of the TTL, so they expire spread out instead of all at once.
+    _AUTOMOD_PREWARM_SPREAD = 0.6
+    _automod_refresh_gate: Optional[tuple] = None   # (loop, Semaphore)
     # A single DB fetch slower than this is logged at WARNING with the acquire/query split; the rest is DEBUG.
     _AUTOMOD_SLOW_FETCH_SECONDS = 0.25
     # One INFO summary line (hit/miss/coalesced counts and fetch timings) at most this often, emitted from the fetch path.
@@ -8832,7 +8839,10 @@ class Database:
                 if key in dirty or key in self._automod_config_cache or key in self._automod_flights:
                     continue
                 d = by_guild.get(gid) or {"guild_id": gid, "clone_id": clone_id, **self._AUTOMOD_DEFAULTS}
-                self._automod_config_cache[key] = (d, now)
+                # Random age (never in the future): the entries expire between ~0.4 and 1.0 TTL after the prewarm, so the
+                # refreshes trickle in over minutes instead of hitting the pool in one burst.
+                age = random.uniform(0.0, self._AUTOMOD_PREWARM_SPREAD * self._AUTOMOD_CACHE_TTL_SECONDS)
+                self._automod_config_cache[key] = (d, now - age)
                 loaded += 1
             while len(self._automod_config_cache) > self._AUTOMOD_CACHE_MAX_ENTRIES:
                 self._automod_config_cache.popitem(last=False)
@@ -8890,9 +8900,21 @@ class Database:
                     len(self._automod_config_cache))
         st.clear()
 
+    def _automod_refresh_semaphore(self) -> "asyncio.Semaphore":
+        loop = asyncio.get_running_loop()
+        gate = Database._automod_refresh_gate
+        if gate is None or gate[0] is not loop:
+            gate = (loop, asyncio.Semaphore(self._AUTOMOD_REFRESH_CONCURRENCY))
+            Database._automod_refresh_gate = gate
+        return gate[1]
+
     async def _automod_load(self, key: tuple, flight: "_AutomodFlight", reason: str) -> Dict:
         try:
-            d = await self._automod_fetch_row(key, reason)
+            if reason == "refresh":
+                async with self._automod_refresh_semaphore():
+                    d = await self._automod_fetch_row(key, reason)
+            else:
+                d = await self._automod_fetch_row(key, reason)
         except Exception:
             self._automod_stat("errors")
             entry = self._automod_config_cache.get(key)
