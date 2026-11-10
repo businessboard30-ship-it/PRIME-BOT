@@ -79,6 +79,31 @@ def sleep_recheck_seconds() -> float:
     return h * 3600.0
 
 
+# Deeper sleep: the longer a server stays silent, the less often its rarely-needed checks run. Stage 1 = SLEEP_DAYS (days),
+# stage 2 = weeks, stage 3 = months. Recheck interval = sleep_recheck_seconds() x STAGE_FACTORS[stage] (6h -> 6h / 24h / 72h).
+WEEK_DAYS_DEFAULT = 7
+MONTH_DAYS_DEFAULT = 30
+STAGE_FACTORS = {1: 1, 2: 4, 3: 12}
+MAX_RECHECK_SECONDS = 14 * 86400
+
+
+def _env_days(name: str, default: int) -> int:
+    try:
+        return min(3650, max(1, int(os.getenv(name, str(default)))))
+    except ValueError:
+        return default
+
+
+def sleep_week_days() -> int:
+    """Quiet days after which sleep deepens to the 'weeks' stage (GUILD_SLEEP_WEEK_DAYS, default 7)."""
+    return _env_days("GUILD_SLEEP_WEEK_DAYS", WEEK_DAYS_DEFAULT)
+
+
+def sleep_month_days() -> int:
+    """Quiet days after which sleep deepens to the 'months' stage (GUILD_SLEEP_MONTH_DAYS, default 30)."""
+    return _env_days("GUILD_SLEEP_MONTH_DAYS", MONTH_DAYS_DEFAULT)
+
+
 DROWSY_FRACTION = 1 / 3         # of the dormant time
 DROWSY_EVERY = 4                # a drowsy server's polls run one cycle in this many
 SIZE_TIERS = ((20, 3), (200, 7))      # (up to this many members, days of quiet) -- anything bigger uses the default
@@ -181,6 +206,23 @@ class ActivityTracker:
             logger.debug("swallowed exception in ActivityTracker.is_sleeping", exc_info=True)
             return False
 
+    def sleep_stage(self, guild_id: int, member_count: Optional[int] = None) -> int:
+        """0 awake, 1 asleep (days), 2 deep (weeks), 3 deepest (months). Stages never start before stage 1 and are kept in
+        order even if the env values are set out of order. Fails open (0)."""
+        try:
+            if not self.is_sleeping(guild_id, member_count):
+                return 0
+            quiet_days = (self._clock() - self._last[guild_id]) / 86400
+            week = max(sleep_week_days(), sleep_days())
+            month = max(sleep_month_days(), week)
+            return 3 if quiet_days > month else 2 if quiet_days > week else 1
+        except Exception:
+            logger.debug("swallowed exception in ActivityTracker.sleep_stage", exc_info=True)
+            return 0
+
+    def recheck_seconds(self, stage: int) -> float:
+        return min(MAX_RECHECK_SECONDS, sleep_recheck_seconds() * STAGE_FACTORS.get(stage, 1))
+
     def sleeping_ids(self) -> set:
         return set(self._asleep)
 
@@ -192,14 +234,17 @@ class ActivityTracker:
         try:
             if not members:
                 return True
-            if not all(self.is_sleeping(g, mc) for g, mc in members.items()):
+            stages = [self.sleep_stage(g, mc) for g, mc in members.items()]
+            if not all(stages):
                 self._gate_next.pop(key, None)
                 return True
+            if every is None:
+                every = self.recheck_seconds(min(stages))     # shared work follows the lightest sleeper
             now = self._clock()
             nxt = self._gate_next.get(key)
             if nxt is not None and now < nxt:
                 return False
-            self._gate_next[key] = now + (every if every else sleep_recheck_seconds())
+            self._gate_next[key] = now + every
             for g in members:
                 self._gate_guilds.setdefault(g, set()).add(key)
             return True
@@ -280,6 +325,11 @@ def is_dormant(guild_id: int, member_count: Optional[int] = None) -> bool:
 def is_sleeping(guild_id: int, member_count: Optional[int] = None) -> bool:
     """Skip-while-asleep check for nonessential per-server jobs (promos, nudges, reminders). See ActivityTracker.is_sleeping."""
     return tracker.is_sleeping(guild_id, member_count)
+
+
+def sleep_stage(guild_id: int, member_count: Optional[int] = None) -> int:
+    """0 awake, 1 days, 2 weeks, 3 months of silence. See ActivityTracker.sleep_stage."""
+    return tracker.sleep_stage(guild_id, member_count)
 
 
 def gate_due(key, members: Mapping[int, Optional[int]], every: Optional[float] = None) -> bool:

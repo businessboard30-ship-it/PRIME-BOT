@@ -32,6 +32,7 @@ class GuildActivityCog(commands.Cog):
         self._loaded = False
         self._dormant_prev = None       # None until the first pass: that one is silent
         self._sleep_prev = None         # same, for servers whose nonessential jobs are asleep
+        self._stage_prev: dict = {}     # guild id -> deepest sleep stage already logged
         ga.tracker.on_wake(self._on_wake)
         self._channel_id = 0
         self._digest_started = False
@@ -131,6 +132,13 @@ class GuildActivityCog(commands.Cog):
         now_sleeping = {g.id for g in self.bot.guilds
                         if ga.tracker.is_sleeping(g.id, getattr(g, "member_count", None))}
         prev, self._sleep_prev = self._sleep_prev, now_sleeping
+        stages = {gid: ga.tracker.sleep_stage(gid, getattr(self.bot.get_guild(gid), "member_count", None)) for gid in now_sleeping}
+        old_stages, self._stage_prev = self._stage_prev, stages
+        if prev is not None:
+            for gid, st in stages.items():
+                if gid in prev and st > old_stages.get(gid, st):
+                    logger.info("[guild-sleep] guild=%s sleeps deeper: stage %d (%s), rarely-needed checks now every %.0fh",
+                                gid, st, {2: "weeks", 3: "months"}.get(st, "days"), ga.tracker.recheck_seconds(st) / 3600)
         if prev is None:
             logger.info("[guild-sleep] %d of %d servers are asleep (restored from saved activity, nothing was reset)",
                         len(now_sleeping), len(self.bot.guilds))
