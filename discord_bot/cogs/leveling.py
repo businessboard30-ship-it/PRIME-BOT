@@ -34,6 +34,7 @@ from discord_bot.cogs._dm_support import GuildOnlyCog
 
 from database import db
 from modules import leveling
+from modules import guild_brand
 from modules import clan_cards
 from modules import godhood_cards
 
@@ -463,6 +464,23 @@ class LevelingCog(GuildOnlyCog):
             logger.warning("[leveling] couldn't build the level-up ping button", exc_info=True)
             return None
 
+    async def _levelup_text(self, member: discord.Member, new_level: int, clone_id=None, card: bool = False) -> str:
+        """The level-up line: the server's own message when its admins set one (Bot profile -> Branding), else the standard
+        wording (with their name for "level" if they chose one). Any problem falls back to the standard text."""
+        try:
+            b = await guild_brand.get(member.guild.id, clone_id)
+            if b.get("levelup_message"):
+                return guild_brand.render(b["levelup_message"], user=member.mention, level=new_level,
+                                          server=member.guild.name, level_name=guild_brand.level_word(b),
+                                          xp_name=guild_brand.xp_word(b))
+            word = guild_brand.level_word(b)
+            if card:
+                return f"🎉 {member.mention} leveled up!"
+            return f"🎉 {member.mention} leveled up to **{word} {new_level}**!"
+        except Exception:
+            logger.debug("swallowed exception in LevelingCog._levelup_text", exc_info=True)
+            return f"🎉 {member.mention} leveled up!" if card else f"🎉 {member.mention} leveled up to **level {new_level}**!"
+
     async def _send_level_up_card(self, channel, member: discord.Member, new_level: int, new_total_xp: int,
                                    card_style: str = "card", clone_id=None, pinged: Optional[set] = None):
         """Renders and sends the level-up announcement. card_style == "text"
@@ -481,7 +499,7 @@ class LevelingCog(GuildOnlyCog):
         vk = {"view": ping_view} if ping_view is not None else {}
         if card_style == "text":
             try:
-                await channel.send(f"🎉 {member.mention} leveled up to **level {new_level}**!", allowed_mentions=am, **vk)
+                await channel.send(await self._levelup_text(member, new_level, clone_id), allowed_mentions=am, **vk)
             except discord.Forbidden:
                 pass
             return
@@ -539,13 +557,13 @@ class LevelingCog(GuildOnlyCog):
                     p["current_xp_in_level"], p["xp_needed_for_next_level"],
                 )
             file = discord.File(fp=io.BytesIO(card_bytes), filename="levelup." + ("jpg" if card_bytes[:3] == b"\xff\xd8\xff" else "png"))
-            await channel.send(content=f"🎉 {member.mention} leveled up!", file=file, allowed_mentions=am, **vk)
+            await channel.send(content=await self._levelup_text(member, new_level, clone_id, card=True), file=file, allowed_mentions=am, **vk)
         except discord.Forbidden:
             pass
         except Exception as e:
             logger.error(f"[v0] Failed to render/send level-up card for {member.id}: {e}")
             try:
-                await channel.send(f"🎉 {member.mention} leveled up to **level {new_level}**!", allowed_mentions=am, **vk)
+                await channel.send(await self._levelup_text(member, new_level, clone_id), allowed_mentions=am, **vk)
             except discord.Forbidden:
                 pass
 

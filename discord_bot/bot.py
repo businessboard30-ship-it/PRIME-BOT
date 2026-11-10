@@ -70,6 +70,7 @@ def _install_send_tracer():
 
 
 _install_send_tracer()
+import database as db_module
 from database import db
 from discord_bot.cogs.ai_store import VerifyCreditsView, VerifyBoostView, AIStoreMenuView
 from discord_bot.cogs._dm_support import GUILD_ONLY_MESSAGE
@@ -296,6 +297,10 @@ class AnimeBotDiscord(commands.Bot):
         self.add_dynamic_items(*GUMROAD_CLAIM_DYNAMIC_ITEMS)
         self.add_dynamic_items(*PAYMENT_CARD_DYNAMIC_ITEMS)
 
+        # Keeps one database connection warm (idle ones are closed after 60s, and the next query then pays a 1-2s reconnect,
+        # which showed up as slow automod fetches and expired slash commands). Persistent bot processes only.
+        if getattr(self, "_db_keepalive_task", None) is None:
+            self._db_keepalive_task = asyncio.create_task(db_module.pool_keepalive())
         await self.load_extension("discord_bot.cogs.guild_activity")
         await self.load_extension("discord_bot.cogs.catch")
         await self.load_extension("discord_bot.cogs.anime_feed")
@@ -488,6 +493,14 @@ class AnimeBotDiscord(commands.Bot):
     async def _on_app_command_error(
         self, interaction: discord.Interaction, error: app_commands.AppCommandError
     ):
+        orig = getattr(error, "original", None)
+        if isinstance(orig, discord.NotFound) and getattr(orig, "code", None) == 10062:
+            # "Unknown interaction": Discord's 3-second window closed before our first reply reached it (event loop or
+            # network lag, a slow start). Nothing can be sent back and nothing is broken, so don't log it as an error.
+            logger.warning("Expired interaction in /%s (the 3s window closed before we could answer; latency %.2fs)",
+                           interaction.command.qualified_name if interaction.command else "?",
+                           getattr(self, "latency", 0.0) or 0.0)
+            return
         if isinstance(error, app_commands.NoPrivateMessage):
             if not interaction.response.is_done():
                 await interaction.response.send_message(GUILD_ONLY_MESSAGE, ephemeral=True)

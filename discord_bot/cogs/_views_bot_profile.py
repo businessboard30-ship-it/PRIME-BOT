@@ -29,6 +29,7 @@ from database import db
 from modules import dthings_vote
 from discord_bot.cogs._views_shared import check_wizard_access
 from modules import ai_name
+from modules import guild_brand
 
 logger = logging.getLogger(__name__)
 
@@ -350,7 +351,7 @@ def build_profile_view(guild: "discord.Guild | None", guild_id: int, clone_id, o
         _RenameButton(guild_id, clone_id), _AvatarButton(guild_id, clone_id),
         _BannerButton(guild_id, clone_id), _BioButton(guild_id, clone_id), _AiNameButton(guild_id, clone_id),
     ))
-    row2 = [_ResetButton(guild_id, clone_id)]
+    row2 = [_BrandButton(guild_id, clone_id), _ResetButton(guild_id, clone_id)]
     if draft:
         container.add_item(discord.ui.TextDisplay(f"📝 Waiting to apply: {_draft_summary(draft)}"))
         row2.insert(0, _ApplyButton(guild_id, clone_id))
@@ -489,6 +490,49 @@ class _AiNameModal(discord.ui.Modal, title="Name the AI in this server"):
                        f"✅ The AI here is now called **{value}**." if value else "✅ The AI is back to its default name.")
 
 
+class _BrandModal(discord.ui.Modal, title="Make it yours: server branding"):
+    """Free for every server (no vote or plan needed): the server's own level-up message, accent colour and the words it
+    uses for level / XP. Stored by modules.guild_brand; blank fields go back to the standard look."""
+
+    def __init__(self, guild_id: int, clone_id, current: dict):
+        super().__init__()
+        self.guild_id, self.clone_id = guild_id, clone_id
+        acc = current.get("accent")
+        self.msg = discord.ui.TextInput(
+            label="Level-up message (blank = standard)", style=discord.TextStyle.paragraph, required=False,
+            max_length=guild_brand.MESSAGE_MAX, default=current.get("levelup_message") or "",
+            placeholder="🔥 {user} reached {level_name} {level} in {server}!")
+        self.accent = discord.ui.TextInput(
+            label="Accent colour (hex, blank = default)", required=False, max_length=7,
+            default=f"#{acc:06X}" if isinstance(acc, int) else "", placeholder="#5865F2")
+        self.lname = discord.ui.TextInput(
+            label='What you call "level" (blank = level)', required=False, max_length=guild_brand.NAME_MAX,
+            default=current.get("level_name") or "", placeholder="rank")
+        self.xname = discord.ui.TextInput(
+            label='What you call "XP" (blank = XP)', required=False, max_length=guild_brand.NAME_MAX,
+            default=current.get("xp_name") or "", placeholder="points")
+        for item in (self.msg, self.accent, self.lname, self.xname):
+            self.add_item(item)
+
+    async def on_submit(self, interaction: discord.Interaction):
+        await interaction.response.defer()
+        try:
+            changes = {
+                "levelup_message": guild_brand.clean_message(self.msg.value),
+                "accent": guild_brand.clean_accent(self.accent.value),
+                "level_name": guild_brand.clean_name(self.lname.value, "level word"),
+                "xp_name": guild_brand.clean_name(self.xname.value, "XP word"),
+            }
+        except ValueError as e:
+            await interaction.followup.send(f"⚠️ Nothing saved: {e}.", ephemeral=True)
+            return
+        if not await guild_brand.set_fields(self.guild_id, self.clone_id, changes):
+            await interaction.followup.send("⚠️ Couldn't save the branding right now. Try again in a moment.", ephemeral=True)
+            return
+        await _refresh(interaction, self.guild_id, self.clone_id, "✅ Branding saved. It applies to the next level-up, "
+                       "leaderboard and giveaway.")
+
+
 class _GlobalModal(discord.ui.Modal, title="My global profile (bot owner)"):
     """Clone owners only: the bot's real username/avatar/banner on Discord. Leave a field blank to keep it."""
 
@@ -613,6 +657,16 @@ class _AiNameButton(_Btn, discord.ui.DynamicItem[discord.ui.Button], template=_p
         await interaction.response.send_modal(_AiNameModal(self.guild_id, self.clone_id, current))
 
 
+class _BrandButton(_Btn, discord.ui.DynamicItem[discord.ui.Button], template=_pat("brand")):
+    action, label, emoji = "brand", "Branding", "🎨"
+    style = discord.ButtonStyle.primary
+    gated = False          # free for every server; still needs Manage Server (checked in _Btn.callback)
+
+    async def act(self, interaction):
+        current = await guild_brand.get(self.guild_id, self.clone_id)
+        await interaction.response.send_modal(_BrandModal(self.guild_id, self.clone_id, current))
+
+
 class _GlobalButton(_Btn, discord.ui.DynamicItem[discord.ui.Button], template=_pat("global")):
     action, label, emoji = "global", "Global profile", "🌐"
     style = discord.ButtonStyle.success
@@ -701,6 +755,6 @@ class _VoteCheckButton(_Btn, discord.ui.DynamicItem[discord.ui.Button], template
             await open_profile_wizard(interaction, self.guild_id, self.clone_id)
 
 
-DYNAMIC_ITEMS = (_RenameButton, _AvatarButton, _BannerButton, _BioButton, _AiNameButton, _GlobalButton, _ApplyButton,
+DYNAMIC_ITEMS = (_BrandButton, _RenameButton, _AvatarButton, _BannerButton, _BioButton, _AiNameButton, _GlobalButton, _ApplyButton,
                  _ResetButton,
                  _DoneButton, _VoteCheckButton)

@@ -558,6 +558,39 @@ async def get_pool():
     return _pool
 
 
+async def pool_keepalive() -> None:
+    """Pings the pool every DB_KEEPALIVE_SECONDS (default 40, always under the 60s idle limit) so DB_KEEPALIVE_CONNS (default 1)
+    connections never go idle long enough to be closed. Without it the first query after a quiet minute pays a fresh
+    connect (1-2s on a remote database), which showed up as slow automod fetches and slash commands that missed Discord's
+    3-second window. Run once from a persistent process (the bot); never raises, DB_KEEPALIVE=0 turns it off."""
+    if os.getenv("DB_KEEPALIVE", "1").strip() == "0":
+        return
+
+    def _num(name: str, default: int, lo: int, hi: int) -> int:
+        try:
+            return min(hi, max(lo, int(os.getenv(name, str(default)))))
+        except ValueError:
+            return default
+    interval = _num("DB_KEEPALIVE_SECONDS", 40, 10, 55)
+    want = _num("DB_KEEPALIVE_CONNS", 1, 1, 5)
+
+    async def _ping(pool):
+        async with pool.acquire() as conn:
+            await conn.execute("SELECT 1")
+            await asyncio.sleep(0.05)      # keeps this connection checked out while the others are picked
+
+    while True:
+        try:
+            await asyncio.sleep(interval)
+            pool = await get_pool()
+            n = min(want, pool.get_max_size())
+            await asyncio.gather(*[_ping(pool) for _ in range(n)], return_exceptions=True)
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            logger.debug("[db] keepalive ping failed", exc_info=True)
+
+
 class _AutomodFlight:
     """One in-flight automod-config DB load. `invalidated` is set if the config is written while it runs."""
     __slots__ = ("loop", "task", "invalidated")
