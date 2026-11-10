@@ -10,6 +10,7 @@ from discord.ext import commands, tasks
 from database import db
 from modules import anime_feed as af
 from modules import anime_feed_nudge as nudge
+from modules import guild_activity
 from modules.anime_feed_worker import Worker
 
 logger = logging.getLogger(__name__)
@@ -50,6 +51,8 @@ class AnimeFeedCog(commands.Cog):
                 break
             if guild.id in done or not nudge.old_enough(getattr(guild.me, "joined_at", None)):
                 continue
+            if guild_activity.is_sleeping(guild.id, getattr(guild, "member_count", None)):
+                continue                  # asleep: no mod-log lookup, no DB read; reminded on the first pass after it wakes
             channel = await self._modlog_channel(guild, clone_id)
             if channel is None:
                 continue                  # no mod-log channel (or none I can write in): never a DM, look again next pass

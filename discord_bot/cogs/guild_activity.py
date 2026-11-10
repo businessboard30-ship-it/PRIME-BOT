@@ -31,6 +31,8 @@ class GuildActivityCog(commands.Cog):
         self._key = ga.setting_key(getattr(bot, "clone_id", None))
         self._loaded = False
         self._dormant_prev = None       # None until the first pass: that one is silent
+        self._sleep_prev = None         # same, for servers whose nonessential jobs are asleep
+        ga.tracker.on_wake(self._on_wake)
         self._channel_id = 0
         self._digest_started = False
         self._flush.start()
@@ -44,28 +46,53 @@ class GuildActivityCog(commands.Cog):
         return getattr(self.bot, "clone_id", None) is None and se.enabled()
 
     def cog_unload(self):
+        ga.tracker.remove_wake_hook(self._on_wake)
         self._flush.cancel()
         self._post_loop.cancel()
         self._digest_loop.cancel()
         self._relay_loop.cancel()
 
+    # Meaningful activity = a person did something: a message, a command/button/modal, joining voice, joining the server,
+    # reacting. Bots, webhooks and plain gateway noise (presence, typing, edits, leaves) never count, so they can neither
+    # wake a sleeping server nor keep an idle one awake. Touching is cheap (a dict write at most every 5 minutes).
     @commands.Cog.listener()
     async def on_message(self, message: discord.Message):
         if message.guild is not None and not message.author.bot:
-            ga.tracker.touch(message.guild.id)
+            ga.tracker.touch(message.guild.id, "message")
 
     @commands.Cog.listener()
     async def on_interaction(self, interaction: discord.Interaction):
-        ga.tracker.touch(interaction.guild_id)
+        ga.tracker.touch(interaction.guild_id, "interaction")
 
     @commands.Cog.listener()
     async def on_voice_state_update(self, member, before, after):
         if after.channel is not None and not member.bot:
-            ga.tracker.touch(member.guild.id)
+            ga.tracker.touch(member.guild.id, "voice")
+
+    @commands.Cog.listener()
+    async def on_member_join(self, member: discord.Member):
+        if not member.bot:
+            ga.tracker.touch(member.guild.id, "member join")
+
+    @commands.Cog.listener()
+    async def on_raw_reaction_add(self, payload: discord.RawReactionActionEvent):
+        if payload.guild_id and not (payload.member and payload.member.bot) \
+                and payload.user_id != getattr(self.bot.user, "id", None):
+            ga.tracker.touch(payload.guild_id, "reaction")
 
     @commands.Cog.listener()
     async def on_guild_join(self, guild: discord.Guild):
-        ga.tracker.touch(guild.id)
+        ga.tracker.touch(guild.id, "bot added")
+
+    @commands.Cog.listener()
+    async def on_guild_remove(self, guild: discord.Guild):
+        ga.tracker.forget(guild.id)
+
+    def _on_wake(self, guild_id: int, reason: str, quiet) -> None:
+        g = self.bot.get_guild(guild_id)
+        hours = (quiet or 0) / 3600
+        se.emit("guild_wake", str(guild_id), f"☀️ **{g.name if g else guild_id}** woke up ({reason}) after {hours:.0f}h quiet: "
+                                              "its paused background jobs are back.")
 
     @tasks.loop(minutes=10)
     async def _flush(self):
@@ -77,6 +104,7 @@ class GuildActivityCog(commands.Cog):
             ga.tracker.seed(ids)
             ga.tracker.forget_missing(ids)
             self._report_dormancy()
+            self._report_sleep()
             if ga.tracker.dirty:
                 ga.tracker.dirty = False
                 await db.set_global_setting(self._key, ga.tracker.dump())
@@ -96,6 +124,24 @@ class GuildActivityCog(commands.Cog):
         for gid in prev - now_dormant:
             g = self.bot.get_guild(gid)
             se.emit("active", str(gid), f"☀️ **{g.name if g else gid}** is active again: cat spawns and Ship are back on.")
+
+    def _report_sleep(self) -> None:
+        """Logs servers entering sleep (wake is logged the moment it happens, in _on_wake). The first pass after a start is
+        silent apart from one summary line: the sleep state is rebuilt from the saved activity stamps, not announced again."""
+        now_sleeping = {g.id for g in self.bot.guilds
+                        if ga.tracker.is_sleeping(g.id, getattr(g, "member_count", None))}
+        prev, self._sleep_prev = self._sleep_prev, now_sleeping
+        if prev is None:
+            logger.info("[guild-sleep] %d of %d servers are asleep (restored from saved activity, nothing was reset)",
+                        len(now_sleeping), len(self.bot.guilds))
+            return
+        for gid in now_sleeping - prev:
+            g = self.bot.get_guild(gid)
+            quiet = ga.tracker.quiet_seconds(gid) or 0
+            logger.info("[guild-sleep] guild=%s ASLEEP: no activity for %.1f days (limit %dd); nonessential jobs paused, "
+                        "moderation/verification/welcome/gateway unaffected", gid, quiet / 86400, ga.sleep_days())
+            se.emit("guild_sleep", str(gid), f"😴 **{g.name if g else gid}** fell asleep: no activity for {quiet / 86400:.1f} days. "
+                                              "Promos, reminders and slow feed polls pause there; moderation, verification and welcome stay on.")
 
     async def _log_channel(self):
         """The private log channel in the support server: saved id, then by name, else created. None when not possible."""
@@ -200,7 +246,8 @@ class GuildActivityCog(commands.Cog):
                 description=(f"Jobs that went to sleep: **{c['sleep']}**, woke up: **{c['wake']}** "
                              f"(repeat notices held back: {c['suppressed']})\n"
                              f"Servers that went dormant: **{c['dormant']}**, came back: **{c['active']}**\n"
-                             f"Dormant right now: **{dormant}** of **{total}** servers"),
+                             f"Servers that fell asleep: **{c['guild_sleep']}**, woke up: **{c['guild_wake']}**\n"
+                             f"Dormant right now: **{dormant}** of **{total}** servers, asleep: **{len(self._sleep_prev or ())}**"),
                 color=0x57F287), allowed_mentions=NO_MENTIONS)
         except Exception:
             logger.warning("[sleep-log] digest failed", exc_info=True)
