@@ -238,7 +238,7 @@ def _cog(monkeypatch, guilds):
     bot = SimpleNamespace(clone_id=None, user=SimpleNamespace(id=999), guilds=guilds,
                           get_guild=lambda gid: next((g for g in guilds if g.id == gid), None))
     c = cog_mod.GuildActivityCog.__new__(cog_mod.GuildActivityCog)
-    c.bot, c._sleep_prev, c._dormant_prev = bot, None, None
+    c.bot, c._sleep_prev, c._dormant_prev, c._stage_prev = bot, None, None, {}
     t.on_wake(c._on_wake)
     return c, t, now
 
@@ -359,3 +359,69 @@ def test_welcome_events_and_automod_event_handlers_are_not_gated():
         if handler in w:
             body = w.split(handler, 1)[1].split("\n    async def ", 1)[0].split("\n    @", 1)[0]
             assert "is_sleeping" not in body
+
+
+# ── deeper stages: days -> weeks -> months ────────────────────────────────────────────────────────────────────────
+def test_sleep_deepens_from_days_to_weeks_to_months_and_wakes_from_any_depth():
+    now, t = _t()
+    t.seed([1])
+    assert t.sleep_stage(1) == 0
+    now[0] += 4 * DAY
+    assert t.sleep_stage(1) == 1
+    now[0] += 4 * DAY                                    # 8 days
+    assert t.sleep_stage(1) == 2
+    now[0] += 25 * DAY                                   # 33 days
+    assert t.sleep_stage(1) == 3
+    t.touch(1)
+    assert t.sleep_stage(1) == 0 and not t.is_sleeping(1)
+
+
+def test_deeper_sleep_rechecks_less_often():
+    def runs_in_two_days(quiet_days):
+        now, t = _t()
+        t.seed([1])
+        now[0] += quiet_days * DAY
+        n = 0
+        for _ in range(2 * 48):                          # a 30-minute loop for 2 days
+            n += t.gate_due("k", {1: None})
+            now[0] += 1800
+        return n
+    assert (runs_in_two_days(3.5), runs_in_two_days(8), runs_in_two_days(40)) == (8, 2, 1)   # 6h / 24h / 72h
+    assert ga.ActivityTracker().recheck_seconds(1) == 6 * HOUR
+    assert ga.ActivityTracker().recheck_seconds(2) == 24 * HOUR and ga.ActivityTracker().recheck_seconds(3) == 72 * HOUR
+
+
+def test_stage_thresholds_are_configurable_and_kept_in_order(monkeypatch):
+    monkeypatch.setenv("GUILD_SLEEP_WEEK_DAYS", "10")
+    monkeypatch.setenv("GUILD_SLEEP_MONTH_DAYS", "5")    # nonsense order: month is never earlier than week
+    now, t = _t()
+    t.seed([1])
+    now[0] += 11 * DAY
+    assert t.sleep_stage(1) == 3
+    monkeypatch.setenv("GUILD_SLEEP_WEEK_DAYS", "junk")
+    assert ga.sleep_week_days() == 7 and ga.sleep_month_days() == 5
+
+
+def test_shared_work_follows_the_lightest_sleeper_and_recheck_is_capped():
+    now, t = _t()
+    t.seed([1, 2])
+    now[0] += 40 * DAY
+    t.touch(2)
+    now[0] += 4 * DAY                                    # guild 1 months deep, guild 2 only stage 1
+    assert t.sleep_stage(1) == 3 and t.sleep_stage(2) == 1
+    assert t.gate_due("s", {1: None, 2: None}) and t._gate_next["s"] - now[0] == 6 * HOUR
+    assert t.recheck_seconds(3) <= ga.MAX_RECHECK_SECONDS
+
+
+def test_cog_logs_when_a_guild_sleeps_deeper(monkeypatch, caplog):
+    import logging
+    guilds = [_g(1)]
+    c, t, now = _cog(monkeypatch, guilds)
+    t.seed([1])
+    now[0] += 4 * DAY
+    c._report_sleep()
+    c._report_sleep()
+    now[0] += 5 * DAY
+    with caplog.at_level(logging.INFO):
+        c._report_sleep()
+    assert any("sleeps deeper: stage 2 (weeks)" in r.message for r in caplog.records)
