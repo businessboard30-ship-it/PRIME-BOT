@@ -1780,6 +1780,26 @@ async def _enable_birthdays(interaction: discord.Interaction, guild: discord.Gui
                   "Members add theirs with `/birthday`; admins change the channel, message or time from its **Server setup** button.")
 
 
+async def _open_counting_setup(interaction: discord.Interaction, guild: discord.Guild, clone_id):
+    """Counting. Not a one-tap enable: it needs its own channel (counting in #general would eat the chat), so this posts
+    the setup panel in the default channel for an admin to pick one, like the More features Counting button. Already
+    permission-checked and deferred by _FeatureToggleButton; returns None/None so the button never flips to "On:"."""
+    from discord_bot.cogs.birthdays import _is_premium
+    from discord_bot.cogs.counting import build_setup_view
+    from modules import counting_store
+    channel = _default_text_channel(guild)
+    if channel is None:
+        return False, "I couldn't find a channel I'm able to post in. Give me **Send Messages** in one and tap again."
+    cfg = await counting_store.get_config(guild.id, clone_id)
+    premium = await _is_premium(guild.id, clone_id)
+    await channel.send(
+        view=build_setup_view(guild, cfg, premium, note="Only people with **Manage Server** can change these settings."),
+        allowed_mentions=discord.AllowedMentions.none())
+    await interaction.followup.send(f"🔢 Counting setup is open in {channel.mention}. Pick the channel to count in, "
+                                    "then turn it on.", ephemeral=True)
+    return None, None
+
+
 async def _enable_suggestions(interaction: discord.Interaction, guild: discord.Guild, clone_id):
     # /suggest already works with zero config — this just points approved
     # suggestions somewhere so they don't only live as reaction state on
@@ -1974,6 +1994,9 @@ FEATURE_TOGGLES = {
                 "Filter spam, invite links, and mass-mention raids."),
     "birthdays": ("Birthdays", "🎂", _enable_birthdays, None,
                   "Members add their birthday and I announce it in a channel on the day."),
+    "counting": ("Counting", "🔢", _open_counting_setup, None,
+                 "A counting channel: members count up together, one number each. Free, with Premium extras. "
+                 "Opens its setup panel."),
     "catch": ("Creature catching", "🐾", _enable_catch, None,
               "Wild creatures appear while your members chat — they catch, collect and trade them with /catch."),
 }

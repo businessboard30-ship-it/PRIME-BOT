@@ -258,3 +258,33 @@ def test_provider_followers_reach_the_spawn_card():
 def test_real_episode_posts_are_unchanged():
     p = af.Preview(1, "Show", 3, 2_000_000_000, "s", None, "https://anilist.co/anime/1", followers=5000)
     assert "following" not in vaf.card_text(p)
+
+
+# ── quick-start / join DM guide entry ────────────────────────────────────
+
+def test_counting_is_in_the_join_dm_guide_and_opens_its_panel(monkeypatch):
+    label, emoji, handler, opts, blurb = jd.FEATURE_TOGGLES["counting"]
+    assert label == "Counting" and opts is None and "Free" in blurb
+    keys = list(jd.FEATURE_TOGGLES)
+    assert keys.index("counting") == keys.index("birthdays") + 1
+    # the guide page that holds it still builds within Discord's limits
+    page = (keys.index("counting")) // jd.FEATURES_PER_PAGE
+    view = jd.JoinDMLayoutView(1, None, keys, page, "intro")
+    assert view.to_components() and len(list(view.walk_children())) <= 40
+
+    guild = MagicMock(id=1)
+    sent = MagicMock()
+    sent.send = AsyncMock()
+    ch = MagicMock(mention="<#9>")
+    ch.send = sent.send
+    monkeypatch.setattr(jd, "_default_text_channel", lambda g: ch)
+    monkeypatch.setattr(cc.store, "get_config", AsyncMock(return_value={
+        "guild_id": 1, "channel_id": None, "enabled": False, "current": 0, "high_score": 0}))
+    monkeypatch.setattr("discord_bot.cogs.birthdays._is_premium", AsyncMock(return_value=False))
+    guild.get_channel = lambda cid: None
+    i = MagicMock()
+    i.followup.send = AsyncMock()
+    out = run(handler(i, guild, None))
+    assert out == (None, None)                                    # never flips to "On:"
+    ch.send.assert_awaited_once()
+    i.followup.send.assert_awaited_once()
