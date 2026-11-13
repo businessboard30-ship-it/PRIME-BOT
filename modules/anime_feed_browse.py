@@ -87,6 +87,7 @@ class Entry:
     color: Optional[int] = None
     next_episode: Optional[int] = None
     next_at: Optional[int] = None
+    followers: Optional[int] = None         # AniList "popularity": how many people have this anime on their list
 
     @property
     def image(self) -> Optional[str]:
@@ -110,7 +111,7 @@ def season_of(now_ts: int) -> Tuple[str, int]:
     return ("WINTER", "SPRING", "SUMMER", "FALL")[(d.month - 1) // 3], d.year
 
 
-_MEDIA = """id siteUrl isAdult format status episodes genres countryOfOrigin bannerImage
+_MEDIA = """id siteUrl isAdult format status episodes genres countryOfOrigin bannerImage popularity
         title { romaji english native }
         coverImage { large extraLarge color }
         description(asHtml: false)
@@ -176,7 +177,8 @@ def parse_entries(payload: dict) -> List[Entry]:
                              int(m["episodes"]) if m.get("episodes") else None, tuple(str(g) for g in (m.get("genres") or [])[:3]),
                              str(m.get("countryOfOrigin") or "")[:2].upper(), _https(m.get("bannerImage")), _https(ci.get("extraLarge")),
                              _https(ci.get("large")), _color(ci.get("color")),
-                             int(nxt["episode"]) if nxt.get("episode") else None, int(nxt["airingAt"]) if nxt.get("airingAt") else None))
+                             int(nxt["episode"]) if nxt.get("episode") else None, int(nxt["airingAt"]) if nxt.get("airingAt") else None,
+                             int(m["popularity"]) if m.get("popularity") else None))
         except (TypeError, ValueError, AttributeError, KeyError):
             continue
     return out[:MAX_RESULTS]

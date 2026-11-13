@@ -37,7 +37,9 @@ def card_text(p: af.Preview, *, tag: Optional[str] = None) -> str:
         foot = f"-# Source: {af.SOURCE_NAME} · times shown in your own timezone"
     else:                               # a spawn: no airing line, just what it is
         eps = f"{p.episodes} episodes" if p.episodes else ""
-        lines = [f"### 🎌 An anime appeared!", head] + ([f"**{eps}**"] if eps else [])
+        fol = af.followers_label(p.followers)
+        stats = " · ".join(x for x in (eps, f"👥 {fol} following" if fol else "") if x)
+        lines = [f"### 🎌 An anime appeared!", head] + ([f"**{stats}**"] if stats else [])
         foot = f"-# Source: {af.SOURCE_NAME}"
     if meta:
         lines.append(f"-# {meta}")

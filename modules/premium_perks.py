@@ -65,6 +65,7 @@ def perks() -> Tuple[Perk, ...]:
     from modules import applications as apps
     from modules import scam_vision as sv
     from modules import birthdays as bd
+    from modules import counting as cnt
     from modules import cat_setup as cs
     from modules.anime_feed import FREE_FOLLOW_LIMIT as anime_free
     from modules.anime_plus import PLUS_FOLLOW_LIMIT as anime_plus
@@ -136,6 +137,11 @@ def perks() -> Tuple[Perk, ...]:
              free="Plain announcement, one message",
              premium=f"Styled look · birthday role · {bd.MAX_EXTRA_MESSAGES} extra messages",
              pitch="styled announcement, birthday role & extra messages"),
+        Perk("counting", "fun", "🔢", "Counting",
+             f"Maths counting, saves, milestone shout-outs and a top {cnt.PREMIUM_TOP} board.",
+             free=f"Counting channel, stats, top {cnt.FREE_TOP}",
+             premium=f"Maths · saves · milestones · top {cnt.PREMIUM_TOP}",
+             pitch="counting maths, saves & milestones"),
         Perk("anime", "fun", "📺", "Anime Feed",
              f"{anime_plus} follows per person, DM alerts and quiet hours for everyone in the server.",
              free=f"{anime_free} follows per person",

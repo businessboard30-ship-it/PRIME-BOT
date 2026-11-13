@@ -34,7 +34,7 @@ def category_keys(kinds: str) -> List[str]:
 
 def to_preview(e: ab.Entry) -> af.Preview:
     """A browse entry as a card. airing_at == 0 marks it as a spawn (card_text shows no airing line)."""
-    return af.Preview(e.anime_id, e.title, 0, 0, e.synopsis, e.cover, e.url, e.genres, e.fmt, e.episodes, e.banner, e.cover_xl, e.color, e.origin)
+    return af.Preview(e.anime_id, e.title, 0, 0, e.synopsis, e.cover, e.url, e.genres, e.fmt, e.episodes, e.banner, e.cover_xl, e.color, e.origin, e.followers)
 
 
 def choose(entries: Sequence[ab.Entry], kinds: str, recent: Sequence[int], rng=random) -> Optional[ab.Entry]:
