@@ -2180,7 +2180,7 @@ class _JoinOfferInviteButton(discord.ui.DynamicItem[discord.ui.Button],
 # ── "More features" screen + Cat button ──────────────────────────────────
 
 class JoinDMMoreView(discord.ui.LayoutView):
-    """The "More features" screen: Applications, Partnership (Bump), Advertise with us, Bot profile, Anime and Birthdays,
+    """The "More features" screen: Applications, Partnership (Bump), Advertise with us, Bot profile, Anime, Birthdays and Counting,
     which used to crowd the first page. Same message, edited in place; Back returns to page 1.
     Each item is a Section (text + its own button) so a button can't drift from its text, and
     the buttons are the same DynamicItems (same custom_ids, same Manage Server checks) as before."""
@@ -2206,6 +2206,9 @@ class JoinDMMoreView(discord.ui.LayoutView):
             ("🎂 **Birthdays**\nMembers add their birthday and I announce it in a channel on the day. Free to set up; "
              "Premium adds a styled post, a birthday role and extra messages.",
              _BirthdayButton(guild_id, clone_id)),
+            ("🔢 **Counting**\nA counting channel: members count up together, one number each, no two in a row. Free. "
+             "Premium adds maths counting, saves, milestone shout-outs and a bigger top list.",
+             _CountingButton(guild_id, clone_id)),
         ):
             section = discord.ui.Section(accessory=button)
             section.add_item(text)
@@ -2379,6 +2382,55 @@ class _BirthdayButton(discord.ui.DynamicItem[discord.ui.Button], template=r"^joi
                                         "then turn it on.", ephemeral=True)
 
 
+class _CountingButton(discord.ui.DynamicItem[discord.ui.Button], template=r"^join_dm_counting:(\d+):(-|\d+)$"):
+    """Counting. Needs Manage Server (same gate as the other setup wizards). Posts the counting setup panel (channel,
+    on/off, stats, reset, Premium extras) in the server's default channel, because this DM has no server context; the
+    panel lives in counting.py and re-checks Manage Server on every admin click. Nothing is turned on until an admin
+    picks a channel and presses Turn on."""
+
+    def __init__(self, guild_id: int, clone_id=None):
+        self.guild_id = guild_id
+        self.clone_id = clone_id
+        super().__init__(discord.ui.Button(
+            label="Set up", style=discord.ButtonStyle.primary, emoji="🔢",
+            custom_id=_encode("counting", guild_id, clone_id),
+        ))
+
+    @classmethod
+    async def from_custom_id(cls, interaction: discord.Interaction, item, match: re.Match):
+        guild_id, clone_id = _decode(match)
+        return cls(guild_id, clone_id)
+
+    async def callback(self, interaction: discord.Interaction):
+        from discord_bot.cogs._views_bot_profile import _check_access
+        if not await _check_access(interaction, self.guild_id):
+            return                                    # it already told the person why
+        await interaction.response.defer(ephemeral=interaction.guild is not None)
+        guild = interaction.client.get_guild(self.guild_id)
+        channel = _default_text_channel(guild) if guild is not None else None
+        if channel is None:
+            await interaction.followup.send("I couldn't find a channel I'm able to post in. Give me **Send Messages** in one "
+                                            "and tap Set up again.", ephemeral=True)
+            return
+        try:
+            from discord_bot.cogs.birthdays import _is_premium
+            from discord_bot.cogs.counting import build_setup_view
+            from modules import counting_store
+            cfg = await counting_store.get_config(guild.id, self.clone_id)
+            premium = await _is_premium(guild.id, self.clone_id)
+            await channel.send(
+                view=build_setup_view(guild, cfg, premium,
+                                      note="Only people with **Manage Server** can change these settings."),
+                allowed_mentions=discord.AllowedMentions.none())
+        except (discord.Forbidden, discord.HTTPException):
+            logger.exception("join_dm counting setup failed for guild %s", self.guild_id)
+            await interaction.followup.send("I couldn't post the counting setup. Make sure I can **Send Messages** in your "
+                                            "server.", ephemeral=True)
+            return
+        await interaction.followup.send(f"🔢 Counting setup is open in {channel.mention}. Pick the channel to count in, "
+                                        "then turn it on.", ephemeral=True)
+
+
 class _MoreBackButton(discord.ui.DynamicItem[discord.ui.Button], template=r"^join_dm_more_back:(\d+):(-|\d+)$"):
     """Back from More features to page 1 of the join DM (rebuilt live, so it works after a restart)."""
 
@@ -2473,7 +2525,7 @@ DYNAMIC_ITEMS = (
     _RemindLaterButton, _AdvertiseButton, _ConnectButton, _PartnershipButton, _HoneypotButton, _WelcomeCardOptionsButton, _WelcomeCustomizeCardButton, _WelcomePreviewRefreshButton, _DontAskAgainButton, _FeatureToggleButton, _PageNavButton,
     _WelcomeEditButton, _WelcomeChannelButton, _WelcomeBackButton, _WelcomeDeliveryButton, _WelcomeDmFallbackButton,
     _JoinOfferInviteButton, _BuildBotPasteButton, _ReferralCodeButton, _AntiRaidButton, _ApplyFormButton,
-    _MoreFeaturesButton, _MoreBackButton, _CatButton, _BotProfileButton, _AnimeButton, _BirthdayButton,
+    _MoreFeaturesButton, _MoreBackButton, _CatButton, _BotProfileButton, _AnimeButton, _BirthdayButton, _CountingButton,
 )
 from discord_bot.cogs._views_bot_profile import DYNAMIC_ITEMS as _BOT_PROFILE_ITEMS  # noqa: E402
 DYNAMIC_ITEMS = DYNAMIC_ITEMS + _BOT_PROFILE_ITEMS

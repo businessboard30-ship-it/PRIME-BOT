@@ -88,6 +88,7 @@ class Preview:
     cover_xl: Optional[str] = None  # big cover, the fallback when there is no banner
     color: Optional[int] = None     # the cover's dominant colour, used as the card accent
     origin: str = ""                # 'JP' / 'CN' / 'KR' ... (countryOfOrigin)
+    followers: Optional[int] = None  # total people following it on the provider (spawn cards show it)
 
     @property
     def image(self) -> Optional[str]:
@@ -96,6 +97,21 @@ class Preview:
 
 
 # ── pure helpers ────────────────────────────────────────────────────────
+
+def followers_label(n: Optional[int]) -> str:
+    """'1.2M' / '84.5K' / '950' for a follower total; '' when unknown or zero. Pure."""
+    try:
+        n = int(n or 0)
+    except (TypeError, ValueError):
+        return ""
+    if n <= 0:
+        return ""
+    if n >= 1_000_000:
+        return f"{n / 1_000_000:.1f}".rstrip("0").rstrip(".") + "M"
+    if n >= 1_000:
+        return f"{n / 1_000:.1f}".rstrip("0").rstrip(".") + "K"
+    return str(n)
+
 
 def clean_synopsis(raw: Optional[str], limit: int = SYNOPSIS_CHARS) -> str:
     """Plain text, tags and source notes removed, cut at a word boundary with an ellipsis. Empty when there is none."""

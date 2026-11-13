@@ -86,6 +86,7 @@ from discord_bot.cogs._views_cat_adopt import DYNAMIC_ITEMS as CAT_ADOPT_DYNAMIC
 from discord_bot.cogs._views_invites import DYNAMIC_ITEMS as INVITES_WIZARD_DYNAMIC_ITEMS
 from discord_bot.cogs._views_help import HELP_DYNAMIC_ITEMS
 from discord_bot.cogs.birthdays import DYNAMIC_ITEMS as BIRTHDAY_DYNAMIC_ITEMS
+from discord_bot.cogs.counting import DYNAMIC_ITEMS as COUNTING_DYNAMIC_ITEMS
 from discord_bot.cogs._views_automod_wizard import DYNAMIC_ITEMS as AUTOMOD_WIZARD_DYNAMIC_ITEMS
 from discord_bot.cogs._views_modlog_wizard import DYNAMIC_ITEMS as MODLOG_WIZARD_DYNAMIC_ITEMS
 from discord_bot.cogs._views_terms import DYNAMIC_ITEMS as TERMS_DYNAMIC_ITEMS
@@ -258,6 +259,7 @@ class AnimeBotDiscord(commands.Bot):
         self.add_dynamic_items(*INVITES_WIZARD_DYNAMIC_ITEMS)
         self.add_dynamic_items(*HELP_DYNAMIC_ITEMS)
         self.add_dynamic_items(*BIRTHDAY_DYNAMIC_ITEMS)
+        self.add_dynamic_items(*COUNTING_DYNAMIC_ITEMS)
         self.add_dynamic_items(*XP_WIZARD_DYNAMIC_ITEMS)
         self.add_dynamic_items(*CARD_HUB_DYNAMIC_ITEMS)       # card hub: persistent, state in the custom_id
         self.add_dynamic_items(*AUTOMOD_WIZARD_DYNAMIC_ITEMS)
@@ -308,6 +310,7 @@ class AnimeBotDiscord(commands.Bot):
         await self.load_extension("discord_bot.cogs.anime_feed")
         await self.load_extension("discord_bot.cogs.role_nudge")
         await self.load_extension("discord_bot.cogs.birthdays")
+        await self.load_extension("discord_bot.cogs.counting")
         await self.load_extension("discord_bot.cogs.clone_health")
         await self.load_extension("discord_bot.cogs.log_channel")   # posts logs to LOG_CHANNEL_ID (off when unset)
         await self.load_extension("discord_bot.cogs.help")
