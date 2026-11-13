@@ -91,6 +91,11 @@ def test_home_links_to_features(env):
     assert "More features" in buttons(v)
 
 
+def test_features_hub_has_counting_and_birthdays_buttons(env):
+    labels = buttons(run(env.v6.FeaturesView.create(interaction())))
+    assert "Counting" in labels and "Birthdays" in labels
+
+
 def test_features_hub_summarises_all_three(env):
     t = text_of(run(env.v6.FeaturesView.create(interaction())))
     assert "<#71>" in t and "receiving bumps" in t

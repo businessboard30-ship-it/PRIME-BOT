@@ -80,9 +80,31 @@ class FeaturesView(ServerPanelView):
             _btn("Custom role", P, self.nav_p6("CustomRoleView"), "🎨"),
             _btn("Autopost", P, self.nav_p6("AutopostView"), "📰"),
             _btn("Creature catching", P, self._catch, "🐾"),
+            _btn("Counting", P, self._counting, "🔢"),
+            _btn("Birthdays", P, self._birthdays, "🎂"),
             _btn("Permission check", P, self.nav_p6("HealthView"), "🩺"),
             self.back_button(HomeView),
         ]
+
+    async def _counting(self, interaction: discord.Interaction):
+        """Opens the counting setup panel (persistent Components V2, re-checks Manage Server on every admin click)
+        as its own ephemeral message."""
+        from discord_bot.cogs.birthdays import _is_premium
+        from discord_bot.cogs.counting import build_setup_view
+        from modules import counting_store
+        await interaction.response.defer(ephemeral=True)
+        cfg = await counting_store.get_config(interaction.guild_id, self.clone_id)
+        premium = await _is_premium(interaction.guild_id, self.clone_id)
+        await interaction.followup.send(view=build_setup_view(interaction.guild, cfg, premium), ephemeral=True)
+
+    async def _birthdays(self, interaction: discord.Interaction):
+        """Opens the birthday setup panel as its own ephemeral message (same panel as /birthday > Server setup)."""
+        from discord_bot.cogs.birthdays import _is_premium, build_setup_view
+        from modules import birthday_store
+        await interaction.response.defer(ephemeral=True)
+        cfg = await birthday_store.get_config(interaction.guild_id, self.clone_id)
+        premium = await _is_premium(interaction.guild_id, self.clone_id)
+        await interaction.followup.send(view=build_setup_view(interaction.guild, cfg, premium), ephemeral=True)
 
     async def _catch(self, interaction: discord.Interaction):
         """Opens the catch setup screen as its own ephemeral message (it is a classic
