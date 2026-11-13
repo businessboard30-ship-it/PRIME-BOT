@@ -613,6 +613,9 @@ def build_panel(guild: discord.Guild, clone_id, cfg: dict, log_channel, note: st
         btns.add_item(AntiRaidButton("lockdown", guild.id, clone_id))
     btns.add_item(AntiRaidButton("test", guild.id, clone_id))
     btns.add_item(AntiRaidButton("panel", guild.id, clone_id))
+    if alert_role_of(guild, cfg) is None:
+        from discord_bot.cogs._views_role_helper import make_button      # no alert role yet: one tap makes it
+        btns.add_item(make_button("raid", guild.id, clone_id))
     container.add_item(btns)
 
     pro_row = discord.ui.ActionRow()          # Anti-raid Pro: locked buttons open the premium pitch

@@ -78,6 +78,7 @@ from discord_bot.cogs._perm_guard import global_interaction_check, TooManyPrivil
 from discord_bot.cogs._views_join_dm import build_join_dm_view, DYNAMIC_ITEMS
 from discord_bot.cogs._views_style_wizard import STYLE_WIZARD_DYNAMIC_ITEMS
 from discord_bot.cogs._views_welcome import DYNAMIC_ITEMS as WELCOME_WIZARD_DYNAMIC_ITEMS
+from discord_bot.cogs._views_role_helper import DYNAMIC_ITEMS as ROLE_HELPER_DYNAMIC_ITEMS
 from modules import channel_finder, data_purge, clone_transfer
 from discord_bot.cogs._views_card_customize import DYNAMIC_ITEMS as CARD_CUSTOMIZE_DYNAMIC_ITEMS
 from discord_bot.cogs.catch import DYNAMIC_ITEMS as CATCH_DYNAMIC_ITEMS
@@ -247,6 +248,7 @@ class AnimeBotDiscord(commands.Bot):
                 logger.exception("Paystack plan auto-provisioning failed to start")
         self.add_dynamic_items(*STYLE_WIZARD_DYNAMIC_ITEMS)
         self.add_dynamic_items(*WELCOME_WIZARD_DYNAMIC_ITEMS)
+        self.add_dynamic_items(*ROLE_HELPER_DYNAMIC_ITEMS)   # "Create this role for me" buttons: work after any restart
         # "Find by name" button on every wizard channel dropdown (fonts/brackets-proof).
         channel_finder.install()
         self.add_dynamic_items(*channel_finder.DYNAMIC_ITEMS)
@@ -304,6 +306,7 @@ class AnimeBotDiscord(commands.Bot):
         await self.load_extension("discord_bot.cogs.guild_activity")
         await self.load_extension("discord_bot.cogs.catch")
         await self.load_extension("discord_bot.cogs.anime_feed")
+        await self.load_extension("discord_bot.cogs.role_nudge")
         await self.load_extension("discord_bot.cogs.birthdays")
         await self.load_extension("discord_bot.cogs.clone_health")
         await self.load_extension("discord_bot.cogs.log_channel")   # posts logs to LOG_CHANNEL_ID (off when unset)

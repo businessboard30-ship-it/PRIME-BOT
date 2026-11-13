@@ -664,6 +664,9 @@ def build_panel(guild: discord.Guild, clone_id, cfg: dict, premium: bool, note: 
     if cfg.get("alert_role_id"):
         nav_row.add_item(HoneypotButton("clearalert", guild.id, clone_id))
     nav_row.add_item(HoneypotButton("panel", guild.id, clone_id))
+    if alert_role_of(guild, cfg) is None:
+        from discord_bot.cogs._views_role_helper import make_button      # no alert role yet: one tap makes it
+        nav_row.add_item(make_button("honey", guild.id, clone_id))
     container.add_item(nav_row)
 
     safety_row = discord.ui.ActionRow()   # free for every server: these exist to keep servers clear of Discord's filters
