@@ -109,6 +109,8 @@ class WelcomeExtrasView(ServerPanelView):
             _btn("Test goodbye", discord.ButtonStyle.primary, self._test, "🧪"),
             _btn("Customize 💎", discord.ButtonStyle.secondary, self._customize, "🎨"),
         ]
+        if not self.data.get("gate") and not (x.get("member_role_id") and x.get("bot_role_id")):
+            out.append(_btn("Create roles for me", discord.ButtonStyle.success, self._make_roles, "🛠️"))
         if x.get("member_role_id"):
             out.append(_btn("Clear member role", discord.ButtonStyle.secondary, self._clear("member_role_id")))
         if x.get("bot_role_id"):
@@ -144,6 +146,13 @@ class WelcomeExtrasView(ServerPanelView):
                                         **{field: role.id})
             await self.reload(interaction)
         return cb
+
+    async def _make_roles(self, interaction: discord.Interaction):
+        from modules import role_helper as rh
+        await interaction.response.defer()
+        res = await rh.create_missing("welcome", interaction.guild, self.clone_id, interaction.user.id)
+        await self.reload(interaction)
+        await interaction.followup.send(res.text("welcome"), ephemeral=True, allowed_mentions=discord.AllowedMentions.none())
 
     def _clear(self, field: str) -> Callable:
         async def cb(interaction: discord.Interaction):

@@ -155,6 +155,10 @@ def build_wizard_view(guild: discord.Guild, config_row: dict, premium: bool) -> 
 
     msg_row = discord.ui.ActionRow()
     msg_row.add_item(TicketWelcomeMessageButton(guild_id, clone_id, invoker_id))
+    _sr = config_row.get("support_role_id")
+    if not _sr or (guild is not None and guild.get_role(int(_sr)) is None):
+        from discord_bot.cogs._views_role_helper import make_button      # no support role yet: one tap makes it
+        msg_row.add_item(make_button("ticket", guild_id, clone_id))
 
     post_row = discord.ui.ActionRow()
     post_row.add_item(TicketPostPanelButton(guild_id, clone_id, invoker_id))
