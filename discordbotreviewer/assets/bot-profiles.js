@@ -36,7 +36,8 @@ const bots={
  "pixelmint":{id:"1500754402741588019"},
  "quill-and-ink":{id:"1535187211958489208",avatar:"https://prismusercontent.com/discord/avatars/1535187211958489208/ea611baa321e7e924cc3bfa99a5efe25.png?size=512"},
  "petto":{id:"1489326875498119168"},
- "flo":{id:"1466183599635042344",avatar:"https://prismusercontent.com/discord/avatars/1466183599635042344/42e87e6749f9f72b3083aa558c07ac6e.png?size=512"}
+ "flo":{id:"1466183599635042344",avatar:"https://prismusercontent.com/discord/avatars/1466183599635042344/42e87e6749f9f72b3083aa558c07ac6e.png?size=512"},
+ "omnicord":{id:"1350356919604351057"}
 };
 window.DBR_BOT_PROFILES=bots;
 const esc=s=>String(s).replace(/[&<>"']/g,c=>({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]));
