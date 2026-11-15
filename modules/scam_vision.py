@@ -100,6 +100,7 @@ class _State:
     o_last_ok: Optional[bool] = None
     o_last_detail: str = ""
     o_last_at: float = 0.0
+    o_429_streak: int = 0                                       # consecutive plain rate-limit 429s (drives the backoff)
 
 
 _s = _State()
@@ -473,6 +474,19 @@ async def _ask(jpeg: bytes) -> Optional[bool]:
         return None
 
 
+def _openai_429_pause(retry_after: Optional[float], body_text: str, streak: int) -> Tuple[int, bool]:
+    """(seconds to pause, is_quota) for an OpenAI 429.
+
+    A 429 with code insufficient_quota means the account is out of credit / over its monthly cap. Asking again a minute
+    later cannot work, so pause for hours (SCAM_VISION_OPENAI_QUOTA_PAUSE_S) instead of hitting it every 60s all day.
+    A plain rate limit honours Retry-After when sent, else backs off 60s, 2m, 4m, 8m, capped at 15m."""
+    low = (body_text or "").lower()
+    if "insufficient_quota" in low or "exceeded your current quota" in low:
+        return _int_env("SCAM_VISION_OPENAI_QUOTA_PAUSE_S", 6 * 3600) or 6 * 3600, True
+    base = retry_after if retry_after and retry_after > 0 else 60.0 * (2 ** min(max(streak, 0), 4))
+    return int(min(max(base, 30.0), 900.0)), False
+
+
 async def _ask_openai(jpeg: bytes) -> Optional[bool]:
     """Same question, asked to OpenAI. Same rules: any problem means None (not a scam), it never deletes on doubt."""
     m = openai_model()
@@ -495,10 +509,23 @@ async def _ask_openai(jpeg: bytes) -> Optional[bool]:
         _s.o_blocked_until = time.monotonic() + 30
         _note_openai(False, f"can't reach OpenAI ({type(e).__name__})")
         return None
-    if resp.status_code == 429 or resp.status_code >= 500:
+    if resp.status_code == 429:
+        secs, quota = _openai_429_pause(shared.parse_retry_after((getattr(resp, "headers", None) or {}).get("retry-after")), (resp.text or "")[:500],
+                                        _s.o_429_streak)
+        if not quota:
+            _s.o_429_streak += 1
+        _s.o_blocked_until = time.monotonic() + secs
+        if quota:
+            logger.warning("[scam-vision] OpenAI says the account is out of quota/credit; pausing the backup scan for %ss", secs)
+            _note_openai(False, f"out of OpenAI credit/quota (429), paused {secs // 3600}h: add credit or check the key's limits")
+        else:
+            logger.warning("[scam-vision] OpenAI rate limit (429); pausing the backup scan for %ss", secs)
+            _note_openai(False, f"rate limited (429), paused {secs}s")
+        return None
+    if resp.status_code >= 500:
         logger.warning("[scam-vision] OpenAI answered %s; pausing the backup scan for 60s", resp.status_code)
         _s.o_blocked_until = time.monotonic() + 60
-        _note_openai(False, "rate limit or quota (429)" if resp.status_code == 429 else f"OpenAI server error {resp.status_code}")
+        _note_openai(False, f"OpenAI server error {resp.status_code}")
         return None
     if resp.status_code in (400, 401, 403, 404):
         logger.error("[scam-vision] OpenAI rejected the backup request (%s): check OPENAI_API_KEY / SCAM_VISION_OPENAI_MODEL. %s",
@@ -512,6 +539,7 @@ async def _ask_openai(jpeg: bytes) -> Optional[bool]:
         data = resp.json()
         text = ((data.get("choices") or [{}])[0].get("message") or {}).get("content") or ""
         verdict = parse_verdict(text if isinstance(text, str) else "")
+        _s.o_429_streak = 0
         _note_openai(True, "ok")
         return verdict
     except Exception:
