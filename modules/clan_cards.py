@@ -51,7 +51,8 @@ CARD_HEIGHT = 300  # matches level_card.py's CARD_WIDTH/CARD_HEIGHT sizing conve
 
 @lru_cache(maxsize=None)
 def _load_clan_artwork(filename: str):
-    path = os.path.join(_ASSET_DIR, filename)
+    from modules.remote_art import resolve_art
+    path = resolve_art(os.path.join(_ASSET_DIR, filename), "clan")
     return Image.open(path).convert("RGBA")
 
 

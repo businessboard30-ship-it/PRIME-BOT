@@ -924,7 +924,8 @@ def _load_tier_artwork(filename: str):
     read from disk (bundled assets, not user-controlled), so caching the
     decoded Image is safe and avoids re-reading/re-decoding a ~400KB file
     on every single level-up in a busy server."""
-    path = os.path.join(_TIER_IMAGE_DIR, filename)
+    from modules.remote_art import resolve_art
+    path = resolve_art(os.path.join(_TIER_IMAGE_DIR, filename), "tier")
     return Image.open(path).convert("RGBA")
 
 
