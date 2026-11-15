@@ -70,6 +70,18 @@ def is_bump_channel_name(name: str) -> bool:
     return bool(_BUMP_NAME_RE.search(plain_name(name)))
 
 
+async def fetch_channels_safe(guild: discord.Guild) -> list:
+    """guild.fetch_channels() with a cache fallback.
+
+    discord.py raises InvalidData (not HTTPException) when the guild holds a channel type it doesn't know yet
+    ("Unknown channel type 20"), which made one such server fail every bump recovery with a traceback. REST problems
+    and unknown types both fall back to the cached channels, which is all the bump lookup needs (text channels)."""
+    try:
+        return await guild.fetch_channels()
+    except (discord.HTTPException, discord.InvalidData):
+        return list(guild.channels)
+
+
 def find_existing_bump_channels(guild: discord.Guild, channels=None) -> list:
     """Every text channel that looks like a bump channel, best first: ones
     this bot can already post in, then oldest. `channels` lets callers pass a
@@ -101,10 +113,7 @@ async def get_or_create_bump_channel(guild: discord.Guild, user=None, *, name: s
     async with pool.acquire() as conn:
         async with conn.transaction():
             await conn.execute("SELECT pg_advisory_xact_lock($1)", 7_310_000_000_000 + guild.id % 1_000_000_000_000)
-            try:
-                channels = await guild.fetch_channels()
-            except discord.HTTPException:
-                channels = list(guild.channels)
+            channels = await fetch_channels_safe(guild)
             existing = find_existing_bump_channels(guild, channels)
             if existing:
                 return existing[0], False

@@ -49,7 +49,7 @@ def _deny(ctx: hub.Ctx) -> discord.ui.LayoutView:
 
 class NewCardModal(discord.ui.Modal, title="New store card"):
     name = discord.ui.TextInput(label="Card name", min_length=2, max_length=60)
-    rarity = discord.ui.TextInput(label="Rarity (common, rare, epic, legendary, god, supreme)", max_length=12, default="rare")
+    rarity = discord.ui.TextInput(label="Rarity (common to supreme)", max_length=12, default="rare")
     strength = discord.ui.TextInput(label="Base strength", max_length=9, placeholder="100")
     price = discord.ui.TextInput(label="Price in coins (permanent)", max_length=12, placeholder="5000")
     stock = discord.ui.TextInput(label="Limited copies (blank = unlimited)", required=False, max_length=7)

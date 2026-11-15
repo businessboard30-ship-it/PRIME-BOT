@@ -1444,11 +1444,8 @@ class BumpCog(commands.Cog):
                 # Held until this transaction ends — i.e. until after the
                 # channel exists and the config is saved.
                 await conn.execute("SELECT pg_advisory_xact_lock($1)", 7_310_000_000_000 + guild.id % 1_000_000_000_000)
-                try:
-                    channels = await guild.fetch_channels()
-                except discord.HTTPException:
-                    return "skipped"
-                from discord_bot.cogs.bump_setup import find_existing_bump_channels
+                from discord_bot.cogs.bump_setup import fetch_channels_safe, find_existing_bump_channels
+                channels = await fetch_channels_safe(guild)
                 existing = find_existing_bump_channels(guild, channels)
                 me = guild.me
                 channel, created = None, False
