@@ -149,7 +149,8 @@ def _load_godhood_artwork(filename: str):
     with the hole baked into its alpha channel), so without this step the
     avatar composite in render_godhood_card would be painted over by
     solid opaque pixels instead of showing through."""
-    path = os.path.join(_ASSET_DIR, filename)
+    from modules.remote_art import resolve_art
+    path = resolve_art(os.path.join(_ASSET_DIR, filename), "godhood")
     art = Image.open(path).convert("RGBA")
     _, _, hole_cx, hole_cy, hole_r = _GODHOOD_BY_FILENAME[filename]
 

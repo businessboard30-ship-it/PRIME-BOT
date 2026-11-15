@@ -383,6 +383,9 @@ def _draw_template_card(username: str, subtitle: str, avatar_bytes: bytes,
     aren't, since they'd clash with the fixed artwork."""
     opts = parse_ultra_options(ultra_options)    # only the border / hide-avatar / hide-text keys matter on a themed card
     background_path = THEME_BACKGROUNDS.get(theme, TEMPLATE_BACKGROUND_PATH)
+    if background_path and theme in ("spider", "spider_pro"):
+        from modules.remote_art import resolve_art      # these two live off-repo (Cloudinary) once removed from git
+        background_path = resolve_art(background_path, "welcome")
     if not background_path or not os.path.isfile(background_path):
         return None
 
