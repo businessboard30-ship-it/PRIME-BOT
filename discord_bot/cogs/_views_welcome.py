@@ -1295,7 +1295,8 @@ class WelcomeDmTextModal(discord.ui.Modal, title="DM welcome text"):
         self.clone_id = clone_id
         self.invoker_id = invoker_id
         self.template = discord.ui.TextInput(
-            label="DM text ({member} {guild} {count}), empty = same",
+            label="DM text ({member} {guild} {count})",
+            placeholder="Leave empty to use the normal welcome message",
             style=discord.TextStyle.paragraph, default=current or "", max_length=300, required=False,
         )
         self.add_item(self.template)
