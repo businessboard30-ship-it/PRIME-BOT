@@ -1,5 +1,5 @@
 (() => {
-  const API = "https://api-service-production-df63.up.railway.app/api/public_bot_directory";
+  const API = "https://web-production-7c6ac3fb.up.railway.app/api/public_bot_directory";
   const grid = document.getElementById("bot-grid");
   const search = document.getElementById("search");
   const sort = document.getElementById("sort");

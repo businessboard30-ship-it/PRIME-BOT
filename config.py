@@ -18,7 +18,7 @@ except Exception:  # pragma: no cover - must never stop a bot from starting
 # PUBLIC_BASE_URL environment variable on Railway is deliberately ignored, so the main
 # bot, the clone service and the web service always get the same URL from code.
 # To move hosts, change the value here.
-PUBLIC_BASE_URL = "https://api-service-production-df63.up.railway.app"
+PUBLIC_BASE_URL = "https://web-production-7c6ac3fb.up.railway.app"
 _PUBLIC_BASE = PUBLIC_BASE_URL
 
 # Stable, host-independent address = the GitHub Pages redirector (redirector/).

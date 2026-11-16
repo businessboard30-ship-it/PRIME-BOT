@@ -1,6 +1,6 @@
 (() => {
   const slug = document.body.dataset.reviewSlug || "alka";
-  const API = "https://api-service-production-df63.up.railway.app/api/public_bot_reviews?bot_id=" + encodeURIComponent(slug);
+  const API = "https://web-production-7c6ac3fb.up.railway.app/api/public_bot_reviews?bot_id=" + encodeURIComponent(slug);
   const list = document.getElementById("review-list");
   const summary = document.getElementById("review-summary");
   const fill = document.getElementById("rating-bar-fill");
