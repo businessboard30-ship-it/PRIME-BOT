@@ -83,7 +83,7 @@
     try{
       const controller=new AbortController(); const timeout=setTimeout(()=>controller.abort(),10000);
       let response;
-      try { response=await fetch("https://api-service-production-df63.up.railway.app/api/public_clones",{headers:{"Accept":"application/json"},cache:"no-store",signal:controller.signal}); }
+      try { response=await fetch("https://web-production-7c6ac3fb.up.railway.app/api/public_clones",{headers:{"Accept":"application/json"},cache:"no-store",signal:controller.signal}); }
       finally { clearTimeout(timeout); }
       if(!response.ok)throw new Error("HTTP "+response.status);
       const data=await response.json(), bots=Array.isArray(data.bots)?data.bots:[];
