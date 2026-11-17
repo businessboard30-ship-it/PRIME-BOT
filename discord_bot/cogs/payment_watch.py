@@ -28,7 +28,11 @@ class PaymentWatchCog(commands.Cog):
             if send:
                 from gumroad_payments import _alert_owner
                 await _alert_owner(text)
-            from modules import payment_recover
+            from modules import gumroad_ping_sync, payment_recover
+            st, why = await gumroad_ping_sync.sync_ping_subscription()
+            if st == "changed":
+                from gumroad_payments import _alert_owner
+                await _alert_owner("🔧 " + why)
             done = await payment_recover.recover_missed_sales()
             fixed = [r for r, m in done.items() if m == "ok"]
             if fixed:
