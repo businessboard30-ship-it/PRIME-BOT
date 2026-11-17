@@ -632,6 +632,8 @@ async def _alert_owner(text: str) -> None:
 
 
 async def process_gumroad_ping(fields: dict) -> tuple:
+    from modules.payment_watch import record_ping      # lets the payment watch see that pings are arriving
+    await record_ping()
     code, msg = await _process_gumroad_ping_inner(fields)
     if code >= 500 or msg in _ALERT_MESSAGES:
         detail = _ALERT_MESSAGES.get(msg, "Webhook processing failed.")

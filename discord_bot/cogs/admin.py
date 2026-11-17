@@ -437,6 +437,20 @@ class AdminCog(commands.Cog):
         embed.set_footer(text="Excludes commission splits — see /admin commissions for that breakdown. Use /admin pending for per-checkout detail.")
         await interaction.followup.send(embed=embed, ephemeral=True)
 
+    @admin.command(name="paymentcheck", description="[Owner] Check payment health now: API, secrets, Gumroad token, paid-but-stuck sales")
+    async def paymentcheck(self, interaction: discord.Interaction):
+        if not _is_bot_admin(interaction.user.id):
+            await _deny(interaction)
+            return
+        await interaction.response.defer(ephemeral=True)
+        from modules import payment_watch
+        try:
+            _issues, text, _send = await payment_watch.run_check(force=True)
+        except Exception:
+            logger.exception("[payment-watch] manual check failed")
+            text = "⚠️ The payment check itself failed. Look at the bot logs."
+        await interaction.followup.send(text, ephemeral=True)
+
     @admin.command(name="pending", description="[Owner] List individual pending checkouts, not just the count")
     async def pending(self, interaction: discord.Interaction):
         if not _is_bot_admin(interaction.user.id):
