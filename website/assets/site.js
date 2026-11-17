@@ -15,9 +15,9 @@ $$("[data-invite]").forEach(function(a){var u=a.dataset.invite==="prime"?C.PRIME
 $$("[data-dash]").forEach(function(a){if(C.DASHBOARD_URL){a.href=C.DASHBOARD_URL+"/";a.rel="noopener"}});
 $$("[data-support]").forEach(function(a){if(C.SUPPORT_SERVER_URL){a.href=C.SUPPORT_SERVER_URL;a.rel="noopener"}});
 $$("[data-topgg]").forEach(function(a){if(C.TOPGG_URL){a.href=C.TOPGG_URL;a.rel="noopener"}else{a.hidden=true}});
-$$("[data-topgg-vote]").forEach(function(a){if(C.TOPGG_VOTE_URL){a.href=C.TOPGG_VOTE_URL;a.rel="noopener"}else{a.hidden=true}});
+$$("[data-dthings-vote]").forEach(function(a){if(C.DTHINGS_VOTE_URL){a.href=C.DTHINGS_VOTE_URL;a.rel="noopener"}else{a.hidden=true}});
 $$("[data-dthings]").forEach(function(a){if(C.DTHINGS_URL){a.href=C.DTHINGS_URL;a.rel="noopener"}else{a.hidden=true}});
-var vs=$("#vote");if(vs&&!C.TOPGG_VOTE_URL&&!C.DTHINGS_URL&&!C.TOPGG_URL)vs.hidden=true;
+var vs=$("#vote");if(vs&&!C.DTHINGS_VOTE_URL&&!C.DTHINGS_URL&&!C.TOPGG_URL)vs.hidden=true;
 
 /* ---- mobile menu ---- */
 var mb=$(".menu-btn"),nav=$("#nav");

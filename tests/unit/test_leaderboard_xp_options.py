@@ -34,7 +34,7 @@ def _count(view):
 @pytest.fixture()
 def build(monkeypatch):
     monkeypatch.setattr(config, "DASH_PAGES_URL", "https://dash.example")
-    monkeypatch.setattr(config, "TOPGG_VOTE_URL", "https://top.gg/vote")
+    monkeypatch.setattr(config, "DTHINGS_VOTE_URL", "https://discordthings.com/bot/1")
     rows = [{"user_id": 1000 + i, "total_xp": 5000 - i, "level": 5} for i in range(10)]
 
     async def page(*a, **k):

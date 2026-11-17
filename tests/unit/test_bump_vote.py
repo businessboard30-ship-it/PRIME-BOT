@@ -1,4 +1,4 @@
-"""Bump: a Top.gg vote cast since the last bump lets that person bump through the cooldown (once per vote)."""
+"""Bump: a DiscordThings vote cast since the last bump lets that person bump through the cooldown (once per vote)."""
 import asyncio
 import re
 from pathlib import Path
@@ -22,6 +22,7 @@ def dbm(monkeypatch):
     m = SimpleNamespace(bump_check_cooldown=AsyncMock(return_value=(False, 600)),
                         bump_vote_unlocks=AsyncMock(return_value=False))
     monkeypatch.setattr(bump, "db", m)
+    monkeypatch.setattr(bump, "_sync_dthings_vote", AsyncMock(return_value=False))   # never hit DiscordThings in tests
     return m
 
 
@@ -48,17 +49,17 @@ def test_a_failing_vote_lookup_never_unlocks_and_never_crashes(dbm):
 
 def test_vote_view_is_one_link_button_to_the_vote_page(monkeypatch):
     import config
-    monkeypatch.setattr(config, "TOPGG_VOTE_URL", "https://top.gg/bot/123/vote")
+    monkeypatch.setattr(config, "DTHINGS_VOTE_URL", "https://discordthings.com/bot/123")
     v = bump._vote_view()
     (b,) = v.children
-    assert b.url == "https://top.gg/bot/123/vote" and "Vote" in b.label
-    monkeypatch.setattr(config, "TOPGG_VOTE_URL", "")
+    assert b.url == "https://discordthings.com/bot/123" and "Vote" in b.label
+    monkeypatch.setattr(config, "DTHINGS_VOTE_URL", "")
     assert bump._vote_view() is None
 
 
 def test_pressing_bump_on_cooldown_offers_the_vote_button(dbm, monkeypatch):
     import config
-    monkeypatch.setattr(config, "TOPGG_VOTE_URL", "https://top.gg/bot/123/vote")
+    monkeypatch.setattr(config, "DTHINGS_VOTE_URL", "https://discordthings.com/bot/123")
     dbm.bump_get_listing = AsyncMock(return_value=dict(id=5, guild_id=77, clone_id=None))
     dbm.bump_get_guild_config = AsyncMock(return_value=dict(bump_channel_id=9, receives_bumps=True))
     cog = MagicMock()
@@ -72,7 +73,7 @@ def test_pressing_bump_on_cooldown_offers_the_vote_button(dbm, monkeypatch):
     run(bump.DynamicBumpPromptButton(5).callback(i))
     cog._do_bump.assert_not_awaited()
     kw = i.followup.send.await_args.kwargs
-    assert "Vote" in i.followup.send.await_args.args[0] and kw["view"].children[0].url.endswith("/vote")
+    assert "Vote" in i.followup.send.await_args.args[0] and kw["view"].children[0].url.endswith("/bot/123")
     # ...and after voting, the same press goes through
     dbm.bump_vote_unlocks.return_value = True
     run(bump.DynamicBumpPromptButton(5).callback(i))

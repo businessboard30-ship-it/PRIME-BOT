@@ -412,11 +412,11 @@ async def build_leaderboard_view(bot, guild: discord.Guild, clone_id, mode: str 
 
         total_line = f"-# Total players: {total}"
         import config as _vote_config
-        if _vote_config.TOPGG_VOTE_URL:
+        if _vote_config.DTHINGS_VOTE_URL:
             # Markdown link inside the existing TextDisplay: zero extra components
             # (this message is already close to Discord's 40-component ceiling).
             total_line += (
-                f"\n-# 🗳️ [Vote for us on Top.gg]({_vote_config.TOPGG_VOTE_URL}) for a free "
+                f"\n-# 🗳️ [Vote for us on DiscordThings]({_vote_config.DTHINGS_VOTE_URL}), then run `/vote` for a free "
                 f"{_vote_config.TOPGG_VOTE_MULTIPLIER:g}x XP boost ({_vote_config.TOPGG_VOTE_HOURS:g}h)"
             )
         container.add_item(discord.ui.TextDisplay(total_line))
