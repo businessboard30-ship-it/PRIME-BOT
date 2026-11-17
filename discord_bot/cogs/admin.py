@@ -451,6 +451,16 @@ class AdminCog(commands.Cog):
             text = "⚠️ The payment check itself failed. Look at the bot logs."
         await interaction.followup.send(text, ephemeral=True)
 
+    @admin.command(name="fixping", description="[Owner] Point Gumroad's sale pings at this API host now")
+    async def fixping(self, interaction: discord.Interaction):
+        if not _is_bot_admin(interaction.user.id):
+            await _deny(interaction)
+            return
+        await interaction.response.defer(ephemeral=True)
+        from modules import gumroad_ping_sync
+        _st, text = await gumroad_ping_sync.sync_ping_subscription()
+        await interaction.followup.send(text, ephemeral=True)
+
     @admin.command(name="recoverpayments", description="[Owner] Unlock Gumroad sales that were paid while the API was down")
     async def recoverpayments(self, interaction: discord.Interaction):
         if not _is_bot_admin(interaction.user.id):
