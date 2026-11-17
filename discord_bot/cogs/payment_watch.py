@@ -28,6 +28,13 @@ class PaymentWatchCog(commands.Cog):
             if send:
                 from gumroad_payments import _alert_owner
                 await _alert_owner(text)
+            from modules import payment_recover
+            done = await payment_recover.recover_missed_sales()
+            fixed = [r for r, m in done.items() if m == "ok"]
+            if fixed:
+                from gumroad_payments import _alert_owner
+                await _alert_owner(f"✅ Recovered {len(fixed)} paid Gumroad sale(s) that missed their ping and unlocked them: "
+                                   + ", ".join(f"`{r}`" for r in fixed[:10]))
         except Exception:
             logger.exception("[payment-watch] check failed")
 

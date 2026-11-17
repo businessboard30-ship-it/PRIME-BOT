@@ -451,6 +451,25 @@ class AdminCog(commands.Cog):
             text = "⚠️ The payment check itself failed. Look at the bot logs."
         await interaction.followup.send(text, ephemeral=True)
 
+    @admin.command(name="recoverpayments", description="[Owner] Unlock Gumroad sales that were paid while the API was down")
+    async def recoverpayments(self, interaction: discord.Interaction):
+        if not _is_bot_admin(interaction.user.id):
+            await _deny(interaction)
+            return
+        await interaction.response.defer(ephemeral=True)
+        from modules import payment_recover
+        try:
+            done = await payment_recover.recover_missed_sales()
+        except Exception:
+            logger.exception("[payment-recover] manual recovery failed")
+            await interaction.followup.send("⚠️ Recovery failed. Look at the bot logs.", ephemeral=True)
+            return
+        if not done:
+            await interaction.followup.send("No paid-but-pending Gumroad sales found (or `GUMROAD_ACCESS_TOKEN` isn't set).", ephemeral=True)
+            return
+        lines = [f"`{r}` → {m}" for r, m in list(done.items())[:25]]
+        await interaction.followup.send("Replayed paid sales:\n" + "\n".join(lines), ephemeral=True)
+
     @admin.command(name="pending", description="[Owner] List individual pending checkouts, not just the count")
     async def pending(self, interaction: discord.Interaction):
         if not _is_bot_admin(interaction.user.id):
