@@ -9,6 +9,7 @@ It also checks the API answers, the secrets are set and the Gumroad token works.
 import asyncio
 import json
 import logging
+import os
 import time
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
@@ -50,6 +51,15 @@ async def record_ping() -> None:
 
 # ── pure logic (unit-tested) ──────────────────────────────────────────────
 
+def key_source(name: str, saved: dict, environ) -> Optional[str]:
+    """Where a setting lives: "database" (saved with /admin envsetup), "railway" (a service variable) or None."""
+    if (saved or {}).get(name):
+        return "database"
+    if (environ or {}).get(name):
+        return "railway"
+    return None
+
+
 def find_paid_matches(pending: List[dict], sales: List[dict]) -> Dict[str, dict]:
     """reference -> Gumroad sale, for pending checkouts whose reference appears in a real (not refunded) sale.
     Matches on the text of the whole sale, so it doesn't depend on which field Gumroad puts the reference in."""
@@ -77,13 +87,15 @@ def classify(f: dict) -> List[Issue]:
     ping_url = f"{base}/api/gumroad_webhook?secret=<GUMROAD_WEBHOOK_SECRET>"
 
     if not f.get("secret_set"):
-        issues.append(Issue("red", "no_secret", "`GUMROAD_WEBHOOK_SECRET` isn't set, so every Gumroad ping is rejected."))
+        issues.append(Issue("red", "no_secret", "`GUMROAD_WEBHOOK_SECRET` isn't set anywhere (not on Railway, not saved in the "
+                                                "database with `/admin envsetup`), so every Gumroad ping is rejected."))
     if f.get("api_ok") is False:
         issues.append(Issue("red", "api_down", f"The API at {base} didn't answer ({f.get('api_detail') or 'no reply'}). "
                                                "Gumroad pings can't reach the bot."))
     ts = f.get("token_status")
     if not f.get("token_set"):
-        issues.append(Issue("yellow", "no_token", "`GUMROAD_ACCESS_TOKEN` isn't set: sales can't be verified or cross-checked."))
+        issues.append(Issue("yellow", "no_token", "`GUMROAD_ACCESS_TOKEN` isn't set anywhere (not on Railway, not saved in the "
+                                                  "database): sales can't be verified or cross-checked."))
     elif ts == "rejected":
         issues.append(Issue("red", "token_bad", "Gumroad rejected `GUMROAD_ACCESS_TOKEN`: sales can't be verified, so paid sales "
                                                 "may be refused as \"not verified\"."))
@@ -168,8 +180,20 @@ async def _pending_rows() -> List[dict]:
 
 async def gather_facts() -> dict:
     from database import db
+    # Settings saved with /admin envsetup reach `config` through a background refresh that only starts when something
+    # reads them, so a first read can still see the empty Railway value. Load them from the database first.
+    saved: dict = {}
+    try:
+        from modules import owner_env as _oe
+        await _oe.refresh_live(force=True)
+        saved = await _oe.load_all()
+    except Exception:
+        logger.debug("[payment-watch] couldn't load the saved settings", exc_info=True)
+    secret_src = key_source("GUMROAD_WEBHOOK_SECRET", saved, os.environ)
+    token_src = key_source("GUMROAD_ACCESS_TOKEN", saved, os.environ)
     facts: dict = {"now": int(time.time()), "base_url": (getattr(config, "PUBLIC_BASE_URL", "") or "").rstrip("/"),
-                   "secret_set": bool(config.GUMROAD_WEBHOOK_SECRET), "token_set": bool(config.GUMROAD_ACCESS_TOKEN),
+                   "secret_set": bool(secret_src), "token_set": bool(token_src),
+                   "secret_source": secret_src, "token_source": token_src,
                    "sales_checked": False, "token_status": None, "matches": {}, "api_ok": None, "api_detail": ""}
     timeout = aiohttp.ClientTimeout(total=HTTP_TIMEOUT)
     async with aiohttp.ClientSession(timeout=timeout) as session:

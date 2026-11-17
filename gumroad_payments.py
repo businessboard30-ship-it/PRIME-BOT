@@ -597,8 +597,16 @@ async def _process_gumroad_ping_inner(fields: dict) -> tuple:
             logger.exception(f"[gumroad] couldn't store subscription id for {reference}")
 
     logger.info(f"[gumroad] {reference} confirmed and unlocked ({payment_type}, user {row['user_id']})")
-    await _dm(row["user_id"], row.get("clone_id"),
-              f"✅ Your Gumroad payment for **{payment_type}** was confirmed and applied — enjoy!")
+    note = f"✅ Your Gumroad payment for **{payment_type}** was confirmed and applied — enjoy!"
+    try:
+        from modules.payment_apology import apology_note, minutes_late
+        late = minutes_late(fields)
+        if late:
+            logger.warning(f"[gumroad] {reference} was unlocked {late} min after the sale: apologising to the buyer")
+            note += "\n\n" + apology_note(late)
+    except Exception:
+        logger.exception("[gumroad] couldn't build the late-payment apology")
+    await _dm(row["user_id"], row.get("clone_id"), note)
     return 200, "ok"
 
 
