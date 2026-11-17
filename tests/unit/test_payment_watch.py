@@ -156,3 +156,29 @@ def test_record_ping_survives_a_database_failure(monkeypatch):
     import database
     monkeypatch.setattr(database, "db", SimpleNamespace(set_global_setting=AsyncMock(side_effect=RuntimeError("down"))))
     run(pw.record_ping())    # must not raise
+
+
+# ── where a setting lives (the DM must not claim "not set" for a database-saved key) ─────────────────
+
+def test_key_source_prefers_the_database_then_railway_then_none():
+    assert pw.key_source("K", {"K": "v"}, {"K": "x"}) == "database"
+    assert pw.key_source("K", {}, {"K": "x"}) == "railway"
+    assert pw.key_source("K", {"K": None}, {}) is None
+    assert pw.key_source("K", None, None) is None
+
+
+def test_gather_facts_counts_a_database_saved_key_as_set(monkeypatch):
+    import os
+    from modules import owner_env as oe
+    monkeypatch.delenv("GUMROAD_WEBHOOK_SECRET", raising=False)
+    monkeypatch.delenv("GUMROAD_ACCESS_TOKEN", raising=False)
+    monkeypatch.setattr(oe, "refresh_live", AsyncMock())
+    monkeypatch.setattr(oe, "load_all", AsyncMock(return_value={"GUMROAD_WEBHOOK_SECRET": "s3cret"}))
+    monkeypatch.setattr(pw.config, "PUBLIC_BASE_URL", "")
+    monkeypatch.setattr(pw, "_pending_rows", AsyncMock(return_value=[]))
+    import database
+    monkeypatch.setattr(database, "db", SimpleNamespace(get_global_setting=AsyncMock(return_value=None)))
+    f = run(pw.gather_facts())
+    assert f["secret_set"] is True and f["secret_source"] == "database"
+    assert f["token_set"] is False and f["token_source"] is None
+    assert "no_secret" not in {i.key for i in pw.classify(f)}
