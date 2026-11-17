@@ -25,10 +25,13 @@ import asyncio
 import logging
 
 import aiohttp
+import discord
+from discord import app_commands
 from discord.ext import commands, tasks
 
 import config
 from discord_bot import listing_tokens
+from modules import dthings_vote
 
 logger = logging.getLogger(__name__)
 
@@ -49,6 +52,39 @@ def build_stats_payload(guild_count: int, shard_count, user_count=None) -> dict:
 def build_commands_payload(command_dicts: list, hidden: set) -> list:
     """Drops hidden top-level commands (case-insensitive)."""
     return [c for c in command_dicts if str(c.get("name", "")).lower() not in hidden]
+
+
+async def vote_claim_message(user_id: int) -> str:
+    """Checks the person's DiscordThings vote, records it, and says what happened."""
+    status, new = await dthings_vote.sync_vote(user_id)
+    mult, hours = config.TOPGG_VOTE_MULTIPLIER, config.TOPGG_VOTE_HOURS
+    if status == dthings_vote.VOTED:
+        if new:
+            return (f"✅ Thanks for voting! You now have a **{mult:g}x XP boost** for up to {hours:g} hours, "
+                    "in every server I'm in.")
+        return ("✅ I already have that vote on record, so your XP boost is active. "
+                "Vote again when DiscordThings lets you to get a fresh one.")
+    if status == dthings_vote.NOT_VOTED:
+        return ("🤔 I can't see a vote from you yet. Vote on DiscordThings, give it a few seconds, "
+                "then press **I voted** again.")
+    if status == dthings_vote.NO_TOKEN:
+        return "⚠️ Vote checking isn't set up yet: the bot owner needs to add the DiscordThings token."
+    return "⚠️ I couldn't reach DiscordThings just now. Try again in a minute."
+
+
+class VoteClaimView(discord.ui.View):
+    """Link to the vote page + a button that verifies the vote and grants the boost."""
+
+    def __init__(self, url: str):
+        super().__init__(timeout=600)
+        if url:
+            self.add_item(discord.ui.Button(label="Vote on DiscordThings", emoji="🗳️",
+                                            style=discord.ButtonStyle.link, url=url))
+
+    @discord.ui.button(label="I voted", emoji="✅", style=discord.ButtonStyle.success)
+    async def claim(self, interaction: discord.Interaction, button: discord.ui.Button):
+        await interaction.response.defer(ephemeral=True)
+        await interaction.followup.send(await vote_claim_message(interaction.user.id), ephemeral=True)
 
 
 class DthingsStatsCog(commands.Cog):
@@ -188,6 +224,18 @@ class DthingsStatsCog(commands.Cog):
     @_stats_loop.before_loop
     async def _before_stats_loop(self):
         await self.bot.wait_until_ready()
+
+
+    @app_commands.command(name="vote", description="Vote for the bot on DiscordThings and claim a free XP boost")
+    async def vote(self, interaction: discord.Interaction):
+        url = getattr(config, "DTHINGS_VOTE_URL", "")
+        if not url:
+            await interaction.response.send_message("Voting isn't set up right now.", ephemeral=True)
+            return
+        text = (f"🗳️ **Vote for me on DiscordThings** and get a free **{config.TOPGG_VOTE_MULTIPLIER:g}x XP boost** "
+                f"for {config.TOPGG_VOTE_HOURS:g} hours, in every server I'm in.\n"
+                "Vote, then tap **I voted** and I'll check it.")
+        await interaction.response.send_message(text, view=VoteClaimView(url), ephemeral=True)
 
 
 async def setup(bot: commands.Bot):

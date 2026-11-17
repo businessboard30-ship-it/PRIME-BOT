@@ -11032,26 +11032,28 @@ class Database:
             return {r["user_id"]: float(r["multiplier"]) for r in rows}
 
     async def record_topgg_vote(self, user_id: int, hours: float,
-                                 vote_id: Optional[str] = None) -> Optional[Dict]:
-        """Records a Top.gg vote: the voter's boost runs `hours` from NOW. A
-        repeat vote while still boosted REFRESHES the window (never stacks).
-        Returns the row, or None when this exact vote_id was already recorded
-        (Top.gg retries failed deliveries, so the same vote can arrive twice)."""
+                                 vote_id: Optional[str] = None, voted_at=None) -> Optional[Dict]:
+        """Records a vote (Top.gg webhook, or a DiscordThings check): the voter's boost runs `hours` from `voted_at`
+        (default NOW). A repeat vote while still boosted REFRESHES the window (never stacks).
+        Returns the row, or None when this exact vote_id was already recorded (providers retry failed deliveries,
+        so the same vote can arrive twice) or the vote is older than the one on file (never moves a boost backwards)."""
         pool = await get_pool()
         async with pool.acquire() as conn:
             row = await conn.fetchrow(
                 """
                 INSERT INTO topgg_votes (user_id, expires_at, last_vote_at, vote_count, last_vote_id)
-                VALUES ($1, NOW() + ($2::double precision * INTERVAL '1 hour'), NOW(), 1, $3::text)
+                VALUES ($1, COALESCE($4::timestamptz, NOW()) + ($2::double precision * INTERVAL '1 hour'),
+                        COALESCE($4::timestamptz, NOW()), 1, $3::text)
                 ON CONFLICT (user_id) DO UPDATE
-                    SET expires_at = NOW() + ($2::double precision * INTERVAL '1 hour'),
-                        last_vote_at = NOW(),
+                    SET expires_at = COALESCE($4::timestamptz, NOW()) + ($2::double precision * INTERVAL '1 hour'),
+                        last_vote_at = COALESCE($4::timestamptz, NOW()),
                         vote_count = topgg_votes.vote_count + 1,
                         last_vote_id = $3::text
-                    WHERE $3::text IS NULL OR topgg_votes.last_vote_id IS DISTINCT FROM $3::text
+                    WHERE ($3::text IS NULL OR topgg_votes.last_vote_id IS DISTINCT FROM $3::text)
+                      AND COALESCE($4::timestamptz, NOW()) >= topgg_votes.last_vote_at
                 RETURNING *
                 """,
-                user_id, float(hours), vote_id
+                user_id, float(hours), vote_id, voted_at
             )
             return dict(row) if row else None
 

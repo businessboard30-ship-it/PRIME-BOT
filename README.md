@@ -61,10 +61,10 @@ Set these in Railway (or your host)'s environment settings — there's no
 - `PAYSTACK_SECRET_KEY` / `PAYSTACK_PUBLIC_KEY` — payments (premium, clone registration fees, boosts)
 - `PUBLIC_BASE_URL` — base URL of your deployed API server, used to build OAuth redirect/webhook URLs
 
-**Top.gg vote boost (optional):**
-- `TOPGG_WEBHOOK_SECRET` — v1 `whs_...` secret (or the v0 Authorization string) from Top.gg → your bot → Webhooks; webhook URL is `https://<api-host>/api/topgg_webhook`
-- `TOPGG_BOT_ID` — your bot's Top.gg ID; enables the "Vote for us" line on the leaderboard (or set `TOPGG_VOTE_URL` directly)
-- `TOPGG_VOTE_MULTIPLIER` (default `1.5`) / `TOPGG_VOTE_HOURS` (default `12`) — vote reward; applies in every server and clone, and never stacks with a paid boost (the larger one wins)
+**Vote boost (optional) — voting is on DiscordThings (discordthings.com):**
+- `DTHINGS_API_KEY` — your DiscordThings API token (or paste it once through the DM modal; it's stored encrypted). Votes are checked with DiscordThings' `check-vote`, so no webhook is needed. `DTHINGS_BOT_ID` / `DTHINGS_VOTE_URL` set the listed bot and the vote page (the page is derived from the ID by default)
+- Members vote, then run `/vote` and tap **I voted** (pressing **Bump** on cooldown also checks for a vote). A verified vote is recorded once and the boost runs from the vote's real time
+- `TOPGG_VOTE_MULTIPLIER` (default `1.5`) / `TOPGG_VOTE_HOURS` (default `12`) — vote reward (the names keep their old prefix); applies in every server and clone, and never stacks with a paid boost (the larger one wins)
 - `TOPGG_TOKEN` — Top.gg *project token* (Dashboard → API); makes the main bot post server/shard count every `TOPGG_POST_INTERVAL_MINUTES` (default 30) and push its slash-command list once per start, minus `TOPGG_HIDE_COMMANDS` (default `admin`). Optional: if it isn't set, the *listed* bot (the process whose application id equals `TOPGG_BOT_ID`, main bot or clone) DMs its owner a button + modal to paste the token once; it's then stored encrypted in the database. `DTHINGS_API_KEY` works the same way for DiscordThings
 
 **Optional:**
@@ -226,7 +226,7 @@ Creature catching (`/catch`) is a hub with six categories; see [Catch game](#cat
   via `clone_manager.py`, with its own invite link and premium groups
 - **Referrals**, **referral giveaways**, **ads marketplace**, **premium** (Paystack,
   Selar manual payments, Gumroad), **per-server bot profile** (name/avatar/banner)
-- **Top.gg** vote boost and stats posting
+- **DiscordThings** vote boost and **Top.gg** / DiscordThings stats posting
 
 ### Owner admin
 - `/admin` console — buttons, selects and forms for clones, subscribers, payments,

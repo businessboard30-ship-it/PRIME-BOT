@@ -392,8 +392,19 @@ class DynamicAddMineButton(
         await interaction.response.send_message(embed=wizard.build_embed(), view=wizard, ephemeral=True)
 
 
+async def _sync_dthings_vote(user_id: int) -> bool:
+    """Asks DiscordThings whether this person has voted and records it (see modules/dthings_vote.sync_vote).
+    False when voting isn't configured, the vote can't be confirmed, or anything goes wrong."""
+    import config
+    if not getattr(config, "DTHINGS_VOTE_URL", ""):
+        return False
+    from modules import dthings_vote
+    status, _new = await dthings_vote.sync_vote(user_id)
+    return status == dthings_vote.VOTED
+
+
 async def _bump_access(user_id: int, listing_id: int, cooldown_seconds: int):
-    """(can_bump, seconds_remaining, used_vote). A live Top.gg vote cast since the last bump lets that
+    """(can_bump, seconds_remaining, used_vote). A live DiscordThings vote cast since the last bump lets that
     person bump straight through the cooldown, once per vote."""
     can, remaining = await db.bump_check_cooldown(listing_id, cooldown_seconds)
     if can:
@@ -401,23 +412,25 @@ async def _bump_access(user_id: int, listing_id: int, cooldown_seconds: int):
     try:
         if await db.bump_vote_unlocks(user_id, listing_id):
             return True, 0, True
+        if await _sync_dthings_vote(user_id) and await db.bump_vote_unlocks(user_id, listing_id):
+            return True, 0, True
     except Exception:
         logger.warning("[bump] vote check failed for user %s", user_id, exc_info=True)
     return False, remaining, False
 
 
 def _vote_view():
-    """A one-button view that links to the Top.gg vote page (None when no vote link is configured)."""
-    from config import TOPGG_VOTE_URL
-    if not TOPGG_VOTE_URL:
+    """A one-button view that links to the DiscordThings vote page (None when no vote link is configured)."""
+    from config import DTHINGS_VOTE_URL
+    if not DTHINGS_VOTE_URL:
         return None
     v = discord.ui.View(timeout=None)
     v.add_item(discord.ui.Button(label="Vote to bump again", emoji="🗳️", style=discord.ButtonStyle.link,
-                                 url=TOPGG_VOTE_URL))
+                                 url=DTHINGS_VOTE_URL))
     return v
 
 
-VOTE_HINT = "\n🗳️ **Want to bump now?** Vote for us on Top.gg, then press **Bump** again."
+VOTE_HINT = "\n🗳️ **Want to bump now?** Vote for us on DiscordThings, then press **Bump** again."
 
 
 class DynamicBumpPromptButton(
