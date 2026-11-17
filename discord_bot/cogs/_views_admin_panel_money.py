@@ -335,9 +335,39 @@ class PendingView(_MoneyView):
         return [
             _btn("Confirm clear" if self._confirm else f"Clear old ({self.clearable})", D, self._clear, "🧹",
                  disabled=self.clearable == 0),
+            _btn("Unlock paid", discord.ButtonStyle.success, self._recover, "🔓"),
+            _btn("Fix ping", S, self._fixping, "🔧"),
             _btn("Refresh", S, self._refresh, "🔄"),
             _btn("Back", S, self._back, "⬅️"),
         ]
+
+    async def _recover(self, i):
+        self._confirm = False
+        await i.response.defer()
+        try:
+            from modules import payment_recover
+            done = await payment_recover.recover_missed_sales()
+        except Exception:
+            logger.exception("[admin-panel] recovery failed")
+            self.notice = "⚠️ Recovery failed. Check the bot logs."
+        else:
+            ok = sum(1 for m in done.values() if m == "ok")
+            bad = [f"{r}: {m}" for r, m in done.items() if m != "ok"][:5]
+            self.notice = (f"🔓 Unlocked {ok} paid sale(s)." if done else "Nothing paid is waiting (or the Gumroad token isn't set).")
+            if bad:
+                self.notice += "\n" + "\n".join(f"-# {b}" for b in bad)
+            audit(i, "money.pending.recover", unlocked=ok, found=len(done))
+        await self.load()
+        await i.edit_original_response(view=self)
+
+    async def _fixping(self, i):
+        self._confirm = False
+        await i.response.defer()
+        from modules import gumroad_ping_sync
+        _st, text = await gumroad_ping_sync.sync_ping_subscription()
+        self.notice = "🔧 " + text
+        await self.load()
+        await i.edit_original_response(view=self)
 
     async def _clear(self, i):
         if not self._confirm:                       # first press only arms the button
