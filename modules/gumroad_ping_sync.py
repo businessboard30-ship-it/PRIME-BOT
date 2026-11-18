@@ -5,6 +5,7 @@ Settings page can't be changed by API; this subscription is a second, API-manage
 duplicate pings are harmless (the second answers "already processed"). Never logs the secret or the token.
 """
 import logging
+import os
 from typing import Optional, Tuple
 
 import aiohttp
@@ -14,10 +15,12 @@ from modules.payment_watch import GUMROAD_API
 
 logger = logging.getLogger(__name__)
 PATH = "/api/gumroad_webhook"
+DEFAULT_API_BASE = "https://api-service-production-df63.up.railway.app"
 
 
 def desired_url() -> Optional[str]:
-    base = (getattr(config, "PUBLIC_BASE_URL", "") or "").rstrip("/")
+    # The ping is served by the API service, not the web app, so config.PUBLIC_BASE_URL (web host) is the wrong base.
+    base = (os.environ.get("GUMROAD_PING_BASE_URL") or DEFAULT_API_BASE).rstrip("/")
     secret = getattr(config, "GUMROAD_WEBHOOK_SECRET", "") or ""
     if not base or not secret:
         return None
@@ -31,7 +34,7 @@ async def sync_ping_subscription() -> Tuple[str, str]:
     if not token:
         return "skipped", "GUMROAD_ACCESS_TOKEN isn't set."
     if not want:
-        return "skipped", "PUBLIC_BASE_URL or GUMROAD_WEBHOOK_SECRET isn't set."
+        return "skipped", "GUMROAD_WEBHOOK_SECRET isn't set."
     auth = {"access_token": token}
     try:
         async with aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=15)) as s:
