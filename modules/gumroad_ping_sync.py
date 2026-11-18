@@ -15,12 +15,11 @@ from modules.payment_watch import GUMROAD_API
 
 logger = logging.getLogger(__name__)
 PATH = "/api/gumroad_webhook"
-DEFAULT_API_BASE = "https://api-service-production-df63.up.railway.app"
 
 
 def desired_url() -> Optional[str]:
-    # The ping is served by the API service, not the web app, so config.PUBLIC_BASE_URL (web host) is the wrong base.
-    base = (os.environ.get("GUMROAD_PING_BASE_URL") or DEFAULT_API_BASE).rstrip("/")
+    # api_server.py (the Procfile "web" process) serves the ping, and its public host is config.PUBLIC_BASE_URL.
+    base = (os.environ.get("GUMROAD_PING_BASE_URL") or getattr(config, "PUBLIC_BASE_URL", "") or "").rstrip("/")
     secret = getattr(config, "GUMROAD_WEBHOOK_SECRET", "") or ""
     if not base or not secret:
         return None
