@@ -90,3 +90,55 @@ async def recover_missed_sales(days: int = RECOVER_DAYS) -> Dict[str, str]:
         results[ref] = msg
         logger.info("[payment-recover] %s -> %s", ref, msg)
     return results
+
+
+async def audit_sales(days: int = RECOVER_DAYS) -> List[dict]:
+    """Every real Gumroad sale of the last `days`, with the bot's record of it.
+    state: ok (unlocked) | missed (paid, our checkout not completed) | no_ref (no bot checkout matches)."""
+    import json
+    if not config.GUMROAD_ACCESS_TOKEN:
+        return []
+    from database import get_pool
+    pool = await get_pool()
+    async with pool.acquire() as conn:
+        rows = [dict(r) for r in await conn.fetch(
+            "SELECT payment_id, user_id, chat_id, payment_type, status, paystack_reference FROM payment_logs "
+            "WHERE provider = 'gumroad' AND created_date > NOW() - make_interval(days => $1)", days + 1)]
+    out: List[dict] = []
+    for s in await _fetch_sales(days):
+        if s.get("refunded") or s.get("disputed") or s.get("chargedback") or s.get("test"):
+            continue
+        text = json.dumps(s, default=str)
+        row = next((r for r in rows if r.get("paystack_reference") and str(r["paystack_reference"]) in text), None)
+        state = "no_ref" if not row else ("ok" if row["status"] == "completed" else "missed")
+        out.append({
+            "sale_id": str(s.get("id") or ""), "product": str(s.get("product_name") or "?"),
+            "price": (s.get("price") or 0) / 100 if isinstance(s.get("price"), (int, float)) else 0,
+            "email": str(s.get("email") or ""), "when": str(s.get("created_at") or "")[:16],
+            "state": state, "guild_id": (row or {}).get("chat_id"), "user_id": (row or {}).get("user_id"),
+            "type": (row or {}).get("payment_type"), "ref": (row or {}).get("paystack_reference"),
+        })
+    order = {"missed": 0, "no_ref": 1, "ok": 2}
+    out.sort(key=lambda x: order[x["state"]])
+    return out
+
+
+def format_audit(items: List[dict], guild_name=lambda g: None) -> List[str]:
+    """Plain-text report split into Discord-sized chunks."""
+    if not items:
+        return ["No paid Gumroad sales found (or `GUMROAD_ACCESS_TOKEN` isn't set)."]
+    n = {k: sum(1 for i in items if i["state"] == k) for k in ("ok", "missed", "no_ref")}
+    lines = [f"**Gumroad paid, last {RECOVER_DAYS} days:** {len(items)} sales. ✅ {n['ok']} unlocked, ❌ {n['missed']} MISSED, ⚠️ {n['no_ref']} no bot checkout"]
+    icon = {"ok": "✅", "missed": "❌", "no_ref": "⚠️"}
+    for i in items:
+        gid = i["guild_id"]
+        server = f"{guild_name(gid) or 'unknown server'} (`{gid}`)" if gid else "no server"
+        lines.append(f"{icon[i['state']]} `{i['sale_id']}` · {i['product']} · ${i['price']:.2f} · {server} · {i['when']}")
+    chunks, cur = [], ""
+    for ln in lines:
+        if len(cur) + len(ln) + 1 > 1900:
+            chunks.append(cur)
+            cur = ""
+        cur += ln + "\n"
+    chunks.append(cur)
+    return chunks

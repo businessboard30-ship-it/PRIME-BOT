@@ -335,11 +335,31 @@ class PendingView(_MoneyView):
         return [
             _btn("Confirm clear" if self._confirm else f"Clear old ({self.clearable})", D, self._clear, "🧹",
                  disabled=self.clearable == 0),
+            _btn("Paid check", S, self._paidcheck, "🧾"),
             _btn("Unlock paid", discord.ButtonStyle.success, self._recover, "🔓"),
             _btn("Fix ping", S, self._fixping, "🔧"),
             _btn("Refresh", S, self._refresh, "🔄"),
             _btn("Back", S, self._back, "⬅️"),
         ]
+
+    async def _paidcheck(self, i):
+        self._confirm = False
+        await i.response.defer(ephemeral=True)
+        try:
+            from modules import payment_recover
+            items = await payment_recover.audit_sales()
+            bot = getattr(self.cog, "bot", None)
+
+            def gname(g):
+                gg = bot.get_guild(int(g)) if (bot and g) else None
+                return gg.name if gg else None
+
+            chunks = payment_recover.format_audit(items, gname)
+        except Exception:
+            logger.exception("[admin-panel] paid check failed")
+            chunks = ["⚠️ Paid check failed. Check the bot logs."]
+        for c in chunks:
+            await i.followup.send(c, ephemeral=True)
 
     async def _recover(self, i):
         self._confirm = False
