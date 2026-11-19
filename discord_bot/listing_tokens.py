@@ -59,6 +59,29 @@ async def load_token(service: str, bot_id: int) -> str:
         return ""
 
 
+async def load_all_tokens(service: str) -> list:
+    """Every decryptable saved token for `service`, newest first, duplicates dropped. DiscordThings issues one API token per
+    account that works for all of that account's bots, so a token saved under any bot id can serve the others. Never raises."""
+    out: list = []
+    try:
+        from database import get_pool
+        from utils.crypto import secret_manager
+        async with (await get_pool()).acquire() as conn:
+            rows = await conn.fetch(
+                "SELECT token_encrypted FROM listing_api_tokens WHERE service = $1 AND token_encrypted IS NOT NULL "
+                "ORDER BY updated_at DESC", service)
+        for r in rows:
+            try:
+                t = secret_manager.decrypt(r["token_encrypted"]) or ""
+            except Exception:
+                t = ""
+            if t and t not in out:
+                out.append(t)
+    except Exception:
+        logger.exception("[listing-token] could not list %s tokens", service)
+    return out
+
+
 async def save_token(service: str, bot_id: int, token: str) -> None:
     from utils.crypto import secret_manager
     await db.set_listing_token_encrypted(service, bot_id, secret_manager.encrypt(token))

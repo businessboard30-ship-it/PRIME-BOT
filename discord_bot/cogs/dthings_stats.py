@@ -176,6 +176,7 @@ class DthingsStatsCog(commands.Cog):
         counted from discord_guilds, so a clone is covered even when its own process isn't posting. Returns how many posted."""
         from database import db
         posted = 0
+        shared_tokens = await listing_tokens.load_all_tokens("dthings")
         try:
             clones = await db.get_active_discord_clones()
         except Exception:
@@ -185,8 +186,11 @@ class DthingsStatsCog(commands.Cog):
             app_id = c.get("application_id") or c.get("bot_user_id")
             if not app_id or str(app_id) == self._my_id():
                 continue
-            token = await listing_tokens.load_token("dthings", int(app_id))
-            if not token:
+            tokens = []
+            for t in [await listing_tokens.load_token("dthings", int(app_id)), self.token] + shared_tokens:
+                if t and t not in tokens:
+                    tokens.append(t)
+            if not tokens:
                 continue
             try:
                 from database import get_pool
@@ -195,7 +199,11 @@ class DthingsStatsCog(commands.Cog):
                         "SELECT COUNT(*) AS n, COALESCE(SUM(member_count), 0) AS u FROM discord_guilds "
                         "WHERE clone_id = $1 AND left_at IS NULL", int(c["clone_id"]))
                 payload = build_stats_payload(int(row["n"]), 1, int(row["u"]))
-                status, text = await self._post("/stats", payload, bot_id=app_id, token=token)
+                status, text = 0, ""
+                for token in tokens[:4]:       # a token for another account is refused (401/403/404): try the next
+                    status, text = await self._post("/stats", payload, bot_id=app_id, token=token)
+                    if 200 <= status < 300 or status not in (401, 403, 404):
+                        break
                 if 200 <= status < 300:
                     posted += 1
                     logger.info("[dthings] posted clone %s stats %s", c.get("clone_id"), payload)
@@ -247,6 +255,10 @@ class DthingsStatsCog(commands.Cog):
             if not self.token:
                 app_id = listing_tokens.bot_app_id(self.bot)
                 self._db_token = await listing_tokens.load_token("dthings", app_id) if app_id else ""
+            if not self.token:
+                shared = await listing_tokens.load_all_tokens("dthings")   # one token covers every bot on the account
+                if shared:
+                    self._db_token = shared[0]
             if not self.token:
                 # Main bot: ask every day until set. A clone is only asked now and then, since most clones aren't
                 # on DiscordThings at all; once its owner pastes the token the main bot posts its count from the DB.
