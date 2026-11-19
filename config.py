@@ -428,7 +428,7 @@ AD_PLACEMENT_FEE_USD = float(os.getenv("AD_PLACEMENT_FEE_USD", "2"))
 # Gumroad = auto-renewing membership; Paystack (Ghana) = 30 days per
 # payment, renewed by paying again. PREMIUM_SUB_DAYS is the access window
 # granted per Gumroad renewal charge — a bit over a month so months with
-# 31 days never cause a gap. PREMIUM_GRACE_DAYS keeps features on briefly
+# 31 days never cause a gap. PREMIUM_GRACE_DAYS (now 0, no grace) used to keep features on briefly
 # after expiry so a slow renewal doesn't cut anyone off mid-payment.
 # ─────────────────────────────────────────────────────────────────────
 PREMIUM_FEE_USD = 5.99
@@ -453,7 +453,7 @@ CHIEF_SEAT_MAX_LEASE_DAYS = 28
 PAYMENT_SUPPORT_LINE = "❤️ Your payment helps keep this bot alive."
 PREMIUM_DAYS = 30
 PREMIUM_SUB_DAYS = 33
-PREMIUM_GRACE_DAYS = 3
+PREMIUM_GRACE_DAYS = 0   # no grace: Premium ends exactly at expires_at
 PREMIUM_REMINDER_DAYS = 3
 
 # Longer Premium plans (one-time payments, per server, same perks as monthly).
