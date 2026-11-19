@@ -90,3 +90,20 @@ def test_dthings_modal_token_is_tested_before_it_is_kept(monkeypatch):
         await runner.cleanup()
 
     asyncio.run(run())
+
+
+def test_clone_uses_its_own_id_and_stored_token_not_the_main_key(monkeypatch):
+    async def run():
+        monkeypatch.setattr(config, "DTHINGS_API_KEY", "main-key")
+        monkeypatch.setattr(config, "DTHINGS_BOT_ID", "555")
+        monkeypatch.setattr(commands.Bot, "application_id", property(lambda self: 777))
+        bot = commands.Bot(command_prefix="!", intents=discord.Intents.default())
+        bot.clone_id = 3
+        cog = DthingsStatsCog(bot)
+        cog._stats_loop.cancel()
+        assert cog._is_clone() and cog._my_id() == "777"
+        assert cog.token == "" and not cog.enabled          # the main bot's env key is never used by a clone
+        cog._db_token = "clone-key"
+        assert cog.token == "clone-key" and cog.enabled
+
+    asyncio.run(run())
