@@ -2232,6 +2232,9 @@ class JoinDMMoreView(discord.ui.LayoutView):
             ("🔢 **Counting**\nA counting channel: members count up together, one number each, no two in a row. Free. "
              "Premium adds maths counting, saves, milestone shout-outs and a bigger top list.",
              _CountingButton(guild_id, clone_id)),
+            ("😂 **Memes**\nFresh memes posted in a channel on a schedule you pick. Set up is free; \
+Premium turns on the automatic posting.",
+             _MemeButton(guild_id, clone_id)),
         ):
             section = discord.ui.Section(accessory=button)
             section.add_item(text)
@@ -2454,6 +2457,54 @@ class _CountingButton(discord.ui.DynamicItem[discord.ui.Button], template=r"^joi
                                         "then turn it on.", ephemeral=True)
 
 
+class _MemeButton(discord.ui.DynamicItem[discord.ui.Button], template=r"^join_dm_meme:(\d+):(-|\d+)$"):
+    """Memes. Needs Manage Server. Posts the meme setup panel (channel, schedule, sources, ping role) in the server's
+    default channel, because this DM has no server context; the panel lives in memes.py and re-checks Manage Server on
+    every click. Anyone with Manage Server can set it up; turning the posting on needs Premium."""
+
+    def __init__(self, guild_id: int, clone_id=None):
+        self.guild_id = guild_id
+        self.clone_id = clone_id
+        super().__init__(discord.ui.Button(
+            label="Set up", style=discord.ButtonStyle.primary, emoji="😂",
+            custom_id=_encode("meme", guild_id, clone_id),
+        ))
+
+    @classmethod
+    async def from_custom_id(cls, interaction: discord.Interaction, item, match: re.Match):
+        guild_id, clone_id = _decode(match)
+        return cls(guild_id, clone_id)
+
+    async def callback(self, interaction: discord.Interaction):
+        from discord_bot.cogs._views_bot_profile import _check_access
+        if not await _check_access(interaction, self.guild_id):
+            return
+        await interaction.response.defer(ephemeral=interaction.guild is not None)
+        guild = interaction.client.get_guild(self.guild_id)
+        channel = _default_text_channel(guild) if guild is not None else None
+        if channel is None:
+            await interaction.followup.send("I couldn't find a channel I'm able to post in. Give me **Send Messages** in one "
+                                            "and tap Set up again.", ephemeral=True)
+            return
+        try:
+            from discord_bot.cogs.birthdays import _is_premium
+            from discord_bot.cogs.memes import build_setup_view
+            from modules import meme_store
+            cfg = await meme_store.get_config(guild.id, self.clone_id)
+            premium = await _is_premium(guild.id, self.clone_id)
+            await channel.send(
+                view=build_setup_view(guild, cfg, premium,
+                                      note="Only people with **Manage Server** can change these settings."),
+                allowed_mentions=discord.AllowedMentions.none())
+        except (discord.Forbidden, discord.HTTPException):
+            logger.exception("join_dm meme setup failed for guild %s", self.guild_id)
+            await interaction.followup.send("I couldn't post the meme setup. Make sure I can **Send Messages** in your "
+                                            "server.", ephemeral=True)
+            return
+        await interaction.followup.send(f"😂 Meme setup is open in {channel.mention}. Pick the channel, how often and the "
+                                        "sources, then turn it on (Premium).", ephemeral=True)
+
+
 class _MoreBackButton(discord.ui.DynamicItem[discord.ui.Button], template=r"^join_dm_more_back:(\d+):(-|\d+)$"):
     """Back from More features to page 1 of the join DM (rebuilt live, so it works after a restart)."""
 
@@ -2548,7 +2599,7 @@ DYNAMIC_ITEMS = (
     _RemindLaterButton, _AdvertiseButton, _ConnectButton, _PartnershipButton, _HoneypotButton, _WelcomeCardOptionsButton, _WelcomeCustomizeCardButton, _WelcomePreviewRefreshButton, _DontAskAgainButton, _FeatureToggleButton, _PageNavButton,
     _WelcomeEditButton, _WelcomeChannelButton, _WelcomeBackButton, _WelcomeDeliveryButton, _WelcomeDmFallbackButton,
     _JoinOfferInviteButton, _BuildBotPasteButton, _ReferralCodeButton, _AntiRaidButton, _ApplyFormButton,
-    _MoreFeaturesButton, _MoreBackButton, _CatButton, _BotProfileButton, _AnimeButton, _BirthdayButton, _CountingButton,
+    _MoreFeaturesButton, _MoreBackButton, _CatButton, _BotProfileButton, _AnimeButton, _BirthdayButton, _CountingButton, _MemeButton,
 )
 from discord_bot.cogs._views_bot_profile import DYNAMIC_ITEMS as _BOT_PROFILE_ITEMS  # noqa: E402
 DYNAMIC_ITEMS = DYNAMIC_ITEMS + _BOT_PROFILE_ITEMS
