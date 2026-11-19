@@ -544,6 +544,8 @@ async def _process_gumroad_ping_inner(fields: dict) -> tuple:
         from premium_discount import discount_for_reference, discounted_usd
         if await discount_for_reference(reference, row["user_id"]):
             expected = discounted_usd()
+    if payment_type == "ultra_welcome_pack" and expected is not None:
+        expected = min(expected, getattr(config, "ULTRA_PACK_LEGACY_FEE_USD", expected))   # old price still honoured
     try:
         paid_cents = int(float(fields.get("price", 0)))
     except (TypeError, ValueError):

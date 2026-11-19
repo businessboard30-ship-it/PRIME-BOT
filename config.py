@@ -294,7 +294,10 @@ ANIME_PLUS_PRODUCT_DESCRIPTION = "Follow up to 50 anime, DM alerts and quiet hou
 # separate flag/price so a guild can own one without the other. Priced
 # as a low-cost add-on for arbitrary custom branding, not a fixed
 # preset look.
-ULTRA_PACK_FEE_USD = 1.99
+ULTRA_PACK_FEE_USD = 2.22
+# Old price. Sales at this amount are still accepted until the Gumroad product is changed to the new price, so nobody who pays
+# the listed price is left locked out. Delete this once the Gumroad product shows ULTRA_PACK_FEE_USD.
+ULTRA_PACK_LEGACY_FEE_USD = 1.99
 
 # Fallback image-hosting channel ID for the ultra pack's upload option
 # (/welcome custombg's `image` attachment param) — an admin can upload a
