@@ -99,7 +99,15 @@ class DthingsStatsCog(commands.Cog):
 
     @property
     def token(self) -> str:
-        return config.DTHINGS_API_KEY or self._db_token
+        # The env key is the main bot's. A clone only ever uses the token saved for its own application id.
+        return (config.DTHINGS_API_KEY if self._is_listed_bot() else "") or self._db_token
+
+    def _my_id(self) -> str:
+        me = getattr(self.bot, "application_id", None) or getattr(getattr(self.bot, "user", None), "id", None)
+        return str(me) if me is not None else ""
+
+    def _is_clone(self) -> bool:
+        return getattr(self.bot, "clone_id", None) is not None
 
     @property
     def enabled(self) -> bool:
@@ -135,7 +143,7 @@ class DthingsStatsCog(commands.Cog):
 
     async def _post(self, path: str, body: dict):
         """Returns (status, text). Never raises."""
-        url = f"{DTHINGS_API}/bots/{config.DTHINGS_BOT_ID}{path}"
+        url = f"{DTHINGS_API}/bots/{self._my_id() or config.DTHINGS_BOT_ID}{path}"
         if not self.token:
             return 0, "no token"
         headers = {"Authorization": self.token, "Content-Type": "application/json"}
@@ -184,7 +192,7 @@ class DthingsStatsCog(commands.Cog):
             logger.exception("[dthings] event-driven stats post failed")
 
     def _schedule_event_post(self):
-        if not self.enabled or not self.bot.is_ready() or not self._is_listed_bot():
+        if not self.enabled or not self.bot.is_ready():
             return
         if self._event_post_task is None or self._event_post_task.done():
             self._event_post_task = asyncio.create_task(self._debounced_post())
@@ -200,17 +208,14 @@ class DthingsStatsCog(commands.Cog):
     @tasks.loop(minutes=30)
     async def _stats_loop(self):
         try:
-            if not self._is_listed_bot():
-                if not self._skip_logged:
-                    self._skip_logged = True
-                    logger.info("[dthings] this bot (%s) is not the listed bot (DTHINGS_BOT_ID=%s) — not posting",
-                                getattr(self.bot.user, "id", "?"), config.DTHINGS_BOT_ID)
-                return
             if not self.token:
                 app_id = listing_tokens.bot_app_id(self.bot)
                 self._db_token = await listing_tokens.load_token("dthings", app_id) if app_id else ""
             if not self.token:
-                if await listing_tokens.prompt_owner_for_token(self.bot, "dthings"):
+                # Main bot: ask every day until set. A clone is only asked now and then, since most clones aren't
+                # on DiscordThings at all; once its owner pastes the token it posts like the main bot.
+                hours = 24 * 30 if self._is_clone() else None
+                if await listing_tokens.prompt_owner_for_token(self.bot, "dthings", cooldown_hours=hours):
                     logger.info("[dthings] no token — DM'd the owner a token prompt")
                 return
             await self.post_stats()

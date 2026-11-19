@@ -137,14 +137,14 @@ class TokenPromptView(discord.ui.View):
         await interaction.response.send_modal(TokenModal(self.service))
 
 
-async def prompt_owner_for_token(bot, service: str) -> bool:
+async def prompt_owner_for_token(bot, service: str, cooldown_hours: int | None = None) -> bool:
     """DMs the bot's owner(s) the token request, at most once per cooldown.
     Best-effort — returns True if at least one DM went out."""
     app_id = bot_app_id(bot)
     if app_id is None:
         return False
     try:
-        if not await db.claim_listing_token_prompt(service, app_id, PROMPT_COOLDOWN_HOURS):
+        if not await db.claim_listing_token_prompt(service, app_id, cooldown_hours or PROMPT_COOLDOWN_HOURS):
             return False
         owner_ids = await bot._owner_ids_for_alert()
     except Exception:
@@ -155,8 +155,8 @@ async def prompt_owner_for_token(bot, service: str) -> bool:
     embed = discord.Embed(
         title=f"🔑 {info['label']} token needed",
         description=(
-            f"**{bot.user}** is the bot listed on {info['label']}, but it has no API token, so its "
-            f"server count isn't being sent.\n\nGet the token from {info['where']}\n"
+            f"If **{bot.user}** is listed on {info['label']}, it has no API token yet, so its "
+            f"server count isn't being sent. (Not listed there? Ignore this.)\n\nGet the token from {info['where']}\n"
             "Then press the button below and paste it. It's stored encrypted and only asked once."
         ),
         color=discord.Color.blurple(),
