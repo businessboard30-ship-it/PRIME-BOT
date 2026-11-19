@@ -387,6 +387,8 @@ async def _process_premium_renewal(fields: dict, subscription_id: str, accept_te
         return 200, "product mismatch"
     fee = config.PREMIUM_PLUS_FEE_USD if plan == "premium_plus" else config.PREMIUM_FEE_USD
     label = "Premium Plus" if plan == "premium_plus" else "Premium"
+    if plan == "premium":
+        fee = min(fee, getattr(config, "PREMIUM_LEGACY_FEE_USD", fee))   # existing members at the old price keep renewing
     try:
         paid_cents = int(float(fields.get("price", 0)))
     except (TypeError, ValueError):
@@ -544,8 +546,9 @@ async def _process_gumroad_ping_inner(fields: dict) -> tuple:
         from premium_discount import discount_for_reference, discounted_usd
         if await discount_for_reference(reference, row["user_id"]):
             expected = discounted_usd()
-    if payment_type == "ultra_welcome_pack" and expected is not None:
-        expected = min(expected, getattr(config, "ULTRA_PACK_LEGACY_FEE_USD", expected))   # old price still honoured
+    _legacy = {"ultra_welcome_pack": "ULTRA_PACK_LEGACY_FEE_USD", "premium": "PREMIUM_LEGACY_FEE_USD"}.get(payment_type)
+    if _legacy and expected is not None:
+        expected = min(expected, getattr(config, _legacy, expected))   # old price still honoured
     try:
         paid_cents = int(float(fields.get("price", 0)))
     except (TypeError, ValueError):
