@@ -141,12 +141,13 @@ class DthingsStatsCog(commands.Cog):
         if self._event_post_task and not self._event_post_task.done():
             self._event_post_task.cancel()
 
-    async def _post(self, path: str, body: dict):
-        """Returns (status, text). Never raises."""
-        url = f"{DTHINGS_API}/bots/{self._my_id() or config.DTHINGS_BOT_ID}{path}"
-        if not self.token:
+    async def _post(self, path: str, body: dict, bot_id=None, token=None):
+        """Returns (status, text). Never raises. Defaults to this bot's own listing and token."""
+        url = f"{DTHINGS_API}/bots/{bot_id or self._my_id() or config.DTHINGS_BOT_ID}{path}"
+        token = token or self.token
+        if not token:
             return 0, "no token"
-        headers = {"Authorization": self.token, "Content-Type": "application/json"}
+        headers = {"Authorization": token, "Content-Type": "application/json"}
         try:
             timeout = aiohttp.ClientTimeout(total=REQUEST_TIMEOUT_SECONDS)
             async with aiohttp.ClientSession(timeout=timeout, headers=headers) as session:
@@ -169,6 +170,41 @@ class DthingsStatsCog(commands.Cog):
             return True
         logger.warning("[dthings] stats post failed: HTTP %s %s", status, text)
         return False
+
+    async def sweep_clones(self) -> int:
+        """Main bot only: reads every clone's saved DiscordThings token from the DB and posts that clone's server count,
+        counted from discord_guilds, so a clone is covered even when its own process isn't posting. Returns how many posted."""
+        from database import db
+        posted = 0
+        try:
+            clones = await db.get_active_discord_clones()
+        except Exception:
+            logger.exception("[dthings] couldn't list clones")
+            return 0
+        for c in clones or []:
+            app_id = c.get("application_id") or c.get("bot_user_id")
+            if not app_id or str(app_id) == self._my_id():
+                continue
+            token = await listing_tokens.load_token("dthings", int(app_id))
+            if not token:
+                continue
+            try:
+                from database import get_pool
+                async with (await get_pool()).acquire() as conn:
+                    row = await conn.fetchrow(
+                        "SELECT COUNT(*) AS n, COALESCE(SUM(member_count), 0) AS u FROM discord_guilds "
+                        "WHERE clone_id = $1 AND left_at IS NULL", int(c["clone_id"]))
+                payload = build_stats_payload(int(row["n"]), 1, int(row["u"]))
+                status, text = await self._post("/stats", payload, bot_id=app_id, token=token)
+                if 200 <= status < 300:
+                    posted += 1
+                    logger.info("[dthings] posted clone %s stats %s", c.get("clone_id"), payload)
+                else:
+                    logger.warning("[dthings] clone %s stats post failed: HTTP %s %s", c.get("clone_id"), status, text)
+            except Exception:
+                logger.exception("[dthings] clone %s stats sweep failed", c.get("clone_id"))
+            await asyncio.sleep(2)   # dsc.sh allows 30 requests/min per token, and each clone has its own
+        return posted
 
     async def push_commands(self) -> bool:
         raw = [c.to_dict(self.bot.tree) for c in self.bot.tree.get_commands()]
@@ -213,15 +249,16 @@ class DthingsStatsCog(commands.Cog):
                 self._db_token = await listing_tokens.load_token("dthings", app_id) if app_id else ""
             if not self.token:
                 # Main bot: ask every day until set. A clone is only asked now and then, since most clones aren't
-                # on DiscordThings at all; once its owner pastes the token it posts like the main bot.
+                # on DiscordThings at all; once its owner pastes the token the main bot posts its count from the DB.
                 hours = 24 * 30 if self._is_clone() else None
                 if await listing_tokens.prompt_owner_for_token(self.bot, "dthings", cooldown_hours=hours):
                     logger.info("[dthings] no token — DM'd the owner a token prompt")
-                return
-            await self.post_stats()
-            if not self._commands_pushed:
-                # Separate request, so wait out the per-endpoint 1/min limit isn't needed;
-                # they're different endpoints.
+            if self._is_clone():
+                return   # the main bot posts every clone's count from the DB (sweep_clones)
+            if self.token:
+                await self.post_stats()
+            await self.sweep_clones()      # covers clones even while the main bot has no token of its own
+            if self.token and not self._commands_pushed:
                 self._commands_pushed = await self.push_commands()
         except Exception:
             logger.exception("[dthings] stats loop iteration failed")
