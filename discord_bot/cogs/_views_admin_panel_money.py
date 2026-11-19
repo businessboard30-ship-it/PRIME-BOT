@@ -372,7 +372,12 @@ class PendingView(_MoneyView):
             self.notice = "⚠️ Recovery failed. Check the bot logs."
         else:
             ok = sum(1 for m in done.values() if m == "ok")
-            bad = [f"{r}: {m}" for r, m in done.items() if m != "ok"][:5]
+            try:
+                from gumroad_payments import _ALERT_MESSAGES as _why
+            except Exception:
+                _why = {}
+            bad = [f"{r}: {m} ({_why.get(m.split(' (')[0], '')})" if _why.get(m.split(' (')[0]) else f"{r}: {m}"
+                   for r, m in done.items() if m != "ok"][:5]
             self.notice = (f"🔓 Unlocked {ok} paid sale(s)." if done else "Nothing paid is waiting (or the Gumroad token isn't set).")
             if bad:
                 self.notice += "\n" + "\n".join(f"-# {b}" for b in bad)
