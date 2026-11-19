@@ -87,6 +87,9 @@ async def recover_missed_sales(days: int = RECOVER_DAYS) -> Dict[str, str]:
         except Exception:
             logger.exception("[payment-recover] replay crashed for %s", ref)
             msg = "error"
+        if msg == "product mismatch":  # show what Gumroad says was bought, so the product id/link in config can be fixed
+            msg = (f"product mismatch (Gumroad product_id `{sale.get('product_id')}`, "
+                   f"link `{sale.get('short_url') or sale.get('product_permalink') or sale.get('permalink')}`)")
         results[ref] = msg
         logger.info("[payment-recover] %s -> %s", ref, msg)
     return results
