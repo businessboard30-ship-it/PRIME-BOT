@@ -237,6 +237,16 @@ Creature catching (`/catch`) is a hub with six categories; see [Catch game](#cat
 
 ---
 
+## Gumroad payments: setup & recovery
+
+- **Env (Railway):** `GUMROAD_ACCESS_TOKEN` (Gumroad > Settings > Advanced > Applications > generate access token, needs `view_sales`) and `GUMROAD_WEBHOOK_SECRET` (any random string you choose).
+- **Ping URL (Gumroad > Settings > Advanced):** `https://<your-web-host>/api/gumroad_webhook?secret=<GUMROAD_WEBHOOK_SECRET>`. The API can't edit this field, so set it by hand and keep the secret identical on both sides.
+- **If the API was down and pings were lost:** open the admin panel > Money > Pending payments.
+  - 🧾 **Paid check** lists every real Gumroad sale with its sale id and server, marked unlocked, missed, or no bot checkout. It changes nothing.
+  - 🔓 **Unlock paid** replays missed sales through the normal ping checks (same product/price/claim rules), so it is safe to press repeatedly.
+  - 🔧 **Fix ping** keeps an API-managed sale-ping subscription pointed at `PUBLIC_BASE_URL` (override with `GUMROAD_PING_BASE_URL`).
+- The payment watch runs the same recovery and ping sync automatically every 30 minutes and DMs the owner when it fixes something.
+
 ## Technology Stack
 
 - **Language:** Python 3.13
