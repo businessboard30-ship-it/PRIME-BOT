@@ -107,6 +107,17 @@ async def audit_sales(days: int = RECOVER_DAYS) -> List[dict]:
         rows = [dict(r) for r in await conn.fetch(
             "SELECT payment_id, user_id, chat_id, payment_type, status, paystack_reference FROM payment_logs "
             "WHERE provider = 'gumroad' AND created_date > NOW() - make_interval(days => $1)", days + 1)]
+    names: Dict[int, str] = {}
+    gids = [int(r["chat_id"]) for r in rows if r.get("chat_id")]
+    if gids:
+        try:  # discord_guilds keeps the name of every server the bot (or a clone) was ever in, even after it left
+            async with pool.acquire() as conn:
+                for r in await conn.fetch(
+                        "SELECT DISTINCT ON (guild_id) guild_id, guild_name FROM discord_guilds "
+                        "WHERE guild_id = ANY($1::bigint[]) AND guild_name IS NOT NULL ORDER BY guild_id, joined_at DESC", gids):
+                    names[int(r["guild_id"])] = r["guild_name"]
+        except Exception:
+            logger.exception("[payment-recover] guild name lookup failed")
     out: List[dict] = []
     for s in await _fetch_sales(days):
         if s.get("refunded") or s.get("disputed") or s.get("chargedback") or s.get("test"):
@@ -118,7 +129,7 @@ async def audit_sales(days: int = RECOVER_DAYS) -> List[dict]:
             "sale_id": str(s.get("id") or ""), "product": str(s.get("product_name") or "?"),
             "price": (s.get("price") or 0) / 100 if isinstance(s.get("price"), (int, float)) else 0,
             "email": str(s.get("email") or ""), "when": str(s.get("created_at") or "")[:16],
-            "state": state, "guild_id": (row or {}).get("chat_id"), "user_id": (row or {}).get("user_id"),
+            "state": state, "guild_id": (row or {}).get("chat_id"), "server_name": names.get(int((row or {}).get("chat_id") or 0)), "user_id": (row or {}).get("user_id"),
             "type": (row or {}).get("payment_type"), "ref": (row or {}).get("paystack_reference"),
         })
     order = {"missed": 0, "no_ref": 1, "ok": 2}
@@ -135,7 +146,7 @@ def format_audit(items: List[dict], guild_name=lambda g: None) -> List[str]:
     icon = {"ok": "✅", "missed": "❌", "no_ref": "⚠️"}
     for i in items:
         gid = i["guild_id"]
-        server = f"{guild_name(gid) or 'unknown server'} (`{gid}`)" if gid else "no server"
+        server = f"{i.get('server_name') or guild_name(gid) or 'name not recorded'} (`{gid}`)" if gid else "no server"
         lines.append(f"{icon[i['state']]} `{i['sale_id']}` · {i['product']} · ${i['price']:.2f} · {server} · {i['when']}")
     chunks, cur = [], ""
     for ln in lines:
