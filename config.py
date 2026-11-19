@@ -936,6 +936,7 @@ _LIVE_DEFAULTS = {
     "CAT_API_KEY": "",
     "TOPGG_TOKEN": "",
     "DTHINGS_API_KEY": "",
+    "TMDB_API_KEY": "",
 }
 
 
