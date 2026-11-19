@@ -24,6 +24,7 @@ import discord
 from discord import app_commands
 from discord.ext import commands, tasks
 
+from discord_bot.auto_create import create_role, create_text_channel, toggle_member_role
 from discord_bot.cogs.birthdays import _Fixed, _admin, _clone, _is_premium, _premium_gate
 from modules import meme_store as store
 from modules import memes as mm
@@ -87,6 +88,7 @@ def build_setup_view(guild: discord.Guild, cfg: dict, premium: bool, note: Optio
     box.add_item(discord.ui.ActionRow(SourcesSelect(mm.subs_from_text(cfg.get("subs")))))
     box.add_item(discord.ui.ActionRow(PingRoleSelect()))
     box.add_item(discord.ui.ActionRow(ToggleButton(bool(cfg.get("enabled")), premium), PreviewButton(), PostNowButton(premium)))
+    box.add_item(discord.ui.ActionRow(MakeChannelButton(), MakeRoleButton()))
     view.add_item(box)
     return view
 
@@ -224,7 +226,56 @@ class PostNowButton(_Fixed, discord.ui.DynamicItem[discord.ui.Button], template=
                                         "permissions and try again.", ephemeral=True)
 
 
-DYNAMIC_ITEMS = (PickChannelSelect, IntervalSelect, SourcesSelect, PingRoleSelect, ToggleButton, PreviewButton, PostNowButton)
+class MakeChannelButton(_Fixed, discord.ui.DynamicItem[discord.ui.Button], template=r"^meme:mkchannel$"):
+    def __init__(self):
+        super().__init__(discord.ui.Button(label="Create channel", emoji="➕", style=discord.ButtonStyle.secondary,
+                                           custom_id="meme:mkchannel"))
+
+    async def callback(self, interaction: discord.Interaction):
+        if not await _admin(interaction):
+            return
+        ch, err = await create_text_channel(interaction.guild, "memes", "Fresh memes, posted automatically. 😂", near=interaction.channel)
+        if err:
+            return await interaction.response.send_message(err, ephemeral=True)
+        await _save(interaction, note=f"Channel {ch.mention} is ready.", channel_id=ch.id)
+
+
+class MakeRoleButton(_Fixed, discord.ui.DynamicItem[discord.ui.Button], template=r"^meme:mkrole$"):
+    def __init__(self):
+        super().__init__(discord.ui.Button(label="Create role", emoji="➕", style=discord.ButtonStyle.secondary,
+                                           custom_id="meme:mkrole"))
+
+    async def callback(self, interaction: discord.Interaction):
+        if not await _admin(interaction):
+            return
+        role, err = await create_role(interaction.guild, "Meme Fans", discord.Color.orange())
+        if err:
+            return await interaction.response.send_message(err, ephemeral=True)
+        await _save(interaction, note=f"Role {role.mention} is ready. Members can opt in from the button under each meme.",
+                    ping_role_id=role.id)
+
+
+class MemeRoleToggle(_Fixed, discord.ui.DynamicItem[discord.ui.Button], template=r"^meme:rolebtn$"):
+    """Under each meme when a ping role is set: members opt in or out of the pings themselves."""
+
+    def __init__(self):
+        super().__init__(discord.ui.Button(label="Meme pings", emoji="🔔", style=discord.ButtonStyle.secondary,
+                                           custom_id="meme:rolebtn"))
+
+    async def callback(self, interaction: discord.Interaction):
+        if interaction.guild is None:
+            return
+        cfg = await store.get_config(interaction.guild.id, _clone(interaction))
+        role = interaction.guild.get_role(cfg["ping_role_id"]) if cfg.get("ping_role_id") else None
+        if role is None:
+            return await interaction.response.send_message("The meme role no longer exists. An admin can set it up again.", ephemeral=True)
+        has, err = await toggle_member_role(interaction.user, role)
+        await interaction.response.send_message(err or (f"✅ You'll get pinged for memes ({role.mention})." if has else "You won't be pinged any more."),
+                                                ephemeral=True, allowed_mentions=discord.AllowedMentions.none())
+
+
+DYNAMIC_ITEMS = (PickChannelSelect, IntervalSelect, SourcesSelect, PingRoleSelect, ToggleButton, PreviewButton, PostNowButton,
+                 MakeChannelButton, MakeRoleButton, MemeRoleToggle)
 
 
 # ── the cog ─────────────────────────────────────────────────────────────
@@ -262,7 +313,11 @@ class MemesCog(commands.Cog):
             return False
         role = guild.get_role(cfg["ping_role_id"]) if cfg.get("ping_role_id") else None
         try:
-            await ch.send(content=role.mention if role else None, embed=meme_embed(m),
+            view = None
+            if role:
+                view = discord.ui.View(timeout=None)
+                view.add_item(MemeRoleToggle())
+            await ch.send(content=role.mention if role else None, embed=meme_embed(m), view=view,
                           allowed_mentions=discord.AllowedMentions(roles=[role] if role else False, users=False, everyone=False))
         except (discord.Forbidden, discord.HTTPException):
             logger.info("[memes] couldn't post in guild %s", guild_id)

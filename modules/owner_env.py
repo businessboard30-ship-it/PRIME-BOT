@@ -90,6 +90,7 @@ def _build() -> List[Spec]:
         ("FAL_API_KEY", "Fal key", "str", True),
         ("YOUTUBE_API_KEY", "YouTube key", "str", True),
         ("CAT_API_KEY", "Cat API key", "str", True),
+        ("TMDB_API_KEY", "TMDB API key (movies)", "str", True),
     ])
     add("Bot lists", [
         ("TOPGG_TOKEN", "top.gg token", "str", True),
@@ -467,7 +468,7 @@ def status(name: str, saved: Dict[str, Optional[str]]) -> Tuple[str, bool]:
 LIVE = frozenset({
     "GROQ_API_KEY", "GROQ_API_KEY_BACKUP", "GROQ_API_KEY_BACKUP2",
     "OPENAI_API_KEY", "GEMINI_API_KEY", "ANTHROPIC_API_KEY", "FAL_API_KEY", "YOUTUBE_API_KEY", "CAT_API_KEY",
-    "TOPGG_TOKEN", "DTHINGS_API_KEY",
+    "TOPGG_TOKEN", "DTHINGS_API_KEY", "TMDB_API_KEY",
     "PAYSTACK_SECRET_KEY", "PAYSTACK_PUBLIC_KEY", "GUMROAD_ACCESS_TOKEN", "GUMROAD_WEBHOOK_SECRET",
 })
 LIVE_TTL = 30
@@ -530,6 +531,7 @@ FEATURE: Dict[str, str] = {
     "OPENAI_API_KEY": "the AI store's OpenAI models and card art",
     "ANTHROPIC_API_KEY": "the AI store's Claude models",
     "YOUTUBE_API_KEY": "the YouTube connection",
+    "TMDB_API_KEY": "the Movies feature",
     "PAYSTACK_SECRET_KEY": "Paystack payments",
     "GUMROAD_ACCESS_TOKEN": "Gumroad products and sale checks",
     "GUMROAD_WEBHOOK_SECRET": "Gumroad sale alerts",
