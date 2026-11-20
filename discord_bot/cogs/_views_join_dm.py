@@ -1543,38 +1543,34 @@ async def _enable_channels(interaction: discord.Interaction, guild: discord.Guil
 
 
 async def _enable_tickets(interaction: discord.Interaction, guild: discord.Guild, clone_id):
-    """Auto-creates a dedicated #tickets channel for the support panel,
-    same pattern as _enable_downloadhub's #downloads — NOT
-    _default_text_channel (an arbitrary existing channel, usually
-    #general or the system channel), which is what this used to post the
-    panel into. A panel sitting in a random already-busy channel isn't
-    what an owner expects from "set up tickets", and it's inconsistent
-    with every other channel-creating one-tap button in this file. If a
-    panel channel is already configured and still exists, reuses it
-    rather than creating a second one, same as downloadhub's existing-
-    config check."""
-    existing = await db.get_ticket_config(guild.id, clone_id=clone_id)
-    existing_channel_id = existing.get("panel_channel_id")
-    existing_channel = guild.get_channel(existing_channel_id) if existing_channel_id else None
-    if existing_channel is not None:
-        return True, f"Ticket panel is already set up in {existing_channel.mention}. Set a support role anytime with `/ticket setup`."
-
+    """Opens the ticket setup wizard (panel channel, support role, ticket category, welcome message, Post panel) in the
+    server's default channel, the same wizard `/ticket setup` shows. It used to post a bare panel straight into a new
+    #tickets channel with no support role; now the owner is walked through the setup first and nothing is posted until
+    they press Post panel. The wizard re-checks who may use it, so showing it in the server is safe."""
+    from discord_bot.cogs._views_ticket_wizard import build_ticket_wizard_view, remember_ticket_wizard_message
+    channel = _default_text_channel(guild)
+    if channel is None:
+        return False, ("I couldn't find a channel I'm able to post in. Give me **Send Messages** in one and tap "
+                       "Support tickets again, or run `/ticket setup` in a channel yourself.")
+    await db.set_ticket_config(guild.id, clone_id=clone_id, wizard_invoker_id=interaction.user.id)
+    config = dict(await db.get_ticket_config(guild.id, clone_id=clone_id))
+    config["clone_id"] = clone_id
     try:
-        channel = await guild.create_text_channel("tickets", reason="Ticket panel set up via the join-DM button")
-    except discord.Forbidden:
-        return False, "I don't have permission to create channels here — create one and try `/ticket setup`."
-
-    from discord_bot.cogs.ticket import TicketPanelView
-    cog = interaction.client.get_cog("TicketCog")
-    embed = discord.Embed(
-        title="🎫 Need help?", description="Click below to open a private ticket with our support team.",
-        color=discord.Color.blurple(),
-    )
-    panel_message = await channel.send(embed=embed, view=TicketPanelView(cog))
-    await db.set_ticket_config(
-        guild.id, clone_id=clone_id, panel_channel_id=channel.id, panel_message_id=panel_message.id,
-    )
-    return True, f"Ticket panel posted in {channel.mention}. Set a support role anytime with `/ticket setup`."
+        premium = bool(await db.is_guild_premium_active(guild.id, clone_id))
+    except Exception:
+        logger.warning("swallowed exception in _enable_tickets", exc_info=True)
+        premium = False
+    try:
+        sent = await channel.send(view=build_ticket_wizard_view(guild, config, premium),
+                                  allowed_mentions=discord.AllowedMentions.none())
+    except (discord.Forbidden, discord.HTTPException):
+        logger.exception("join_dm ticket setup failed for guild %s", guild.id)
+        return False, "I couldn't post the ticket setup. Make sure I can **Send Messages** and **Embed Links** in your server."
+    await remember_ticket_wizard_message(guild.id, clone_id, interaction.user.id, channel.id, sent.id)
+    await interaction.followup.send(
+        f"🎫 Ticket setup is open in {channel.mention}. Pick the panel channel, the support role and the ticket category, "
+        "then press **Post panel**.", ephemeral=True)
+    return None, ""        # None: this handler already answered
 
 
 async def _enable_welcome(interaction: discord.Interaction, guild: discord.Guild, clone_id):
