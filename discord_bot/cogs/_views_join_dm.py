@@ -2490,22 +2490,15 @@ class _MemeButton(discord.ui.DynamicItem[discord.ui.Button], template=r"^join_dm
                                             "and tap Set up again.", ephemeral=True)
             return
         try:
-            from discord_bot.cogs.birthdays import _is_premium
-            from discord_bot.cogs.memes import build_setup_view
-            from modules import meme_store
-            cfg = await meme_store.get_config(guild.id, self.clone_id)
-            premium = await _is_premium(guild.id, self.clone_id)
-            await channel.send(
-                view=build_setup_view(guild, cfg, premium,
-                                      note="Only people with **Manage Server** can change these settings."),
-                allowed_mentions=discord.AllowedMentions.none())
+            from discord_bot.cogs.memes import open_setup
+            await open_setup(interaction.client, guild, self.clone_id, interaction.user.id, channel)
         except (discord.Forbidden, discord.HTTPException):
             logger.exception("join_dm meme setup failed for guild %s", self.guild_id)
-            await interaction.followup.send("I couldn't post the meme setup. Make sure I can **Send Messages** in your "
-                                            "server.", ephemeral=True)
+            await interaction.followup.send("I couldn't post the meme setup. Make sure I can **Send Messages** and **Embed Links** "
+                                            "in your server.", ephemeral=True)
             return
-        await interaction.followup.send(f"😂 Meme setup is open in {channel.mention}. Pick the channel, how often and the "
-                                        "sources, then turn it on (Premium).", ephemeral=True)
+        await interaction.followup.send(f"😂 Meme setup is open in {channel.mention}. Tap ⚡ Quick setup or pick the channel and how often.",
+                                        ephemeral=True)
 
 
 class _MovieButton(discord.ui.DynamicItem[discord.ui.Button], template=r"^join_dm_movie:(\d+):(-|\d+)$"):
@@ -2538,20 +2531,18 @@ class _MovieButton(discord.ui.DynamicItem[discord.ui.Button], template=r"^join_d
             return
         try:
             from discord_bot.cogs.birthdays import _is_premium
-            from discord_bot.cogs.movies import build_setup_view
-            from modules import movie_store
-            cfg = await movie_store.get_config(guild.id, self.clone_id)
-            premium = await _is_premium(guild.id, self.clone_id)
-            await channel.send(
-                view=build_setup_view(guild, cfg, premium,
-                                      note="Only people with **Manage Server** can change these settings. Movies needs Premium."),
-                allowed_mentions=discord.AllowedMentions.none())
+            if not await _is_premium(self.guild_id, self.clone_id):          # Movies is fully Premium
+                from discord_bot.cogs._views_premium import send_premium_pitch
+                await send_premium_pitch(interaction, self.guild_id, self.clone_id)
+                return
+            from discord_bot.cogs.movies import open_setup
+            await open_setup(interaction.client, guild, self.clone_id, interaction.user.id, channel)
         except (discord.Forbidden, discord.HTTPException):
             logger.exception("join_dm movie setup failed for guild %s", self.guild_id)
-            await interaction.followup.send("I couldn't post the Movies setup. Make sure I can **Send Messages** in your "
-                                            "server.", ephemeral=True)
+            await interaction.followup.send("I couldn't post the Movies setup. Make sure I can **Send Messages** and **Embed Links** "
+                                            "in your server.", ephemeral=True)
             return
-        await interaction.followup.send(f"🎬 Movies setup is open in {channel.mention}. Pick or create the channel, then post the hub.",
+        await interaction.followup.send(f"🎬 Movies setup is open in {channel.mention}. Tap ⚡ Quick setup or pick the channel.",
                                         ephemeral=True)
 
 

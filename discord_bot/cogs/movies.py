@@ -4,11 +4,10 @@
 Movies hub (Premium). Legal sources only: TMDB (info, trailers, where it streams in your country) and the Internet
 Archive's public-domain film collection. The bot never searches or downloads from piracy sites.
 
-Setup (Manage Server, server must have Premium) is one persistent Components V2 panel: channel, country, optional role,
-with buttons to create the channel and the role for you. "Post hub" puts a persistent hub message in the channel with
-Search / Trending / Free classics buttons (and an opt-in role toggle) that every member can press.
-
-The panel opens from the join DM's "More features" screen. There is no slash command.
+Setup (Manage Server, server must have Premium) is a private, owner-locked wizard built like the anime spawn wizard: channel,
+country, optional role, ⚡ Quick setup, create-channel / create-role buttons, Preview and Close. It times out into a plain summary.
+"Post the hub" puts the only persistent message in the server: a hub with Search / Trending / Free classics buttons (and an
+opt-in role toggle) that every member can press. It opens from the join DM's "More features" screen. There is no slash command.
 """
 
 from __future__ import annotations
@@ -220,144 +219,219 @@ def build_hub_view(show_role: bool) -> discord.ui.LayoutView:
     return view
 
 
-# ── setup panel (Manage Server + Premium) ───────────────────────────────
+# ── setup wizard (Manage Server + Premium), same model as the anime spawn wizard ──────────
 
-def _config_text(guild: discord.Guild, cfg: dict, premium: bool) -> str:
+AUTO_CHANNEL = "movies"
+AUTO_ROLE = "Movie Fans"
+OOPS = "😿 Something went wrong saving that. Try again."
+
+
+def _config_text(guild: discord.Guild, cfg: dict, note: Optional[str] = None) -> str:
     ch = guild.get_channel(cfg["channel_id"]) if cfg.get("channel_id") else None
     role = guild.get_role(cfg["role_id"]) if cfg.get("role_id") else None
-    return "\n".join([
-        "## 🎬 Movies setup 💎",
-        "A Movies hub for your members: plot, cast, trailers, where to watch legally, and free public-domain classics. "
-        "This is a **Premium** feature." + ("" if premium else " This server doesn't have Premium yet."),
-        "",
-        f"**Hub channel:** {ch.mention if ch else 'not set'}",
-        f"**Country (where to watch):** {mv.REGIONS[mv.valid_region(cfg.get('region'))]}",
-        f"**Opt-in role:** {role.mention if role else 'none'}",
-    ])
+    parts = [note, ""] if note else []
+    parts += ["## 🎬 Movies 💎",
+              "A Movies hub for your members: plot, cast, trailers, **where it streams legally** in your country, and free public-domain "
+              "classics. Pick a channel (or let me create one) and I post the hub there. **Quick setup** does it in one tap. "
+              "Until you set this up, I do nothing in your server.", "",
+              f"**Hub channel:** {ch.mention if ch else 'not picked yet'}",
+              f"**Country (where to watch):** {mv.REGIONS[mv.valid_region(cfg.get('region'))]}",
+              f"**Opt-in role:** {role.mention if role else 'none (optional)'}",
+              "-# Movies is a Premium feature. Members can take the role with the 🔔 button on the hub."]
+    return "\n".join(parts)
 
 
-def build_setup_view(guild: discord.Guild, cfg: dict, premium: bool, note: Optional[str] = None) -> discord.ui.LayoutView:
+def _btn(label, cb, style=discord.ButtonStyle.secondary, emoji=None, disabled=False) -> discord.ui.Button:
+    b = discord.ui.Button(label=label, style=style, emoji=emoji, disabled=disabled)
+    b.callback = cb
+    return b
+
+
+class MovieSetupView(discord.ui.LayoutView):
+    """Private, owner-locked wizard. Times out into a plain summary; the only thing left in the server is the hub itself."""
+
+    def __init__(self, guild: discord.Guild, clone_id, owner_id: int, cfg: dict):
+        super().__init__(timeout=900)
+        self.guild, self.clone_id, self.owner_id, self.cfg = guild, clone_id, owner_id, cfg
+        self.note: Optional[str] = None
+        self.message: Optional[discord.Message] = None
+        self._build()
+
+    async def interaction_check(self, interaction: discord.Interaction) -> bool:
+        if interaction.user.id != self.owner_id:
+            try:
+                await interaction.response.send_message("🎬 This setup belongs to the person who opened it.", ephemeral=True)
+            except discord.HTTPException:
+                pass
+            return False
+        return True
+
+    def _build(self) -> None:
+        self.clear_items()
+        ready = bool(self.cfg.get("channel_id"))
+        sel = discord.ui.ChannelSelect(channel_types=[discord.ChannelType.text], placeholder="Pick the Movies channel")
+        sel.callback = self._on_channel
+        region = discord.ui.Select(placeholder="Country for 'where to watch'", options=[
+            discord.SelectOption(label=name, value=code, default=(code == mv.valid_region(self.cfg.get("region"))))
+            for code, name in mv.REGIONS.items()])
+        region.callback = self._on_region
+        role = discord.ui.RoleSelect(placeholder="Optional: a role members can opt in to", min_values=0, max_values=1)
+        role.callback = self._on_role
+        rows = [discord.ui.ActionRow(sel), discord.ui.ActionRow(region), discord.ui.ActionRow(role),
+                discord.ui.ActionRow(
+                    _btn("Quick setup", self._on_quick, discord.ButtonStyle.success, "⚡"),
+                    _btn("Create channel", self._on_create_channel, emoji="➕"),
+                    _btn("Create role", self._on_create_role, emoji="🎭")),
+                discord.ui.ActionRow(
+                    _btn("Preview", self._on_preview, discord.ButtonStyle.primary, "👀"),
+                    _btn("Post the hub", self._on_post, emoji="📌", disabled=not ready),
+                    _btn("Close", self._on_close))]
+        box = discord.ui.Container(accent_colour=COLOR)
+        box.add_item(discord.ui.TextDisplay(_config_text(self.guild, self.cfg, self.note)[:3900]))
+        for r in rows:
+            box.add_item(r)
+        self.add_item(box)
+
+    async def _push(self, interaction: discord.Interaction) -> None:
+        self._build()
+        if interaction.response.is_done():
+            await interaction.edit_original_response(view=self)
+        else:
+            await interaction.response.edit_message(view=self)
+
+    async def _save(self, **fields) -> bool:
+        try:
+            self.cfg = await store.set_config(self.guild.id, self.clone_id, **fields)
+            return True
+        except Exception:
+            logger.exception("[movies] couldn't save settings")
+            self.note = OOPS
+            return False
+
+    async def _on_channel(self, interaction: discord.Interaction):
+        await interaction.response.defer()
+        ch = self.guild.get_channel(int(interaction.data["values"][0]))
+        if not _can_post(ch, self.guild):
+            self.note = f"🚫 I need **View Channel, Send Messages** and **Embed Links** in {ch.mention if ch else 'that channel'}."
+        elif await self._save(channel_id=ch.id):
+            self.note = f"✅ Movies channel: {ch.mention}."
+        await self._push(interaction)
+
+    async def _on_region(self, interaction: discord.Interaction):
+        await interaction.response.defer()
+        if await self._save(region=mv.valid_region(interaction.data["values"][0])):
+            self.note = f"✅ Where-to-watch country: {mv.REGIONS[self.cfg['region']]}."
+        await self._push(interaction)
+
+    async def _on_role(self, interaction: discord.Interaction):
+        await interaction.response.defer()
+        vals = interaction.data.get("values") or []
+        role = self.guild.get_role(int(vals[0])) if vals else None
+        if await self._save(role_id=role.id if role else None):
+            self.note = f"✅ Members can opt in to {role.mention}." if role else "Role cleared."
+        await self._push(interaction)
+
+    async def _make_channel(self) -> Optional[discord.TextChannel]:
+        ch, err = await create_text_channel(self.guild, AUTO_CHANNEL, "Look up movies and series, trailers and where to watch legally.")
+        if err:
+            self.note = "🚫 " + err
+        return ch
+
+    async def _on_create_channel(self, interaction: discord.Interaction):
+        await interaction.response.defer()
+        ch = await self._make_channel()
+        if ch is not None and await self._save(channel_id=ch.id):
+            self.note = f"✅ Channel ready: {ch.mention}."
+        await self._push(interaction)
+
+    async def _on_create_role(self, interaction: discord.Interaction):
+        await interaction.response.defer()
+        role, err = await create_role(self.guild, AUTO_ROLE, discord.Color.red())
+        if err:
+            self.note = "🚫 " + err
+        elif await self._save(role_id=role.id):
+            self.note = f"✅ Role ready: {role.mention}. Members opt in from the hub."
+        await self._push(interaction)
+
+    async def _post_hub(self, ch: discord.TextChannel) -> bool:
+        role_ok = bool(self.cfg.get("role_id") and self.guild.get_role(self.cfg["role_id"]))
+        try:
+            await ch.send(view=build_hub_view(role_ok), allowed_mentions=discord.AllowedMentions.none())
+            return True
+        except (discord.Forbidden, discord.HTTPException):
+            self.note = f"🚫 I couldn't post in {ch.mention}. Give me **Send Messages** and **Embed Links** there."
+            return False
+
+    async def _on_quick(self, interaction: discord.Interaction):
+        """Channel (kept if picked, otherwise created) + the hub posted, in one tap. Premium."""
+        if not await _premium_gate(interaction, self.guild, self.clone_id):
+            return
+        await interaction.response.defer()
+        ch = self.guild.get_channel(self.cfg["channel_id"]) if self.cfg.get("channel_id") else None
+        if not _can_post(ch, self.guild):
+            ch = await self._make_channel()
+        if ch is not None and await self._save(channel_id=ch.id) and await self._post_hub(ch):
+            self.note = f"⚡ All set. The Movies hub is live in {ch.mention}. Change anything below any time."
+        await self._push(interaction)
+
+    async def _on_post(self, interaction: discord.Interaction):
+        if not await _premium_gate(interaction, self.guild, self.clone_id):
+            return
+        await interaction.response.defer()
+        ch = self.guild.get_channel(self.cfg["channel_id"]) if self.cfg.get("channel_id") else None
+        if ch is None:
+            self.note = "🚫 That channel is gone. Pick another."
+        elif await self._post_hub(ch):
+            self.note = f"📌 The Movies hub is live in {ch.mention}."
+        await self._push(interaction)
+
+    async def _on_preview(self, interaction: discord.Interaction):
+        """Shows what a member sees: this week's top trending title, in your country."""
+        await interaction.response.defer()
+        if not mv.configured():
+            self.note = "🔑 The movie database isn't connected yet. The bot owner needs to add the TMDB key."
+            return await self._push(interaction)
+        top = await mv.trending()
+        d = await mv.details(top[0]["type"], top[0]["id"], mv.valid_region(self.cfg.get("region"))) if top else None
+        if d:
+            view = discord.ui.View(timeout=300)
+            for b in detail_links(d):
+                view.add_item(b)
+            await interaction.followup.send(embed=detail_embed(d, mv.valid_region(self.cfg.get("region"))), view=view, ephemeral=True)
+        else:
+            self.note = "😿 I can't reach the movie database right now. Try again in a minute."
+            await self._push(interaction)
+
+    async def _on_close(self, interaction: discord.Interaction):
+        self.stop()
+        await interaction.response.edit_message(view=_final_view(_config_text(self.guild, self.cfg)))
+
+    async def on_timeout(self) -> None:
+        if self.message is not None:
+            try:
+                await self.message.edit(view=_final_view(_config_text(self.guild, self.cfg)))
+            except discord.HTTPException:
+                pass
+
+
+def _final_view(text: str) -> discord.ui.LayoutView:
     view = discord.ui.LayoutView(timeout=None)
     box = discord.ui.Container(accent_colour=COLOR)
-    box.add_item(discord.ui.TextDisplay(_config_text(guild, cfg, premium) + (f"\n-# {note}" if note else "")))
-    box.add_item(discord.ui.Separator())
-    box.add_item(discord.ui.ActionRow(MovieChannelSelect()))
-    box.add_item(discord.ui.ActionRow(RegionSelect(mv.valid_region(cfg.get("region")))))
-    box.add_item(discord.ui.ActionRow(MovieRoleSelect()))
-    box.add_item(discord.ui.ActionRow(MakeChannelButton(), MakeRoleButton(), PostHubButton()))
+    box.add_item(discord.ui.TextDisplay(text[:3900]))
     view.add_item(box)
     return view
 
 
-async def _setup_ok(interaction: discord.Interaction) -> bool:
-    """Manage Server AND Premium: the whole feature is Premium."""
-    if not await _admin(interaction):
-        return False
-    return await _premium_gate(interaction, interaction.guild, _clone(interaction))
+async def open_setup(bot, guild: discord.Guild, clone_id, owner_id: int, channel) -> discord.Message:
+    """Posts the wizard in `channel` for `owner_id`. Raises discord.HTTPException if it can't post."""
+    cfg = await store.get_config(guild.id, clone_id)
+    view = MovieSetupView(guild, clone_id, owner_id, cfg)
+    msg = await channel.send(view=view, allowed_mentions=discord.AllowedMentions.none())
+    view.message = msg
+    return msg
 
 
-async def _save(interaction: discord.Interaction, note: Optional[str] = None, **fields):
-    guild, clone_id = interaction.guild, _clone(interaction)
-    cfg = await store.set_config(guild.id, clone_id, **fields)
-    premium = await _is_premium(guild.id, clone_id)
-    view = build_setup_view(guild, cfg, premium, note=note)
-    if interaction.response.is_done():
-        await interaction.edit_original_response(view=view)
-    else:
-        await interaction.response.edit_message(view=view)
-
-
-class MovieChannelSelect(_Fixed, discord.ui.DynamicItem[discord.ui.ChannelSelect], template=r"^movie:channel$"):
-    def __init__(self):
-        super().__init__(discord.ui.ChannelSelect(custom_id="movie:channel", channel_types=[discord.ChannelType.text],
-                                                  placeholder="Channel for the Movies hub"))
-
-    async def callback(self, interaction: discord.Interaction):
-        if not await _setup_ok(interaction):
-            return
-        ch = interaction.guild.get_channel(self.item.values[0].id)
-        if not _can_post(ch, interaction.guild):
-            return await interaction.response.send_message(
-                f"I need **View Channel, Send Messages** and **Embed Links** in {ch.mention if ch else 'that channel'}.", ephemeral=True)
-        await _save(interaction, channel_id=ch.id)
-
-
-class RegionSelect(_Fixed, discord.ui.DynamicItem[discord.ui.Select], template=r"^movie:region$"):
-    def __init__(self, current: str = mv.DEFAULT_REGION):
-        super().__init__(discord.ui.Select(custom_id="movie:region", placeholder="Country for 'where to watch'", options=[
-            discord.SelectOption(label=name, value=code, default=(code == current)) for code, name in mv.REGIONS.items()]))
-
-    async def callback(self, interaction: discord.Interaction):
-        if not await _setup_ok(interaction):
-            return
-        await _save(interaction, region=mv.valid_region(self.item.values[0]))
-
-
-class MovieRoleSelect(_Fixed, discord.ui.DynamicItem[discord.ui.RoleSelect], template=r"^movie:role$"):
-    def __init__(self):
-        super().__init__(discord.ui.RoleSelect(custom_id="movie:role", placeholder="Opt-in role for movie fans (optional)",
-                                               min_values=0, max_values=1))
-
-    async def callback(self, interaction: discord.Interaction):
-        if not await _setup_ok(interaction):
-            return
-        role = self.item.values[0] if self.item.values else None
-        await _save(interaction, role_id=role.id if role else None)
-
-
-class MakeChannelButton(_Fixed, discord.ui.DynamicItem[discord.ui.Button], template=r"^movie:mkchannel$"):
-    def __init__(self):
-        super().__init__(discord.ui.Button(label="Create channel", emoji="➕", style=discord.ButtonStyle.secondary,
-                                           custom_id="movie:mkchannel"))
-
-    async def callback(self, interaction: discord.Interaction):
-        if not await _setup_ok(interaction):
-            return
-        ch, err = await create_text_channel(interaction.guild, "movies", "Look up movies and series, trailers and where to watch legally.",
-                                            near=interaction.channel)
-        if err:
-            return await interaction.response.send_message(err, ephemeral=True)
-        await _save(interaction, note=f"Channel {ch.mention} is ready.", channel_id=ch.id)
-
-
-class MakeRoleButton(_Fixed, discord.ui.DynamicItem[discord.ui.Button], template=r"^movie:mkrole$"):
-    def __init__(self):
-        super().__init__(discord.ui.Button(label="Create role", emoji="➕", style=discord.ButtonStyle.secondary,
-                                           custom_id="movie:mkrole"))
-
-    async def callback(self, interaction: discord.Interaction):
-        if not await _setup_ok(interaction):
-            return
-        role, err = await create_role(interaction.guild, "Movie Fans", discord.Color.red())
-        if err:
-            return await interaction.response.send_message(err, ephemeral=True)
-        await _save(interaction, note=f"Role {role.mention} is ready. Members can opt in from the hub.", role_id=role.id)
-
-
-class PostHubButton(_Fixed, discord.ui.DynamicItem[discord.ui.Button], template=r"^movie:posthub$"):
-    def __init__(self):
-        super().__init__(discord.ui.Button(label="Post the hub", emoji="📌", style=discord.ButtonStyle.success,
-                                           custom_id="movie:posthub"))
-
-    async def callback(self, interaction: discord.Interaction):
-        if not await _setup_ok(interaction):
-            return
-        cfg = await store.get_config(interaction.guild.id, _clone(interaction))
-        ch = interaction.guild.get_channel(cfg["channel_id"]) if cfg.get("channel_id") else None
-        if ch is None:
-            return await interaction.response.send_message("Pick or create the hub channel first.", ephemeral=True)
-        if not _can_post(ch, interaction.guild):
-            return await interaction.response.send_message(f"I can't post in {ch.mention}. Give me **Send Messages** and **Embed Links** there.", ephemeral=True)
-        role_ok = bool(cfg.get("role_id") and interaction.guild.get_role(cfg["role_id"]))
-        try:
-            await ch.send(view=build_hub_view(role_ok), allowed_mentions=discord.AllowedMentions.none())
-        except (discord.Forbidden, discord.HTTPException):
-            return await interaction.response.send_message("I couldn't post there. Check my permissions in that channel.", ephemeral=True)
-        await interaction.response.send_message(f"📌 The Movies hub is live in {ch.mention}.", ephemeral=True)
-
-
-DYNAMIC_ITEMS = (SearchButton, TrendingButton, ClassicsButton, RoleToggleButton, MovieChannelSelect, RegionSelect,
-                 MovieRoleSelect, MakeChannelButton, MakeRoleButton, PostHubButton)
+DYNAMIC_ITEMS = (SearchButton, TrendingButton, ClassicsButton, RoleToggleButton)
 
 
 class MoviesCog(commands.Cog):

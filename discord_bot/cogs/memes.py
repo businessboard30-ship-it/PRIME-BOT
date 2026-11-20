@@ -1,9 +1,9 @@
 # path: discord_bot/cogs/memes.py
 
 """
-Meme feed. One slash command, /meme, opens the setup panel (Manage Server); the same panel opens from the join DM's
-"More features" screen. Everything runs from one persistent Components V2 panel: channel, how often, which meme sources
-and an optional ping role.
+Meme feed. One slash command, /meme, opens a private setup wizard (Manage Server) built like the anime spawn wizard: channel,
+how often, sources, optional ping role, ⚡ Quick setup, create-channel / create-role buttons, Preview, test post and on/off. The
+same wizard opens from the join DM's "More features" screen. Nothing happens in a server until it is turned on.
 
 Anyone with Manage Server can set it up and preview a meme for free. Turning on the automatic posting (and "Post now")
 needs the server to have Premium. Settings are kept if Premium lapses; posting simply pauses.
@@ -54,205 +54,250 @@ def meme_embed(m: dict) -> discord.Embed:
     return e
 
 
-def _config_text(guild: discord.Guild, cfg: dict, premium: bool) -> str:
+ACCENT = discord.Color.orange()
+AUTO_CHANNEL = "memes"
+AUTO_ROLE = "Meme Fans"
+OOPS = "😿 Something went wrong saving that. Try again."
+
+
+def _config_text(guild: discord.Guild, cfg: dict, premium: bool, note: Optional[str] = None) -> str:
     ch = guild.get_channel(cfg["channel_id"]) if cfg.get("channel_id") else None
     role = guild.get_role(cfg["ping_role_id"]) if cfg.get("ping_role_id") else None
-    subs = ", ".join(mm.PRESETS[s] for s in mm.subs_from_text(cfg.get("subs")))
-    on = bool(cfg.get("enabled") and ch and premium)
-    if cfg.get("enabled") and ch and not premium:
-        status = "⏸️ Paused (the server needs 💎 Premium to post automatically)"
+    subs = ", ".join(mm.PRESETS[x] for x in mm.subs_from_text(cfg.get("subs")))
+    on = bool(cfg.get("enabled") and ch)
+    if on and not premium:
+        status = "PAUSED (the server needs 💎 Premium to post automatically)"
     else:
-        status = "✅ On" if on else "⏸️ Off (pick a channel, then turn on)"
-    return "\n".join([
-        "## 😂 Meme setup",
-        "Fresh memes posted in a channel on a schedule you pick. Setting up is free for everyone with Manage Server; "
-        "💎 Premium turns on the automatic posting.",
-        "",
-        f"**Status:** {status}",
-        f"**Channel:** {ch.mention if ch else 'not set'}",
-        f"**Every:** {mm.valid_interval(cfg.get('interval_hours'))} hour(s)",
-        f"**Sources:** {subs}",
-        f"**Ping role:** {role.mention if role else 'none'}",
-    ])
+        status = "ON" if on else "OFF (asleep)"
+    parts = [note, ""] if note else []
+    parts += ["## 😂 Memes",
+              "Pick a channel (or let me create one), choose how often a meme is posted, and turn it on. **Quick setup** does all of it in one tap. "
+              "Memes come from Reddit through meme-api, never NSFW, and the same one never repeats. Until you set this up, I do nothing in your server.", "",
+              f"**Channel:** {ch.mention if ch else 'not picked yet'}",
+              f"**Posts:** every {mm.valid_interval(cfg.get('interval_hours'))} hour(s)",
+              f"**Sources:** {subs}",
+              f"**Ping role:** {role.mention if role else 'none (optional)'}",
+              f"**Posting:** {status}",
+              "-# Setting up is free. 💎 Premium turns on the automatic posting. Members can opt in to pings with the 🔔 button under each meme."]
+    return "\n".join(parts)
 
 
-def build_setup_view(guild: discord.Guild, cfg: dict, premium: bool, note: Optional[str] = None) -> discord.ui.LayoutView:
-    ch = guild.get_channel(cfg["channel_id"]) if cfg.get("channel_id") else None
-    on = bool(cfg.get("enabled") and ch and premium)
+def _btn(label, cb, style=discord.ButtonStyle.secondary, emoji=None, disabled=False) -> discord.ui.Button:
+    b = discord.ui.Button(label=label, style=style, emoji=emoji, disabled=disabled)
+    b.callback = cb
+    return b
+
+
+class MemeSetupView(discord.ui.LayoutView):
+    """Private, owner-locked setup wizard (same model as the anime spawn wizard). Nothing is posted or turned on until the
+    person presses Quick setup or Turn on. It times out into a plain summary, so no live panel is left behind."""
+
+    def __init__(self, guild: discord.Guild, clone_id, owner_id: int, cfg: dict, premium: bool):
+        super().__init__(timeout=900)
+        self.guild, self.clone_id, self.owner_id, self.cfg, self.premium = guild, clone_id, owner_id, cfg, premium
+        self.note: Optional[str] = None
+        self.message: Optional[discord.Message] = None
+        self._build()
+
+    async def interaction_check(self, interaction: discord.Interaction) -> bool:
+        if interaction.user.id != self.owner_id:
+            try:
+                await interaction.response.send_message("😂 This setup belongs to the person who opened it.", ephemeral=True)
+            except discord.HTTPException:
+                pass
+            return False
+        return True
+
+    def _build(self) -> None:
+        self.clear_items()
+        ready = bool(self.cfg.get("channel_id"))
+        sel = discord.ui.ChannelSelect(channel_types=[discord.ChannelType.text], placeholder="Pick the meme channel")
+        sel.callback = self._on_channel
+        pace = discord.ui.Select(placeholder="How often should a meme be posted?", options=[
+            discord.SelectOption(label=f"Every {h} hour" + ("s" if h != 1 else ""), value=str(h),
+                                 default=(h == mm.valid_interval(self.cfg.get("interval_hours")))) for h in mm.INTERVALS])
+        pace.callback = self._on_interval
+        cur = set(mm.subs_from_text(self.cfg.get("subs")))
+        src = discord.ui.Select(placeholder="Where do the memes come from?", min_values=1, max_values=len(mm.PRESETS), options=[
+            discord.SelectOption(label=label, value=key, default=(key in cur)) for key, label in mm.PRESETS.items()])
+        src.callback = self._on_sources
+        role = discord.ui.RoleSelect(placeholder="Optional: a role to ping on every meme", min_values=0, max_values=1)
+        role.callback = self._on_role
+        on = bool(self.cfg.get("enabled"))
+        rows = [discord.ui.ActionRow(sel), discord.ui.ActionRow(pace), discord.ui.ActionRow(src), discord.ui.ActionRow(role),
+                discord.ui.ActionRow(
+                    _btn("Quick setup", self._on_quick, discord.ButtonStyle.success, "⚡"),
+                    _btn("Create channel", self._on_create_channel, emoji="➕"),
+                    _btn("Create ping role", self._on_create_role, emoji="🎭")),
+                discord.ui.ActionRow(
+                    _btn("Preview", self._on_preview, discord.ButtonStyle.primary, "👀"),
+                    _btn("Post a test", self._on_test, emoji="🧪", disabled=not ready),
+                    _btn("Turn off" if on else "Turn on", self._on_toggle,
+                         discord.ButtonStyle.danger if on else discord.ButtonStyle.success, disabled=not ready),
+                    _btn("Close", self._on_close))]
+        box = discord.ui.Container(accent_colour=ACCENT)
+        box.add_item(discord.ui.TextDisplay(_config_text(self.guild, self.cfg, self.premium, self.note)[:3900]))
+        for r in rows:
+            box.add_item(r)
+        self.add_item(box)
+
+    async def _push(self, interaction: discord.Interaction) -> None:
+        self._build()
+        if interaction.response.is_done():
+            await interaction.edit_original_response(view=self)
+        else:
+            await interaction.response.edit_message(view=self)
+
+    async def _save(self, **fields) -> bool:
+        try:
+            self.cfg = await store.set_config(self.guild.id, self.clone_id, **fields)
+            return True
+        except Exception:
+            logger.exception("[memes] couldn't save settings")
+            self.note = OOPS
+            return False
+
+    async def _need_premium(self, interaction: discord.Interaction) -> bool:
+        """Activation is Premium. Shows the normal Go Premium checkout when the server doesn't have it."""
+        self.premium = await _is_premium(self.guild.id, self.clone_id)
+        return await _premium_gate(interaction, self.guild, self.clone_id)
+
+    async def _on_channel(self, interaction: discord.Interaction):
+        await interaction.response.defer()
+        ch = self.guild.get_channel(int(interaction.data["values"][0]))
+        if not _can_post(ch, self.guild):
+            self.note = f"🚫 I need **View Channel, Send Messages** and **Embed Links** in {ch.mention if ch else 'that channel'}."
+        elif await self._save(channel_id=ch.id):
+            self.note = f"✅ Meme channel: {ch.mention}."
+        await self._push(interaction)
+
+    async def _on_interval(self, interaction: discord.Interaction):
+        await interaction.response.defer()
+        if await self._save(interval_hours=mm.valid_interval(interaction.data["values"][0])):
+            self.note = f"✅ A meme every {self.cfg['interval_hours']} hour(s)."
+        await self._push(interaction)
+
+    async def _on_sources(self, interaction: discord.Interaction):
+        await interaction.response.defer()
+        if await self._save(subs=",".join(mm.clean_subs(interaction.data["values"]))):
+            self.note = "✅ Sources updated."
+        await self._push(interaction)
+
+    async def _on_role(self, interaction: discord.Interaction):
+        await interaction.response.defer()
+        vals = interaction.data.get("values") or []
+        role = self.guild.get_role(int(vals[0])) if vals else None
+        if await self._save(ping_role_id=role.id if role else None):
+            self.note = f"✅ I'll ping {role.mention} on every meme." if role else "Ping role cleared."
+        await self._push(interaction)
+
+    async def _make_channel(self) -> Optional[discord.TextChannel]:
+        ch, err = await create_text_channel(self.guild, AUTO_CHANNEL, "Fresh memes, posted automatically. 😂")
+        if err:
+            self.note = "🚫 " + err
+        return ch
+
+    async def _on_create_channel(self, interaction: discord.Interaction):
+        await interaction.response.defer()
+        ch = await self._make_channel()
+        if ch is not None and await self._save(channel_id=ch.id):
+            self.note = f"✅ Channel ready: {ch.mention}."
+        await self._push(interaction)
+
+    async def _on_create_role(self, interaction: discord.Interaction):
+        await interaction.response.defer()
+        role, err = await create_role(self.guild, AUTO_ROLE, discord.Color.orange())
+        if err:
+            self.note = "🚫 " + err
+        elif await self._save(ping_role_id=role.id):
+            self.note = f"✅ I'll ping {role.mention} on every meme. Members opt in with the 🔔 button under each meme."
+        await self._push(interaction)
+
+    async def _on_quick(self, interaction: discord.Interaction):
+        """Channel (kept if already picked, otherwise created) + the schedule already shown + switched on, in one tap. Premium."""
+        if not await self._need_premium(interaction):
+            return
+        await interaction.response.defer()
+        ch = self.guild.get_channel(self.cfg["channel_id"]) if self.cfg.get("channel_id") else None
+        if not _can_post(ch, self.guild):
+            ch = await self._make_channel()
+        if ch is not None and await self._save(channel_id=ch.id, enabled=True):
+            self.note = (f"⚡ All set. Memes are ON in {ch.mention}, every {self.cfg['interval_hours']} hour(s). "
+                         "The first one is on its way. Change anything below any time.")
+            cog = interaction.client.get_cog("MemesCog")
+            if cog is not None:
+                asyncio.create_task(cog.post_now(self.guild.id, force=True))
+        await self._push(interaction)
+
+    async def _on_preview(self, interaction: discord.Interaction):
+        await interaction.response.defer()
+        m = await mm.fetch_meme(mm.subs_from_text(self.cfg.get("subs")))
+        if m:
+            await interaction.followup.send(embed=meme_embed(m), ephemeral=True)
+        else:
+            self.note = "😿 I can't reach the meme service right now. Try again in a minute."
+            await self._push(interaction)
+
+    async def _on_test(self, interaction: discord.Interaction):
+        if not await self._need_premium(interaction):
+            return
+        await interaction.response.defer()
+        cog = interaction.client.get_cog("MemesCog")
+        ok = await cog.post_now(self.guild.id, force=True) if cog is not None else False
+        self.note = "🧪 Test meme posted." if ok else "🚫 I couldn't post a test. Check my permissions in that channel."
+        await self._push(interaction)
+
+    async def _on_toggle(self, interaction: discord.Interaction):
+        if self.cfg.get("enabled"):
+            await interaction.response.defer()
+            if await self._save(enabled=False):
+                self.note = "⏸️ Memes are OFF."
+            return await self._push(interaction)
+        if not await self._need_premium(interaction):
+            return
+        await interaction.response.defer()
+        if await self._save(enabled=True):
+            self.note = "✅ Memes are ON. The first one comes after one interval."
+        await self._push(interaction)
+
+    async def _on_close(self, interaction: discord.Interaction):
+        self.stop()
+        await interaction.response.edit_message(view=_final_view(_config_text(self.guild, self.cfg, self.premium)))
+
+    async def on_timeout(self) -> None:
+        if self.message is not None:
+            try:
+                await self.message.edit(view=_final_view(_config_text(self.guild, self.cfg, self.premium)))
+            except discord.HTTPException:
+                pass
+
+
+def _final_view(text: str) -> discord.ui.LayoutView:
     view = discord.ui.LayoutView(timeout=None)
-    box = discord.ui.Container(accent_colour=discord.Color.orange() if on else discord.Color.dark_grey())
-    box.add_item(discord.ui.TextDisplay(_config_text(guild, cfg, premium) + (f"\n-# {note}" if note else "")))
-    box.add_item(discord.ui.Separator())
-    box.add_item(discord.ui.ActionRow(PickChannelSelect()))
-    box.add_item(discord.ui.ActionRow(IntervalSelect(mm.valid_interval(cfg.get("interval_hours")))))
-    box.add_item(discord.ui.ActionRow(SourcesSelect(mm.subs_from_text(cfg.get("subs")))))
-    box.add_item(discord.ui.ActionRow(PingRoleSelect()))
-    box.add_item(discord.ui.ActionRow(ToggleButton(bool(cfg.get("enabled")), premium), PreviewButton(), PostNowButton(premium)))
-    box.add_item(discord.ui.ActionRow(MakeChannelButton(), MakeRoleButton()))
+    box = discord.ui.Container(accent_colour=ACCENT)
+    box.add_item(discord.ui.TextDisplay(text[:3900]))
     view.add_item(box)
     return view
 
 
-async def _state(interaction: discord.Interaction):
+async def open_setup(bot, guild: discord.Guild, clone_id, owner_id: int, channel) -> discord.Message:
+    """Posts the wizard in `channel` for `owner_id` (used from the join DM). Raises discord.HTTPException if it can't post."""
+    cfg = await store.get_config(guild.id, clone_id)
+    view = MemeSetupView(guild, clone_id, owner_id, cfg, await _is_premium(guild.id, clone_id))
+    msg = await channel.send(view=view, allowed_mentions=discord.AllowedMentions.none())
+    view.message = msg
+    return msg
+
+
+async def open_setup_ephemeral(interaction: discord.Interaction) -> None:
     cfg = await store.get_config(interaction.guild.id, _clone(interaction))
-    return cfg, await _is_premium(interaction.guild.id, _clone(interaction))
-
-
-async def _save(interaction: discord.Interaction, note: Optional[str] = None, **fields):
-    guild, clone_id = interaction.guild, _clone(interaction)
-    cfg = await store.set_config(guild.id, clone_id, **fields)
-    premium = await _is_premium(guild.id, clone_id)
-    await interaction.response.edit_message(view=build_setup_view(guild, cfg, premium, note=note))
-
-
-# ── persistent items (fixed custom_ids) ──────────────────────────────────
-
-class PickChannelSelect(_Fixed, discord.ui.DynamicItem[discord.ui.ChannelSelect], template=r"^meme:channel$"):
-    def __init__(self):
-        super().__init__(discord.ui.ChannelSelect(
-            custom_id="meme:channel", channel_types=[discord.ChannelType.text], placeholder="Channel for memes"))
-
-    async def callback(self, interaction: discord.Interaction):
-        if not await _admin(interaction):
-            return
-        channel = interaction.guild.get_channel(self.item.values[0].id)
-        if not _can_post(channel, interaction.guild):
-            return await interaction.response.send_message(
-                f"I need **View Channel, Send Messages** and **Embed Links** in "
-                f"{channel.mention if channel else 'that channel'}. Fix its permissions or pick another one.", ephemeral=True)
-        await _save(interaction, channel_id=channel.id)
-
-
-class IntervalSelect(_Fixed, discord.ui.DynamicItem[discord.ui.Select], template=r"^meme:interval$"):
-    def __init__(self, current: int = mm.DEFAULT_INTERVAL):
-        super().__init__(discord.ui.Select(
-            custom_id="meme:interval", placeholder="How often",
-            options=[discord.SelectOption(label=f"Every {h} hour" + ("s" if h != 1 else ""), value=str(h),
-                                          default=(h == current)) for h in mm.INTERVALS]))
-
-    async def callback(self, interaction: discord.Interaction):
-        if not await _admin(interaction):
-            return
-        await _save(interaction, interval_hours=mm.valid_interval(self.item.values[0]))
-
-
-class SourcesSelect(_Fixed, discord.ui.DynamicItem[discord.ui.Select], template=r"^meme:subs$"):
-    def __init__(self, current=None):
-        current = set(current or mm.DEFAULT_SUBS)
-        super().__init__(discord.ui.Select(
-            custom_id="meme:subs", placeholder="Meme sources", min_values=1, max_values=len(mm.PRESETS),
-            options=[discord.SelectOption(label=label, value=key, default=(key in current)) for key, label in mm.PRESETS.items()]))
-
-    async def callback(self, interaction: discord.Interaction):
-        if not await _admin(interaction):
-            return
-        await _save(interaction, subs=",".join(mm.clean_subs(self.item.values)))
-
-
-class PingRoleSelect(_Fixed, discord.ui.DynamicItem[discord.ui.RoleSelect], template=r"^meme:role$"):
-    def __init__(self):
-        super().__init__(discord.ui.RoleSelect(
-            custom_id="meme:role", placeholder="Role to ping on each meme (optional)", min_values=0, max_values=1))
-
-    async def callback(self, interaction: discord.Interaction):
-        if not await _admin(interaction):
-            return
-        role = self.item.values[0] if self.item.values else None
-        await _save(interaction, ping_role_id=role.id if role else None)
-
-
-class ToggleButton(_Fixed, discord.ui.DynamicItem[discord.ui.Button], template=r"^meme:toggle$"):
-    def __init__(self, enabled: bool = False, premium: bool = True):
-        super().__init__(discord.ui.Button(
-            label="Turn off" if enabled else ("Turn on" if premium else "Turn on 💎"),
-            style=discord.ButtonStyle.danger if enabled else discord.ButtonStyle.success, custom_id="meme:toggle"))
-
-    async def callback(self, interaction: discord.Interaction):
-        if not await _admin(interaction):
-            return
-        cfg, _ = await _state(interaction)               # the live value, not whatever the label said
-        if cfg.get("enabled"):
-            return await _save(interaction, enabled=False)   # turning off is always allowed
-        if not cfg.get("channel_id"):
-            return await interaction.response.send_message("Pick a channel first.", ephemeral=True)
-        ch = interaction.guild.get_channel(cfg["channel_id"])
-        if not _can_post(ch, interaction.guild):
-            return await interaction.response.send_message(
-                "I can't post in that channel any more. Pick one where I have **Send Messages** and **Embed Links**.",
-                ephemeral=True)
-        if not await _premium_gate(interaction, interaction.guild, _clone(interaction)):
-            return                                        # activation is Premium; setup stays free
-        await _save(interaction, note="Memes are on. The first one is posted within a few minutes.", enabled=True)
-        cog = _cog(interaction)
-        if cog is not None:
-            asyncio.create_task(cog.post_now(interaction.guild.id))
-
-
-class PreviewButton(_Fixed, discord.ui.DynamicItem[discord.ui.Button], template=r"^meme:preview$"):
-    """Free: shows one meme only to the person who pressed it."""
-
-    def __init__(self):
-        super().__init__(discord.ui.Button(label="Preview", emoji="👀", style=discord.ButtonStyle.secondary,
-                                           custom_id="meme:preview"))
-
-    async def callback(self, interaction: discord.Interaction):
-        if not await _admin(interaction):
-            return
-        await interaction.response.defer(ephemeral=True)
-        cfg, _ = await _state(interaction)
-        m = await mm.fetch_meme(mm.subs_from_text(cfg.get("subs")))
-        if not m:
-            return await interaction.followup.send("I couldn't fetch a meme just now. Try again in a minute.", ephemeral=True)
-        await interaction.followup.send(embed=meme_embed(m), ephemeral=True)
-
-
-class PostNowButton(_Fixed, discord.ui.DynamicItem[discord.ui.Button], template=r"^meme:postnow$"):
-    def __init__(self, premium: bool = True):
-        super().__init__(discord.ui.Button(label="Post now" + ("" if premium else " 💎"), emoji="🎲",
-                                           style=discord.ButtonStyle.primary, custom_id="meme:postnow"))
-
-    async def callback(self, interaction: discord.Interaction):
-        if not await _admin(interaction):
-            return
-        cfg, _ = await _state(interaction)
-        if not cfg.get("channel_id"):
-            return await interaction.response.send_message("Pick a channel first.", ephemeral=True)
-        if not await _premium_gate(interaction, interaction.guild, _clone(interaction)):
-            return
-        await interaction.response.defer(ephemeral=True)
-        cog = _cog(interaction)
-        ok = await cog.post_now(interaction.guild.id, force=True) if cog is not None else False
-        await interaction.followup.send("🎲 Posted." if ok else "I couldn't post a meme just now. Check my channel "
-                                        "permissions and try again.", ephemeral=True)
-
-
-class MakeChannelButton(_Fixed, discord.ui.DynamicItem[discord.ui.Button], template=r"^meme:mkchannel$"):
-    def __init__(self):
-        super().__init__(discord.ui.Button(label="Create channel", emoji="➕", style=discord.ButtonStyle.secondary,
-                                           custom_id="meme:mkchannel"))
-
-    async def callback(self, interaction: discord.Interaction):
-        if not await _admin(interaction):
-            return
-        ch, err = await create_text_channel(interaction.guild, "memes", "Fresh memes, posted automatically. 😂", near=interaction.channel)
-        if err:
-            return await interaction.response.send_message(err, ephemeral=True)
-        await _save(interaction, note=f"Channel {ch.mention} is ready.", channel_id=ch.id)
-
-
-class MakeRoleButton(_Fixed, discord.ui.DynamicItem[discord.ui.Button], template=r"^meme:mkrole$"):
-    def __init__(self):
-        super().__init__(discord.ui.Button(label="Create role", emoji="➕", style=discord.ButtonStyle.secondary,
-                                           custom_id="meme:mkrole"))
-
-    async def callback(self, interaction: discord.Interaction):
-        if not await _admin(interaction):
-            return
-        role, err = await create_role(interaction.guild, "Meme Fans", discord.Color.orange())
-        if err:
-            return await interaction.response.send_message(err, ephemeral=True)
-        await _save(interaction, note=f"Role {role.mention} is ready. Members can opt in from the button under each meme.",
-                    ping_role_id=role.id)
+    view = MemeSetupView(interaction.guild, _clone(interaction), interaction.user.id, cfg,
+                         await _is_premium(interaction.guild.id, _clone(interaction)))
+    await interaction.response.send_message(view=view, ephemeral=True, allowed_mentions=discord.AllowedMentions.none())
+    try:
+        view.message = await interaction.original_response()
+    except discord.HTTPException:
+        pass
 
 
 class MemeRoleToggle(_Fixed, discord.ui.DynamicItem[discord.ui.Button], template=r"^meme:rolebtn$"):
@@ -274,8 +319,7 @@ class MemeRoleToggle(_Fixed, discord.ui.DynamicItem[discord.ui.Button], template
                                                 ephemeral=True, allowed_mentions=discord.AllowedMentions.none())
 
 
-DYNAMIC_ITEMS = (PickChannelSelect, IntervalSelect, SourcesSelect, PingRoleSelect, ToggleButton, PreviewButton, PostNowButton,
-                 MakeChannelButton, MakeRoleButton, MemeRoleToggle)
+DYNAMIC_ITEMS = (MemeRoleToggle,)
 
 
 # ── the cog ─────────────────────────────────────────────────────────────
@@ -295,8 +339,7 @@ class MemesCog(commands.Cog):
     async def meme(self, interaction: discord.Interaction):
         if not await _admin(interaction):
             return
-        cfg, premium = await _state(interaction)
-        await interaction.response.send_message(view=build_setup_view(interaction.guild, cfg, premium), ephemeral=True)
+        await open_setup_ephemeral(interaction)
 
     async def post_now(self, guild_id: int, force: bool = False) -> bool:
         """Posts one meme for this server. Premium only. Respects the schedule unless force."""
