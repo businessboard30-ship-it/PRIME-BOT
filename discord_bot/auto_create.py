@@ -10,7 +10,7 @@ logger = logging.getLogger(__name__)
 
 
 async def create_text_channel(guild: discord.Guild, name: str, topic: str, near: Optional[discord.abc.GuildChannel] = None,
-                              reason: str = "Created from the bot's setup panel") -> Tuple[Optional[discord.TextChannel], Optional[str]]:
+                              reason: str = "Created from the bot's setup panel", read_only: bool = False) -> Tuple[Optional[discord.TextChannel], Optional[str]]:
     """New text channel (put under the same category as `near`). Reuses an existing channel of the same name."""
     existing = discord.utils.get(guild.text_channels, name=name)
     if existing is not None:
@@ -19,8 +19,12 @@ async def create_text_channel(guild: discord.Guild, name: str, topic: str, near:
     if me is None or not me.guild_permissions.manage_channels:
         return None, "I need the **Manage Channels** permission to create a channel. Give me it, or pick an existing channel."
     category = getattr(near, "category", None)
+    overwrites = {}
+    if read_only:    # members can read and press buttons, only the bot posts
+        overwrites = {guild.default_role: discord.PermissionOverwrite(send_messages=False, add_reactions=False, create_public_threads=False),
+                      me: discord.PermissionOverwrite(view_channel=True, send_messages=True, embed_links=True, read_message_history=True)}
     try:
-        ch = await guild.create_text_channel(name, topic=topic[:1000], category=category, reason=reason)
+        ch = await guild.create_text_channel(name, topic=topic[:1000], category=category, overwrites=overwrites, reason=reason)
         return ch, None
     except (discord.Forbidden, discord.HTTPException) as e:
         logger.info("[auto-create] channel failed in %s: %s", guild.id, type(e).__name__)
@@ -56,3 +60,18 @@ async def toggle_member_role(member: discord.Member, role: discord.Role) -> Tupl
         return True, None
     except (discord.Forbidden, discord.HTTPException):
         return None, "I couldn't change your roles just now."
+
+
+async def create_category(guild: discord.Guild, name: str,
+                          reason: str = "Created from the bot's setup panel") -> Tuple[Optional[discord.CategoryChannel], Optional[str]]:
+    existing = discord.utils.get(guild.categories, name=name)
+    if existing is not None:
+        return existing, None
+    me = guild.me
+    if me is None or not me.guild_permissions.manage_channels:
+        return None, "I need the **Manage Channels** permission to create a category. Give me it, or pick an existing one."
+    try:
+        return await guild.create_category(name, reason=reason), None
+    except (discord.Forbidden, discord.HTTPException) as e:
+        logger.info("[auto-create] category failed in %s: %s", guild.id, type(e).__name__)
+        return None, "I couldn't create the category (a channel limit or my permissions). Pick an existing one instead."

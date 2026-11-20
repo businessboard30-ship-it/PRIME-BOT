@@ -160,6 +160,11 @@ def build_wizard_view(guild: discord.Guild, config_row: dict, premium: bool) -> 
         from discord_bot.cogs._views_role_helper import make_button      # no support role yet: one tap makes it
         msg_row.add_item(make_button("ticket", guild_id, clone_id))
 
+    quick_row = discord.ui.ActionRow()
+    quick_row.add_item(TicketQuickSetupButton(guild_id, clone_id, invoker_id))
+    quick_row.add_item(TicketCreateChannelButton(guild_id, clone_id, invoker_id))
+    quick_row.add_item(TicketCreateCategoryButton(guild_id, clone_id, invoker_id))
+
     post_row = discord.ui.ActionRow()
     post_row.add_item(TicketPostPanelButton(guild_id, clone_id, invoker_id))
     if not premium:
@@ -186,6 +191,7 @@ def build_wizard_view(guild: discord.Guild, config_row: dict, premium: bool) -> 
     )
     for item in (
         text, discord.ui.Separator(),
+        quick_row,
         ch_row, role_row, cat_row, msg_row,
         discord.ui.Separator(),
         cats_row, buttons_row, autoclose_row, transcript_row, closemsg_row,
@@ -363,66 +369,150 @@ class TicketPostPanelButton(discord.ui.DynamicItem[discord.ui.Button],
         if not await _check_access(interaction, self.invoker_id):
             return
         await interaction.response.defer(ephemeral=True)
+        ok, message = await _post_panel(interaction.client, self.guild_id, self.clone_id)
+        if ok:
+            await _rerender(interaction, self.guild_id, self.clone_id)
+        await interaction.followup.send(message, ephemeral=True)
+
+
+async def _post_panel(client, guild_id: int, clone_id):
+    """Posts (or re-posts) the Open Ticket panel in the configured panel channel. Returns (ok, message)."""
+    cfg = await db.get_ticket_config(guild_id, clone_id=clone_id)
+    if not cfg.get("panel_channel_id"):
+        return False, "Set a panel channel first (Step 1)."
+    channel = client.get_channel(cfg["panel_channel_id"])
+    if channel is None:
+        return False, "Panel channel not found — pick it again."
+
+    # Build panel buttons — default + any custom premium buttons
+    panel_view = discord.ui.View(timeout=None)
+    # Same custom_id as TicketPanelView's persistent button in ticket.py, so the existing handler services clicks.
+    panel_view.add_item(discord.ui.Button(label="Open Ticket", style=discord.ButtonStyle.primary, emoji="🎫", custom_id="ticket:open"))
+    try:
+        for btn in json.loads(cfg.get("custom_buttons_json") or "[]")[:MAX_CUSTOM_BUTTONS]:
+            if btn.get("url"):
+                panel_view.add_item(discord.ui.Button(label=btn.get("label", "Info"), emoji=btn.get("emoji") or None,
+                                                      url=btn["url"], style=discord.ButtonStyle.link))
+    except Exception:
+        logger.debug("swallowed exception in _post_panel", exc_info=True)
+    cats = []
+    try:
+        cats = json.loads(cfg.get("categories_json") or "[]")
+    except Exception:
+        logger.debug("swallowed exception in _post_panel", exc_info=True)
+    embed = discord.Embed(
+        title="🎫 Support Tickets",
+        description=("Click **Open Ticket** to create a private support channel.\n\n"
+                     + ("\n".join(f"{c.get('emoji', '•')} **{c['label']}** — {c.get('description', '')}" for c in cats) if cats else "")),
+        color=discord.Color.blurple(),
+    )
+    try:
+        posted = await channel.send(embed=embed, view=panel_view)
+    except (discord.Forbidden, discord.HTTPException) as e:
+        return False, f"Couldn't post: {e}"
+    await db.set_ticket_config(guild_id, clone_id, panel_channel_id=channel.id, panel_message_id=posted.id)
+    return True, f"✅ Panel posted in {channel.mention}!"
+
+
+# ── one-tap helpers (same idea as the anime spawn wizard) ─────────────────
+
+class TicketQuickSetupButton(discord.ui.DynamicItem[discord.ui.Button], template=r"^ticketwz_quick:(\d+):(-|\d+):(-|\d+)$"):
+    """Everything in one tap: #tickets channel (kept if already picked), a Ticket Support role, a Tickets category, and the panel."""
+
+    def __init__(self, guild_id, clone_id, invoker_id):
+        self.guild_id, self.clone_id, self.invoker_id = guild_id, clone_id, invoker_id
+        super().__init__(discord.ui.Button(label="Quick setup", emoji="⚡", style=discord.ButtonStyle.success,
+                                           custom_id=_encode("quick", guild_id, clone_id, invoker_id)))
+
+    @classmethod
+    async def from_custom_id(cls, interaction, item, match):
+        gid, cid, iid = _decode(match)
+        return cls(gid, cid, iid)
+
+    async def callback(self, interaction: discord.Interaction):
+        if not await _check_access(interaction, self.invoker_id):
+            return
+        await interaction.response.defer(ephemeral=True)
+        from discord_bot.auto_create import create_category, create_role, create_text_channel
+        guild = interaction.guild or interaction.client.get_guild(self.guild_id)
         cfg = await db.get_ticket_config(self.guild_id, clone_id=self.clone_id)
-        if not cfg.get("panel_channel_id"):
-            await interaction.followup.send("Set a panel channel first (Step 1).", ephemeral=True)
-            return
-        channel = interaction.client.get_channel(cfg["panel_channel_id"])
-        if channel is None:
-            await interaction.followup.send("Panel channel not found — pick it again.", ephemeral=True)
-            return
-
-        # Build panel buttons — default + any custom premium buttons
-        panel_view = discord.ui.View(timeout=None)
-        # Same custom_id as TicketPanelView's persistent button in ticket.py,
-        # so the existing handler services clicks.
-        panel_view.add_item(discord.ui.Button(
-            label="Open Ticket", style=discord.ButtonStyle.primary,
-            emoji="🎫", custom_id="ticket:open",
-        ))
-        try:
-            custom_btns = json.loads(cfg.get("custom_buttons_json") or "[]")
-            for btn in custom_btns[:MAX_CUSTOM_BUTTONS]:
-                if btn.get("url"):
-                    panel_view.add_item(discord.ui.Button(
-                        label=btn.get("label", "Info"),
-                        emoji=btn.get("emoji") or None,
-                        url=btn["url"],
-                        style=discord.ButtonStyle.link,
-                    ))
-        except Exception:
-            logger.debug("swallowed exception in TicketPostPanelButton.callback", exc_info=True)
-            pass
-
-        # Build embed with categories if premium
-        cats = []
-        try:
-            cats = json.loads(cfg.get("categories_json") or "[]")
-        except Exception:
-            logger.debug("swallowed exception in TicketPostPanelButton.callback", exc_info=True)
-            pass
-
-        embed = discord.Embed(
-            title="🎫 Support Tickets",
-            description=(
-                "Click **Open Ticket** to create a private support channel.\n\n"
-                + ("\n".join(f"{c.get('emoji', '•')} **{c['label']}** — {c.get('description', '')}" for c in cats)
-                   if cats else "")
-            ),
-            color=discord.Color.blurple(),
-        )
-
-        try:
-            posted = await channel.send(embed=embed, view=panel_view)
-        except (discord.Forbidden, discord.HTTPException) as e:
-            await interaction.followup.send(f"Couldn't post: {e}", ephemeral=True)
-            return
-
-        await db.set_ticket_config(self.guild_id, self.clone_id,
-                                    panel_channel_id=channel.id,
-                                    panel_message_id=posted.id)
+        fields, notes = {}, []
+        ch = guild.get_channel(cfg["panel_channel_id"]) if cfg.get("panel_channel_id") else None
+        if ch is None:
+            ch, err = await create_text_channel(guild, "tickets", "Open a private ticket with our staff.", read_only=True)
+            if err:
+                return await interaction.followup.send("🚫 " + err, ephemeral=True)
+            fields["panel_channel_id"] = ch.id
+        role = guild.get_role(cfg["support_role_id"]) if cfg.get("support_role_id") else None
+        if role is None:
+            role, err = await create_role(guild, "Ticket Support", discord.Color.blurple())
+            if err:
+                notes.append("⚠️ " + err)
+            else:
+                fields["support_role_id"] = role.id
+        cat = guild.get_channel(cfg["category_id"]) if cfg.get("category_id") else None
+        if cat is None:
+            cat, err = await create_category(guild, "Tickets")
+            if err:
+                notes.append("⚠️ " + err)
+            else:
+                fields["category_id"] = cat.id
+        if fields:
+            await db.set_ticket_config(self.guild_id, self.clone_id, **fields)
+        ok, message = await _post_panel(interaction.client, self.guild_id, self.clone_id)
         await _rerender(interaction, self.guild_id, self.clone_id)
-        await interaction.followup.send(f"✅ Panel posted in {channel.mention}!", ephemeral=True)
+        head = "⚡ All set. Tickets are live. Give your staff the support role so they can see and answer tickets." if ok else message
+        await interaction.followup.send("\n".join([head] + notes), ephemeral=True)
+
+
+class TicketCreateChannelButton(discord.ui.DynamicItem[discord.ui.Button], template=r"^ticketwz_mkch:(\d+):(-|\d+):(-|\d+)$"):
+    def __init__(self, guild_id, clone_id, invoker_id):
+        self.guild_id, self.clone_id, self.invoker_id = guild_id, clone_id, invoker_id
+        super().__init__(discord.ui.Button(label="Create channel", emoji="➕", style=discord.ButtonStyle.secondary,
+                                           custom_id=_encode("mkch", guild_id, clone_id, invoker_id)))
+
+    @classmethod
+    async def from_custom_id(cls, interaction, item, match):
+        gid, cid, iid = _decode(match)
+        return cls(gid, cid, iid)
+
+    async def callback(self, interaction: discord.Interaction):
+        if not await _check_access(interaction, self.invoker_id):
+            return
+        await interaction.response.defer(ephemeral=True)
+        from discord_bot.auto_create import create_text_channel
+        guild = interaction.guild or interaction.client.get_guild(self.guild_id)
+        ch, err = await create_text_channel(guild, "tickets", "Open a private ticket with our staff.", read_only=True)
+        if err:
+            return await interaction.followup.send("🚫 " + err, ephemeral=True)
+        await db.set_ticket_config(self.guild_id, self.clone_id, panel_channel_id=ch.id)
+        await _rerender(interaction, self.guild_id, self.clone_id)
+        await interaction.followup.send(f"✅ Panel channel ready: {ch.mention}. Press **Post panel** when you're set.", ephemeral=True)
+
+
+class TicketCreateCategoryButton(discord.ui.DynamicItem[discord.ui.Button], template=r"^ticketwz_mkcat:(\d+):(-|\d+):(-|\d+)$"):
+    def __init__(self, guild_id, clone_id, invoker_id):
+        self.guild_id, self.clone_id, self.invoker_id = guild_id, clone_id, invoker_id
+        super().__init__(discord.ui.Button(label="Create category", emoji="📁", style=discord.ButtonStyle.secondary,
+                                           custom_id=_encode("mkcat", guild_id, clone_id, invoker_id)))
+
+    @classmethod
+    async def from_custom_id(cls, interaction, item, match):
+        gid, cid, iid = _decode(match)
+        return cls(gid, cid, iid)
+
+    async def callback(self, interaction: discord.Interaction):
+        if not await _check_access(interaction, self.invoker_id):
+            return
+        await interaction.response.defer(ephemeral=True)
+        from discord_bot.auto_create import create_category
+        guild = interaction.guild or interaction.client.get_guild(self.guild_id)
+        cat, err = await create_category(guild, "Tickets")
+        if err:
+            return await interaction.followup.send("🚫 " + err, ephemeral=True)
+        await db.set_ticket_config(self.guild_id, self.clone_id, category_id=cat.id)
+        await _rerender(interaction, self.guild_id, self.clone_id)
+        await interaction.followup.send(f"✅ Ticket category ready: **{cat.name}**.", ephemeral=True)
 
 
 class TicketGoPremiumButton(discord.ui.DynamicItem[discord.ui.Button],
@@ -716,6 +806,7 @@ class TicketCloseMessageButton(discord.ui.DynamicItem[discord.ui.Button],
 
 
 DYNAMIC_ITEMS = (
+    TicketQuickSetupButton, TicketCreateChannelButton, TicketCreateCategoryButton,
     TicketPanelChannelSelect, TicketSupportRoleSelect, TicketCategorySelect,
     TicketWelcomeMessageButton, TicketPostPanelButton, TicketGoPremiumButton,
     TicketCategoriesButton, TicketCustomButtonsButton,
