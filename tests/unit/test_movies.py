@@ -42,3 +42,13 @@ def test_movies_and_meme_items_registered():
     assert len([i for i in jd.DYNAMIC_ITEMS if i.__discord_ui_compiled_template__.match("join_dm_movie:7:-")]) == 1
     ids = [i.__discord_ui_compiled_template__.pattern for i in movies.DYNAMIC_ITEMS + memes.DYNAMIC_ITEMS]
     assert len(ids) == len(set(ids))                                   # no two persistent items share a custom id
+
+
+def test_setups_are_owner_locked_wizards_like_the_anime_spawn_one():
+    from discord_bot.cogs import memes, movies
+    for mod, view in ((memes, memes.MemeSetupView), (movies, movies.MovieSetupView)):
+        assert callable(mod.open_setup) and view.__mro__[1].__name__ == "LayoutView"
+        assert "interaction_check" in view.__dict__ and "_on_quick" in view.__dict__ and "on_timeout" in view.__dict__
+    # only things that live in the server stay persistent; the setup itself is no longer a standing panel
+    assert [i.__name__ for i in memes.DYNAMIC_ITEMS] == ["MemeRoleToggle"]
+    assert {"SearchButton", "TrendingButton", "ClassicsButton", "RoleToggleButton"} == {i.__name__ for i in movies.DYNAMIC_ITEMS}
