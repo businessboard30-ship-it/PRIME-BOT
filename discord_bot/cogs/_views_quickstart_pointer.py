@@ -188,4 +188,42 @@ class QuickstartPointerView(discord.ui.LayoutView):
         self.add_item(container)
 
 
+def _labelled(item, label: str):
+    """A DynamicItem keeps its custom_id (that is what routes the click), so a clearer label for this message is safe."""
+    item.item.label = label
+    return item
+
+
+class NudgeView(discord.ui.LayoutView):
+    """The one-time follow-up DM for a server that hasn't set anything up. Same short text as before, now with the buttons
+    that matter: the important setups, Go Premium, and the Premium/fun features. Every button is an existing persistent
+    one that re-checks Manage Server on its own, so nothing new is trusted here."""
+
+    def __init__(self, guild_id: int, clone_id=None, guild_name: str = None, jump_url: str = None):
+        super().__init__(timeout=None)
+        from discord_bot.cogs._views_join_dm import (
+            _AnimeButton, _FeatureToggleButton, _MemeButton, _MovieButton,
+        )
+        box = discord.ui.Container(accent_colour=discord.Color.blurple())
+        box.add_item(discord.ui.TextDisplay(
+            f"## 🚀 Quick start\nQuick nudge: **{guild_name or 'your server'}** isn't set up yet. Totally optional.\n\n"
+            "Run `/serversetup` in your server to open the panel, or tap a button below."))
+        top = [discord.ui.Button(label="Go to server", style=discord.ButtonStyle.link, url=jump_url)] if jump_url else []
+        box.add_item(discord.ui.ActionRow(*top, FullGuideButton(guild_id, clone_id)))
+        box.add_item(discord.ui.Separator())
+        box.add_item(discord.ui.TextDisplay("**Important**"))
+        box.add_item(discord.ui.ActionRow(
+            _FeatureToggleButton("welcome", guild_id, clone_id),
+            _FeatureToggleButton("verification", guild_id, clone_id),
+            _FeatureToggleButton("tickets", guild_id, clone_id)))
+        box.add_item(discord.ui.Separator())
+        box.add_item(discord.ui.TextDisplay("**💎 Premium & fun**"))
+        box.add_item(discord.ui.ActionRow(
+            _FeatureToggleButton("go_premium", guild_id, clone_id),
+            _labelled(_MovieButton(guild_id, clone_id), "Movies 💎"),
+            _labelled(_MemeButton(guild_id, clone_id), "Memes"),
+            _labelled(_AnimeButton(guild_id, clone_id), "Anime")))
+        self.add_item(box)
+
+
 DYNAMIC_ITEMS = (OpenPanelButton, FullGuideButton, DmGuideButton)
