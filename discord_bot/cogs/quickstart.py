@@ -166,11 +166,18 @@ class QuickstartCog(commands.Cog):
                     continue
                 owner = await resolve_guild_owner(guild)
                 if owner:
-                    embed = self._build_embed(
-                        guild,
-                        intro=f"Quick nudge: **{guild.name}** isn't set up yet. Totally optional.",
-                    )
-                    await owner.send(embed=embed)
+                    try:
+                        from discord_bot.cogs._views_join_dm import _default_text_channel
+                        from discord_bot.cogs._views_quickstart_pointer import NudgeView
+                        channel = _default_text_channel(guild)
+                        jump = channel.jump_url if channel is not None else f"https://discord.com/channels/{guild.id}"
+                        await owner.send(view=NudgeView(guild.id, clone_id, guild_name=guild.name, jump_url=jump))
+                    except (discord.HTTPException, discord.Forbidden):
+                        raise
+                    except Exception:
+                        logger.exception("[quickstart] button nudge failed for guild %s; sending the plain one", guild_id)
+                        await owner.send(embed=self._build_embed(
+                            guild, intro=f"Quick nudge: **{guild.name}** isn't set up yet. Totally optional."))
             except (discord.HTTPException, discord.Forbidden) as e:
                 logger.info(f"[v0] Quickstart follow-up skipped for guild {guild_id}: {e}")
             except Exception as e:

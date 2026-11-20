@@ -66,3 +66,13 @@ def test_ticket_wizard_has_one_tap_buttons_and_the_join_dm_import_is_real():
     assert callable(tw.build_wizard_view) and callable(tw.remember_wizard_message)
     src = inspect.getsource(jd._enable_tickets)
     assert "build_wizard_view" in src and "remember_wizard_message" in src and "build_ticket_wizard_view" not in src
+
+
+def test_nudge_view_buttons_are_existing_persistent_items():
+    from discord_bot.cogs import _views_join_dm as jd
+    from discord_bot.cogs._views_quickstart_pointer import NudgeView
+    v = NudgeView(5, None, guild_name="G", jump_url="https://discord.com/channels/5")
+    ids = [c.custom_id for c in v.walk_children() if getattr(c, "custom_id", None)] if hasattr(v, "walk_children") else []
+    assert any(i.startswith("join_dm_movie:5:") for i in ids) and any(i.startswith("join_dm_meme:5:") for i in ids)
+    assert any(i.startswith("join_dm_anime:5:") for i in ids) and any(i.startswith("join_dm_full:5:") for i in ids)
+    assert len(ids) == len(set(ids))
