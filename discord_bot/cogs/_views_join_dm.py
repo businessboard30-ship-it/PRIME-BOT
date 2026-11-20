@@ -1547,7 +1547,7 @@ async def _enable_tickets(interaction: discord.Interaction, guild: discord.Guild
     server's default channel, the same wizard `/ticket setup` shows. It used to post a bare panel straight into a new
     #tickets channel with no support role; now the owner is walked through the setup first and nothing is posted until
     they press Post panel. The wizard re-checks who may use it, so showing it in the server is safe."""
-    from discord_bot.cogs._views_ticket_wizard import build_ticket_wizard_view, remember_ticket_wizard_message
+    from discord_bot.cogs._views_ticket_wizard import build_wizard_view, remember_wizard_message
     channel = _default_text_channel(guild)
     if channel is None:
         return False, ("I couldn't find a channel I'm able to post in. Give me **Send Messages** in one and tap "
@@ -1561,12 +1561,12 @@ async def _enable_tickets(interaction: discord.Interaction, guild: discord.Guild
         logger.warning("swallowed exception in _enable_tickets", exc_info=True)
         premium = False
     try:
-        sent = await channel.send(view=build_ticket_wizard_view(guild, config, premium),
+        sent = await channel.send(view=build_wizard_view(guild, config, premium),
                                   allowed_mentions=discord.AllowedMentions.none())
     except (discord.Forbidden, discord.HTTPException):
         logger.exception("join_dm ticket setup failed for guild %s", guild.id)
         return False, "I couldn't post the ticket setup. Make sure I can **Send Messages** and **Embed Links** in your server."
-    await remember_ticket_wizard_message(guild.id, clone_id, interaction.user.id, channel.id, sent.id)
+    await remember_wizard_message(guild.id, clone_id, interaction.user.id, channel.id, sent.id)
     await interaction.followup.send(
         f"🎫 Ticket setup is open in {channel.mention}. Pick the panel channel, the support role and the ticket category, "
         "then press **Post panel**.", ephemeral=True)

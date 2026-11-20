@@ -52,3 +52,17 @@ def test_setups_are_owner_locked_wizards_like_the_anime_spawn_one():
     # only things that live in the server stay persistent; the setup itself is no longer a standing panel
     assert [i.__name__ for i in memes.DYNAMIC_ITEMS] == ["MemeRoleToggle"]
     assert {"SearchButton", "TrendingButton", "ClassicsButton", "RoleToggleButton"} == {i.__name__ for i in movies.DYNAMIC_ITEMS}
+
+
+def test_ticket_wizard_has_one_tap_buttons_and_the_join_dm_import_is_real():
+    import inspect
+    from discord_bot.cogs import _views_ticket_wizard as tw
+    from discord_bot.cogs import _views_join_dm as jd
+    for name in ("TicketQuickSetupButton", "TicketCreateChannelButton", "TicketCreateCategoryButton"):
+        assert getattr(tw, name) in tw.DYNAMIC_ITEMS
+    ids = [i.__discord_ui_compiled_template__.pattern for i in tw.DYNAMIC_ITEMS]
+    assert len(ids) == len(set(ids))
+    # the join DM handler imports these two by their real names (the build_ticket_* aliases only exist in ticket.py)
+    assert callable(tw.build_wizard_view) and callable(tw.remember_wizard_message)
+    src = inspect.getsource(jd._enable_tickets)
+    assert "build_wizard_view" in src and "remember_wizard_message" in src and "build_ticket_wizard_view" not in src
