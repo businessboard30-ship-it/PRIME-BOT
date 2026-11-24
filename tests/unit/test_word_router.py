@@ -52,6 +52,22 @@ def test_exact_word_beats_prefix_beats_description():
     assert got[0] == "raid" and got.index("antiraid status") < got.index("ping")
 
 
+@pytest.mark.parametrize("greeting", ["hi", "hello", "hey", "hiya", "howdy"])
+def test_greetings_do_not_fuzzy_match_aistore_history(greeting):
+    history = wr.Entry("aistore history", "View recent AI Store transactions", 0, False)
+    assert wr.rank(greeting, [history], ADMIN, True) == []
+
+
+def test_three_character_command_shortcut_still_matches_history():
+    history = wr.Entry("aistore history", "View recent AI Store transactions", 0, False)
+    assert names(wr.rank("his", [history], ADMIN, True)) == ["aistore history"]
+
+
+def test_exact_short_command_word_still_matches():
+    hi = wr.Entry("hi", "A legitimate exact command", 0, False)
+    assert names(wr.rank("hi", [hi], ADMIN, True)) == ["hi"]
+
+
 def test_users_without_permission_never_see_admin_commands():
     got = names(wr.rank("raid", E, 0, True))
     assert "antiraid status" not in got and "antiraid setup" not in got and "raid" in got
