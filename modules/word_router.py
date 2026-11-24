@@ -100,11 +100,15 @@ def score(word: str, e: Entry) -> int:
     s = 0
     if w in parts:
         s = 100
-    elif any(p.startswith(w) for p in parts):
+    # Short everyday words (especially greetings like "hi") must not
+    # fuzzy-match longer command names such as "history". Keep exact
+    # command-word matches available, but require at least 3 characters
+    # before applying prefix, substring, or description matching.
+    elif len(w) >= 3 and any(p.startswith(w) for p in parts):
         s = 75
-    elif w in e.qname.lower().replace(" ", ""):
+    elif len(w) >= 3 and w in e.qname.lower().replace(" ", ""):
         s = 55
-    elif re.search(rf"\b{re.escape(w)}", e.description.lower()):
+    elif len(w) >= 3 and re.search(rf"\b{re.escape(w)}", e.description.lower()):
         s = 30
     return s
 
